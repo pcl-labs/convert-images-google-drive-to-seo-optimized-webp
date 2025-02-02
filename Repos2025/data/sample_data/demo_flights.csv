@@ -1,0 +1,6 @@
+flight_number,date,departure_time,origin_airport,destination_airport,passenger_count
+WN1234,2024-03-15,10:30,LAS,JFK,150
+WN2345,2024-03-15,11:00,LAX,PHX,120
+WN3456,2024-03-15,14:15,SFO,LAS,175
+WN4567,2024-03-15,16:45,PHX,DEN,135
+WN5678,2024-03-15,19:30,DEN,SEA,160 
