@@ -1,0 +1,32 @@
+{
+  "timeZone": "America/Los_Angeles",
+  "dependencies": {
+    "enabledAdvancedServices": [{
+      "userSymbol": "Gmail",
+      "serviceId": "gmail",
+      "version": "v1"
+    }]
+  },
+  "exceptionLogging": "STACKDRIVER",
+  "oauthScopes": [
+    "https://www.googleapis.com/auth/gmail.addons.execute",
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/gmail.modify",
+    "https://www.googleapis.com/auth/script.external_request"
+  ],
+  "runtimeVersion": "V8",
+  "gmail": {
+    "name": "Blawby Gmail Agent",
+    "logoUrl": "https://www.gstatic.com/images/icons/material/system/1x/assignment_black_48dp.png",
+    "primaryColor": "#4285F4",
+    "secondaryColor": "#34A853",
+    "authorizationCheckFunction": "isAuthorized",
+    "contextualTriggers": [{
+      "unconditional": {},
+      "onTriggerFunction": "onGmailMessage"
+    }],
+    "homepageTrigger": {
+      "runFunction": "onHomepage"
+    }
+  }
+} 
