@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Request, Depends, Form, HTTPException, status
+from fastapi import APIRouter, Request, Depends, Form, HTTPException, status, BackgroundTasks
 from fastapi.responses import HTMLResponse, RedirectResponse
 from starlette.templating import Jinja2Templates
 from starlette.responses import Response
@@ -12,7 +12,6 @@ from .deps import ensure_services, ensure_db, parse_job_progress, get_current_us
 from .auth import verify_jwt_token
 from .database import create_job, list_jobs
 from workers.consumer import process_optimization_job
-import asyncio
 from .config import settings
 
 logger = logging.getLogger(__name__)
@@ -76,6 +75,7 @@ async def create_job_html(
     drive_url: str = Form(...),
     csrf_token: str = Form(...),
     user: dict = Depends(get_current_user),
+    background_tasks: BackgroundTasks = None,
 ):
     cookie_token = request.cookies.get("csrf_token")
     if not cookie_token or cookie_token != csrf_token:
@@ -92,18 +92,23 @@ async def create_job_html(
 
     req_model = OptimizeRequest(drive_folder=folder_input, extensions=None)
     enqueued = False
+    enqueue_exception: Optional[Exception] = None
     # Only attempt to enqueue when a queue backend is configured
     if getattr(queue, "queue", None) is not None:
         try:
             enqueued = await queue.send_job(job_id, user["user_id"], req_model)
         except Exception as e:
+            # Do not assume not enqueued; avoid immediate inline execution
+            enqueue_exception = e
             logger.error(f"Failed to enqueue job {job_id}: {e}", exc_info=True)
 
-    # If no queue configured or enqueue failed, run inline in background with error visibility
-    if not enqueued:
+    # If no queue configured or enqueue definitively returned False (without exception), run inline via BackgroundTasks
+    should_run_inline = (getattr(queue, "queue", None) is None) or (not enqueued and enqueue_exception is None)
+    if should_run_inline:
         extensions = req_model.extensions if req_model.extensions is not None else []
-        task = asyncio.create_task(
-            process_optimization_job(
+        try:
+            background_tasks.add_task(
+                process_optimization_job,
                 db=db,
                 job_id=job_id,
                 user_id=user["user_id"],
@@ -114,13 +119,14 @@ async def create_job_html(
                 cleanup_originals=req_model.cleanup_originals,
                 max_retries=req_model.max_retries,
             )
-        )
-        def _log_task_result(t: asyncio.Task) -> None:
-            try:
-                t.result()
-            except Exception as e:
-                logger.error(f"Inline job {job_id} failed: {e}", exc_info=True)
-        task.add_done_callback(_log_task_result)
+        except Exception as e:
+            logger.error(f"Failed to schedule inline job {job_id}: {e}", exc_info=True)
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to schedule job")
+
+    # If enqueue raised an exception and we chose not to run inline to avoid duplicates,
+    # surface the failure so the user isn't shown success with no processing.
+    if enqueue_exception is not None and not should_run_inline:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Failed to enqueue job; please retry shortly")
 
     jobs_list, total = await list_jobs(db, user["user_id"], page=1, page_size=20, status=None)
 

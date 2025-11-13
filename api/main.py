@@ -168,6 +168,21 @@ app.add_middleware(RequestIDMiddleware)
 app.add_middleware(AuthenticationMiddleware)
 app.add_middleware(RateLimitMiddleware)
 
+# Shared helper to build GitHub OAuth redirect response and set state cookie
+def _build_github_oauth_response(request: Request, auth_url: str, state: str) -> RedirectResponse:
+    is_secure = settings.environment == "production" or request.url.scheme == "https"
+    response = RedirectResponse(url=auth_url)
+    response.set_cookie(
+        key=COOKIE_OAUTH_STATE,
+        value=state,
+        httponly=True,
+        secure=is_secure,
+        samesite="lax",
+        max_age=600,
+        path="/",
+    )
+    return response
+
 
 # Global exception handler
 @app.exception_handler(APIException)
@@ -200,26 +215,7 @@ async def github_auth_start(request: Request):
         else:
             redirect_uri = str(request.url.replace(path="/auth/github/callback", query=""))
         auth_url, state = auth.get_github_oauth_url(redirect_uri)
-        
-        # Determine if we're behind HTTPS (production)
-        is_secure = settings.environment == "production" or request.url.scheme == "https"
-        
-        # Create redirect response
-        response = RedirectResponse(url=auth_url)
-        
-        # Store state in secure cookie for CSRF protection
-        # State expires in 10 minutes (enough time for OAuth flow)
-        response.set_cookie(
-            key=COOKIE_OAUTH_STATE,
-            value=state,
-            httponly=True,
-            secure=is_secure,
-            samesite="lax",
-            max_age=600,  # 10 minutes
-            path="/"
-        )
-        
-        return response
+        return _build_github_oauth_response(request, auth_url, state)
     except Exception as e:
         app_logger.error(f"GitHub auth initiation failed: {e}")
         raise HTTPException(
@@ -234,6 +230,15 @@ async def github_auth_start_post(request: Request, csrf_token: str = Form(...)):
     # Validate CSRF token from form against cookie
     cookie_token = request.cookies.get("csrf_token")
     if not cookie_token or not secrets.compare_digest(cookie_token, csrf_token):
+        # Security log without sensitive token values
+        try:
+            client_host = request.client.host if request.client else "-"
+            ua = request.headers.get("user-agent", "-")
+            app_logger.warning(
+                f"CSRF validation failed: ip={client_host} method={request.method} path={request.url.path} ua={ua} reason=missing or mismatched CSRF token"
+            )
+        except Exception:
+            pass
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Invalid CSRF token",
@@ -245,24 +250,7 @@ async def github_auth_start_post(request: Request, csrf_token: str = Form(...)):
         else:
             redirect_uri = str(request.url.replace(path="/auth/github/callback", query=""))
         auth_url, state = auth.get_github_oauth_url(redirect_uri)
-
-        # Determine if we're behind HTTPS (production)
-        is_secure = settings.environment == "production" or request.url.scheme == "https"
-
-        # Create redirect response
-        response = RedirectResponse(url=auth_url)
-
-        # Store state in secure cookie for CSRF protection (10 minutes)
-        response.set_cookie(
-            key=COOKIE_OAUTH_STATE,
-            value=state,
-            httponly=True,
-            secure=is_secure,
-            samesite="lax",
-            max_age=600,
-            path="/",
-        )
-        return response
+        return _build_github_oauth_response(request, auth_url, state)
     except Exception as e:
         app_logger.error(f"GitHub auth initiation (POST) failed: {e}")
         raise HTTPException(

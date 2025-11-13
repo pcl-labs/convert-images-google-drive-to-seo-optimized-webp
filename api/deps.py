@@ -49,9 +49,9 @@ def get_current_user(request: Request) -> dict:
     return user
 
 
-def parse_job_progress(progress_str: str) -> Any:
+def parse_job_progress(progress_str: Optional[str]) -> Any:
     try:
-        data = json.loads(progress_str if progress_str is not None else "{}")
+        data = json.loads(progress_str or "{}")
     except json.JSONDecodeError:
         data = {}
     # Return a plain dict to avoid importing pydantic models here

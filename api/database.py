@@ -139,10 +139,19 @@ class Database:
                 conn = self._get_sqlite_connection()
                 try:
                     cur = conn.cursor()
-                    for params in params_list:
-                        cur.execute(query, params)
-                    conn.commit()
-                    return True
+                    try:
+                        # Begin explicit transaction so the whole batch is atomic
+                        conn.execute("BEGIN")
+                        for params in params_list:
+                            cur.execute(query, params)
+                        conn.commit()
+                        return True
+                    except Exception:
+                        # Roll back entire batch on any error
+                        try:
+                            conn.rollback()
+                        finally:
+                            raise
                 finally:
                     conn.close()
             return await asyncio.to_thread(_exec_many)
