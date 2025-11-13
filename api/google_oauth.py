@@ -36,7 +36,7 @@ def get_google_oauth_url(state: str, redirect_uri: str) -> str:
             "web": {
                 "client_id": settings.google_client_id,
                 "client_secret": settings.google_client_secret,
-                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "auth_uri": "https://accounts.google.com/o/oauth2/v2/auth",
                 "token_uri": "https://oauth2.googleapis.com/token",
                 "redirect_uris": [redirect_uri],
             }
@@ -46,7 +46,7 @@ def get_google_oauth_url(state: str, redirect_uri: str) -> str:
     flow.redirect_uri = redirect_uri
     auth_url, _ = flow.authorization_url(
         access_type="offline",
-        include_granted_scopes=True,
+        include_granted_scopes="true",
         state=state,
         prompt="consent",
     )

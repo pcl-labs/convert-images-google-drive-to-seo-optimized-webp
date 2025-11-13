@@ -56,6 +56,14 @@ from .middleware import (
     CORSMiddleware
 )
 from core.drive_utils import extract_folder_id_from_input
+from .deps import (
+    ensure_db,
+    ensure_services,
+    get_current_user,
+    parse_job_progress,
+    set_db_instance,
+    set_queue_producer,
+)
 
 # Set up logging
 logger = setup_logging(level="INFO" if not settings.debug else "DEBUG", use_json=True)
@@ -78,10 +86,14 @@ async def lifespan(app: FastAPI):
     # Initialize database
     db_instance = Database(db=settings.d1_database)
     app_logger.info("Database initialized")
+    # Expose to shared deps
+    set_db_instance(db_instance)
     
     # Initialize queue producer
     queue_producer = QueueProducer(queue=settings.queue, dlq=settings.dlq)
     app_logger.info("Queue producer initialized")
+    # Expose to shared deps
+    set_queue_producer(queue_producer)
     
     # Add authentication middleware after db is initialized
     # Note: This is a workaround - in production, middleware should be added before app creation
@@ -145,6 +157,10 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+# Mount HTML web routes
+from .web import router as web_router
+app.include_router(web_router)
+
 # Add middleware (order matters!)
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(CORSMiddleware)
@@ -167,16 +183,7 @@ async def api_exception_handler(request: Request, exc: APIException):
     )
 
 
-# Dependency to get current user
-async def get_current_user(request: Request) -> dict:
-    """Get current authenticated user from request state."""
-    user = getattr(request.state, "user", None)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication required"
-        )
-    return user
+# get_current_user is provided by deps
 
 
 # Authentication endpoints
@@ -221,6 +228,28 @@ async def github_auth_start(request: Request):
         )
 
 
+@app.get("/auth/logout", tags=["Authentication"])
+async def logout(request: Request):
+    """Sign out the current user by clearing the access token cookie."""
+    response = RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
+    
+    # Clear the access token cookie
+    response.delete_cookie(
+        key="access_token",
+        path="/",
+        samesite="lax"
+    )
+    
+    # Also clear CSRF token for good measure
+    response.delete_cookie(
+        key="csrf_token",
+        path="/",
+        samesite="lax"
+    )
+    
+    return response
+
+
 @app.get("/auth/github/callback", tags=["Authentication"])
 async def github_callback(code: str, state: str, request: Request):
     """Handle GitHub OAuth callback."""
@@ -253,10 +282,12 @@ async def github_callback(code: str, state: str, request: Request):
             # Calculate max_age from JWT expiration
             max_age_seconds = settings.jwt_expiration_hours * 3600
             
-            # Create response with user data only
-            response = JSONResponse(content={"user": user_response})
+            # Redirect to dashboard after successful login
+            response = RedirectResponse(url="/dashboard", status_code=status.HTTP_302_FOUND)
             
             # Set secure HTTP-only cookie
+            # Don't set domain at all - let browser use default (works for both localhost and 127.0.0.1)
+            # Setting domain=None explicitly can cause issues, so we omit it entirely
             response.set_cookie(
                 key="access_token",
                 value=jwt_token,
@@ -265,6 +296,7 @@ async def github_callback(code: str, state: str, request: Request):
                 samesite="lax",
                 max_age=max_age_seconds,
                 path="/"
+                # No domain parameter - browser will use default behavior
             )
             
             # Clear the OAuth state cookie after successful verification
@@ -376,7 +408,8 @@ async def google_auth_callback(code: str, state: str, request: Request, user: di
 
     try:
         await exchange_google_code(db, user["user_id"], code, redirect_uri)
-        response = JSONResponse(content={"linked": True})
+        # Redirect to dashboard after successful linking
+        response = RedirectResponse(url="/dashboard", status_code=status.HTTP_302_FOUND)
         response.delete_cookie(key=COOKIE_GOOGLE_OAUTH_STATE, path="/", samesite="lax")
         response.delete_cookie(key="google_redirect_uri", path="/", samesite="lax")
         return response
@@ -464,28 +497,11 @@ async def general_exception_handler(request: Request, exc: Exception):
     )
 
 # Utility functions
-def parse_job_progress(progress_str: str) -> JobProgress:
-    try:
-        data = json.loads(progress_str or "{}")
-    except json.JSONDecodeError:
-        data = {}
+def parse_job_progress_model(progress_str: str) -> JobProgress:
+    data = parse_job_progress(progress_str) or {}
     return JobProgress(**data)
 
-def ensure_db() -> Database:
-    if not db_instance:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Database not initialized"
-        )
-    return db_instance  # type: ignore
-
-def ensure_services() -> tuple[Database, QueueProducer]:
-    if not db_instance or not queue_producer:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Service not fully initialized"
-        )
-    return db_instance, queue_producer  # type: ignore
+# ensure_db and ensure_services provided by deps
 
 
 # Public endpoints
@@ -504,6 +520,9 @@ async def root():
             "docs": "/docs"
         }
     }
+
+
+## Debug endpoints removed before commit
 
 
 @app.get("/health", response_model=HealthResponse, tags=["Public"])
@@ -575,7 +594,7 @@ async def optimize_images(
         app_logger.info(f"Created job {job_id} for user {user['user_id']}")
         
         # Return job status
-        progress = parse_job_progress(job_data.get("progress", "{}"))
+        progress = parse_job_progress_model(job_data.get("progress", "{}"))
         return JobStatus(
             job_id=job_id,
             user_id=user["user_id"],
@@ -605,7 +624,7 @@ async def get_job_status(
         raise JobNotFoundError(job_id)
     
     # Parse progress data with error handling
-    progress = parse_job_progress(job.get("progress", "{}"))
+    progress = parse_job_progress_model(job.get("progress", "{}"))
     
     return JobStatus(
         job_id=job["job_id"],
@@ -645,7 +664,7 @@ async def list_user_jobs(
     job_statuses = []
     for job in jobs_list:
         # Parse progress data with error handling
-        progress = parse_job_progress(job.get("progress", "{}"))
+        progress = parse_job_progress_model(job.get("progress", "{}"))
         job_statuses.append(JobStatus(
             job_id=job["job_id"],
             user_id=job["user_id"],

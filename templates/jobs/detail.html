@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block content %}
+  <section>
+    <hgroup>
+      <h1>Job {{ job.job_id }}</h1>
+      <p>Status: <strong>{{ job.status }}</strong></p>
+    </hgroup>
+    {% if job.error %}
+      <article class="contrast">Error: {{ job.error }}</article>
+    {% endif %}
+    <p>Drive Folder: {{ job.drive_folder }}</p>
+    <div id="job-status"
+         hx-get="/api/v1/jobs/{{ job.job_id }}"
+         hx-trigger="every 2s"
+         hx-swap="none">
+      <!-- Polling job status via API; page will not change DOM, but network keeps job fresh if needed for further actions. -->
+    </div>
+    <p><a href="/dashboard">Back to Dashboard</a></p>
+  </section>
+{% endblock %}

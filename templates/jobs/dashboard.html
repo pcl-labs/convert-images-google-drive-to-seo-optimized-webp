@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block content %}
+  <section>
+    <hgroup>
+      <h1>Dashboard</h1>
+      <p>Paste a Google Drive folder URL to start optimization.</p>
+    </hgroup>
+    <form hx-post="/jobs" hx-target="#jobs-list" hx-swap="outerHTML">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+      <label>
+        Drive URL
+        <input type="url" name="drive_url" placeholder="https://drive.google.com/drive/folders/..." required />
+      </label>
+      <div>
+        <button type="submit">Create Job</button>
+        <a href="/auth/google/start" role="button" class="secondary">Link Google</a>
+      </div>
+    </form>
+  </section>
+
+  <section>
+    <h2>Recent Jobs</h2>
+    {% include "jobs/partials/jobs_list.html" %}
+  </section>
+{% endblock %}

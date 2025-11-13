@@ -29,10 +29,28 @@ _db_init_lock = threading.Lock()
 def get_database() -> Optional[Database]:
     """Get or create a shared Database instance using double-checked locking."""
     global _db_instance
-    if _db_instance is None and settings.d1_database:
+    if _db_instance is None:
         with _db_init_lock:
-            if _db_instance is None and settings.d1_database:
-                _db_instance = Database(db=settings.d1_database)
+            if _db_instance is None:
+                # Try to get from deps first (set by main.lifespan)
+                try:
+                    import api.deps as deps_module
+                    deps_db = getattr(deps_module, '_db_instance', None)
+                    if deps_db:
+                        _db_instance = deps_db
+                        logger.info("Middleware: Using database from deps")
+                except Exception as e:
+                    logger.debug(f"Middleware: Could not get database from deps: {e}")
+                
+                if _db_instance is None:
+                    if settings.d1_database:
+                        # Cloudflare D1 database
+                        _db_instance = Database(db=settings.d1_database)
+                        logger.info("Middleware: Created D1 database instance")
+                    else:
+                        # Local SQLite fallback
+                        _db_instance = Database()
+                        logger.info("Middleware: Created SQLite database instance")
     return _db_instance
 
 
@@ -62,11 +80,24 @@ class AuthenticationMiddleware(BaseHTTPMiddleware):
             "/docs",
             "/redoc",
             "/openapi.json",
+            "/login",
             "/auth/github/start",
             "/auth/github/callback",
+            "/auth/logout",
         ]
         
-        if any(request.url.path.startswith(path) for path in public_paths):
+        # Check if path is exactly in public_paths or starts with a public path (but not just "/")
+        is_public = False
+        for path in public_paths:
+            if path == "/":
+                if request.url.path == "/":
+                    is_public = True
+                    break
+            elif request.url.path.startswith(path):
+                is_public = True
+                break
+        
+        if is_public:
             return await call_next(request)
         
         user = None
@@ -99,6 +130,8 @@ class AuthenticationMiddleware(BaseHTTPMiddleware):
             
             # If still no token, return unauthorized
             if not token:
+                if settings.debug:
+                    logger.debug(f"Authentication failed - no token found for {request.url.path}")
                 return JSONResponse(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     content={"error": "Authentication required", "error_code": "AUTH_ERROR"}
@@ -113,6 +146,8 @@ class AuthenticationMiddleware(BaseHTTPMiddleware):
                     db = get_database()
                     if db:
                         user = await get_user_by_id(db, user_id)
+                        if not user:
+                            logger.warning(f"Token valid but user not found in database for user_id: {user_id}")
                     else:
                         # Only allow mocking in non-production environments
                         if settings.debug or settings.environment != "production":
@@ -124,10 +159,17 @@ class AuthenticationMiddleware(BaseHTTPMiddleware):
                                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                                 content={"error": "Authentication service unavailable", "error_code": "AUTH_ERROR"}
                             )
-            except AuthenticationError:
+            except AuthenticationError as e:
+                logger.debug(f"Token verification failed: {e}")
                 return JSONResponse(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     content={"error": "Invalid or expired token", "error_code": "AUTH_ERROR"}
+                )
+            except Exception as e:
+                logger.error(f"Unexpected error during token verification: {e}", exc_info=True)
+                return JSONResponse(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    content={"error": "Authentication error", "error_code": "AUTH_ERROR"}
                 )
         
         if not user:
