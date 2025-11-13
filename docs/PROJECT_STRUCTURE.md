@@ -17,7 +17,7 @@ This document describes the organization of the Google Drive Image Optimizer pro
 │   ├── middleware.py      # Request middleware (auth, rate limiting, etc.)
 │   ├── app_logging.py    # Structured logging
 │   └── cloudflare_queue.py # Cloudflare Queues integration
-│
+
 ├── core/                   # Core business logic (shared between CLI and API)
 │   ├── __init__.py
 │   ├── drive_utils.py      # Google Drive API utilities

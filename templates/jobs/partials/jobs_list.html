@@ -1,0 +1,22 @@
+<div id="jobs-list">
+  <table role="grid">
+    <thead>
+      <tr>
+        <th>Job ID</th>
+        <th>Status</th>
+        <th>Created</th>
+        <th>Error</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for j in jobs %}
+      <tr>
+        <td><a href="/jobs/{{ j.job_id }}">{{ j.job_id }}</a></td>
+        <td>{{ j.status }}</td>
+        <td>{{ j.created_at }}</td>
+        <td>{{ j.error or '' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
