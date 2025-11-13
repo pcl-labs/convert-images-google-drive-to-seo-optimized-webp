@@ -72,10 +72,10 @@ async def dashboard(request: Request, user: dict = Depends(get_current_user), pa
 @router.post("/jobs", response_class=HTMLResponse)
 async def create_job_html(
     request: Request,
+    background_tasks: BackgroundTasks,
     drive_url: str = Form(...),
     csrf_token: str = Form(...),
     user: dict = Depends(get_current_user),
-    background_tasks: BackgroundTasks = None,
 ):
     cookie_token = request.cookies.get("csrf_token")
     if not cookie_token or cookie_token != csrf_token:
