@@ -88,9 +88,13 @@ async def create_job_html(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Drive URL required")
 
     job_id = str(uuid.uuid4())
-    await create_job(db, job_id, user["user_id"], folder_input, None)
 
-    req_model = OptimizeRequest(drive_folder=folder_input, extensions=None)
+    # Build request model allowing defaults to apply (including default extensions whitelist)
+    req_model = OptimizeRequest(drive_folder=folder_input)
+    extensions_list = req_model.extensions if req_model.extensions is not None else []
+
+    # Persist job with concrete extensions list (not None)
+    await create_job(db, job_id, user["user_id"], folder_input, extensions_list)
     enqueued = False
     enqueue_exception: Optional[Exception] = None
     # Only attempt to enqueue when a queue backend is configured
@@ -105,7 +109,6 @@ async def create_job_html(
     # If no queue configured or enqueue definitively returned False (without exception), run inline via BackgroundTasks
     should_run_inline = (getattr(queue, "queue", None) is None) or (not enqueued and enqueue_exception is None)
     if should_run_inline:
-        extensions = req_model.extensions if req_model.extensions is not None else []
         try:
             background_tasks.add_task(
                 process_optimization_job,
@@ -113,7 +116,7 @@ async def create_job_html(
                 job_id=job_id,
                 user_id=user["user_id"],
                 drive_folder=folder_input,
-                extensions=extensions,
+                extensions=extensions_list,
                 overwrite=req_model.overwrite,
                 skip_existing=req_model.skip_existing,
                 cleanup_originals=req_model.cleanup_originals,

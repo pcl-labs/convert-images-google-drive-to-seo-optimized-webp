@@ -44,7 +44,7 @@ class Database:
                 logger.info(f"Initialized local SQLite database at {db_path}")
             except Exception as e:
                 logger.error(f"Failed to initialize local SQLite database: {e}", exc_info=True)
-                raise DatabaseError("Database not initialized")
+                raise DatabaseError("Database not initialized") from e
     
     def _apply_sqlite_migrations(self) -> None:
         """Apply migrations from migrations/schema.sql to local SQLite using a temp connection."""

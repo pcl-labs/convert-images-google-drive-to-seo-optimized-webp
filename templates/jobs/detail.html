@@ -10,10 +10,14 @@
     {% endif %}
     <p>Drive Folder: {{ job.drive_folder }}</p>
     <div id="job-status"
-         hx-get="/api/v1/jobs/{{ job.job_id }}"
-         hx-trigger="every 2s"
-         hx-swap="none">
-      <!-- Polling job status via API; page will not change DOM, but network keeps job fresh if needed for further actions. -->
+         data-status="{{ job.status }}"
+         hx-get="/jobs/{{ job.job_id }}"
+         hx-trigger="every 2s[document.querySelector('#job-status') && document.querySelector('#job-status').dataset.status === 'processing']"
+         hx-swap="innerHTML">
+      <p>Status: <strong>{{ job.status }}</strong></p>
+      {% if job.error %}
+        <article class="contrast">Error: {{ job.error }}</article>
+      {% endif %}
     </div>
     <p><a href="/dashboard">Back to Dashboard</a></p>
   </section>
