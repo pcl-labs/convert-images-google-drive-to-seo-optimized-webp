@@ -140,9 +140,11 @@ def list_files_in_folder(drive_folder_id, service=None, max_retries=3, retry_del
                 raise
         
         if response is None:
-            # Should not reach here, but handle gracefully
+            # Exhausted retries without a response; raise to signal explicit failure
             logger.error(f"Failed to get response for folder {drive_folder_id} after {max_retries} attempts")
-            break
+            raise RuntimeError(
+                f"Failed to list files for folder {drive_folder_id} after {max_retries} retries"
+            )
         
         # Process response
         for file in response.get('files', []):

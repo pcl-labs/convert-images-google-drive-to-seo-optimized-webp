@@ -33,7 +33,7 @@ database_id = "YOUR_DATABASE_ID_HERE"
 
 ```bash
 # Run the schema migration
-wrangler d1 execute image-optimizer-db --file=schema.sql
+wrangler d1 execute image-optimizer-db --file=migrations/schema.sql
 ```
 
 ### 3. Create Queues
@@ -107,7 +107,7 @@ For local development with Wrangler:
 wrangler dev
 
 # Run database migrations locally
-wrangler d1 execute image-optimizer-db --local --file=schema.sql
+wrangler d1 execute image-optimizer-db --local --file=migrations/schema.sql
 ```
 
 ## Testing
