@@ -2,7 +2,7 @@
 Production-ready FastAPI web application for Google Drive Image Optimizer.
 """
 
-from fastapi import FastAPI, Request, Depends, HTTPException, status
+from fastapi import FastAPI, Request, Depends, HTTPException, status, Form
 from fastapi.responses import JSONResponse, RedirectResponse
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -227,6 +227,48 @@ async def github_auth_start(request: Request):
             detail="GitHub OAuth not configured"
         )
 
+
+@app.post("/auth/github/start", tags=["Authentication"])
+async def github_auth_start_post(request: Request, csrf_token: str = Form(...)):
+    """Initiate GitHub OAuth flow via POST with CSRF protection."""
+    # Validate CSRF token from form against cookie
+    cookie_token = request.cookies.get("csrf_token")
+    if not cookie_token or not secrets.compare_digest(cookie_token, csrf_token):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid CSRF token",
+        )
+    try:
+        # Build redirect URI: use BASE_URL if set, otherwise use request URL
+        if settings.base_url:
+            redirect_uri = f"{settings.base_url.rstrip('/')}/auth/github/callback"
+        else:
+            redirect_uri = str(request.url.replace(path="/auth/github/callback", query=""))
+        auth_url, state = auth.get_github_oauth_url(redirect_uri)
+
+        # Determine if we're behind HTTPS (production)
+        is_secure = settings.environment == "production" or request.url.scheme == "https"
+
+        # Create redirect response
+        response = RedirectResponse(url=auth_url)
+
+        # Store state in secure cookie for CSRF protection (10 minutes)
+        response.set_cookie(
+            key=COOKIE_OAUTH_STATE,
+            value=state,
+            httponly=True,
+            secure=is_secure,
+            samesite="lax",
+            max_age=600,
+            path="/",
+        )
+        return response
+    except Exception as e:
+        app_logger.error(f"GitHub auth initiation (POST) failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="GitHub OAuth not configured",
+        )
 
 @app.get("/auth/logout", tags=["Authentication"])
 async def logout(request: Request):

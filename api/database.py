@@ -33,15 +33,13 @@ class Database:
         If Cloudflare D1 binding is unavailable, use a local SQLite database for development.
         """
         self.db = db or settings.d1_database
-        self._sqlite_conn: Optional[sqlite3.Connection] = None
+        self._sqlite_path: Optional[str] = None
         if not self.db:
             # Local fallback: initialize SQLite in repo directory
             db_path = os.environ.get("LOCAL_SQLITE_PATH", os.path.join(os.getcwd(), "dev.db"))
+            self._sqlite_path = db_path
             try:
-                self._sqlite_conn = sqlite3.connect(db_path, check_same_thread=False)
-                self._sqlite_conn.row_factory = sqlite3.Row
-                # Enable autocommit mode so each statement commits immediately
-                self._sqlite_conn.isolation_level = None
+                # Apply migrations once at startup using a temporary connection
                 self._apply_sqlite_migrations()
                 logger.info(f"Initialized local SQLite database at {db_path}")
             except Exception as e:
@@ -49,17 +47,31 @@ class Database:
                 raise DatabaseError("Database not initialized")
     
     def _apply_sqlite_migrations(self) -> None:
-        """Apply migrations from migrations/schema.sql to local SQLite."""
+        """Apply migrations from migrations/schema.sql to local SQLite using a temp connection."""
+        if not self._sqlite_path:
+            return
         try:
             schema_path = os.path.join(os.getcwd(), "migrations", "schema.sql")
             if os.path.exists(schema_path):
                 with open(schema_path, "r", encoding="utf-8") as f:
                     sql = f.read()
-                # Execute as a script
-                self._sqlite_conn.executescript(sql)  # type: ignore[arg-type]
-                self._sqlite_conn.commit()  # type: ignore[union-attr]
+                conn = sqlite3.connect(self._sqlite_path, timeout=30, isolation_level=None)
+                try:
+                    conn.row_factory = sqlite3.Row
+                    conn.executescript(sql)
+                    conn.commit()
+                finally:
+                    conn.close()
         except Exception as e:
             logger.warning(f"Applying migrations to SQLite failed: {e}")
+
+    def _get_sqlite_connection(self) -> sqlite3.Connection:
+        """Create a new short-lived SQLite connection for each operation."""
+        if not self._sqlite_path:
+            raise DatabaseError("Database not initialized")
+        conn = sqlite3.connect(self._sqlite_path, timeout=30, isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        return conn
     
     async def execute(self, query: str, params: tuple = ()) -> Any:
         """Execute a query and return the first row (as dict-like)."""
@@ -69,16 +81,17 @@ class Database:
             except Exception as e:
                 logger.error(f"Database query failed: {e}", exc_info=True)
                 raise DatabaseError(f"Database operation failed: {str(e)}")
-        if not self._sqlite_conn:
-            raise DatabaseError("Database not initialized")
         try:
             def _exec_one():
-                cur = self._sqlite_conn.execute(query, params)
-                row = cur.fetchone()
-                # With autocommit mode, no explicit commit needed, but ensure it's flushed
-                if not self._sqlite_conn.in_transaction:
-                    self._sqlite_conn.commit()
-                return row
+                conn = self._get_sqlite_connection()
+                try:
+                    cur = conn.execute(query, params)
+                    row = cur.fetchone()
+                    if not conn.in_transaction:
+                        conn.commit()
+                    return row
+                finally:
+                    conn.close()
             row = await asyncio.to_thread(_exec_one)
             return row
         except Exception as e:
@@ -94,13 +107,15 @@ class Database:
             except Exception as e:
                 logger.error(f"Database query failed: {e}", exc_info=True)
                 raise DatabaseError(f"Database operation failed: {str(e)}")
-        if not self._sqlite_conn:
-            raise DatabaseError("Database not initialized")
         try:
             def _exec_all():
-                cur = self._sqlite_conn.execute(query, params)
-                rows = cur.fetchall()
-                return rows
+                conn = self._get_sqlite_connection()
+                try:
+                    cur = conn.execute(query, params)
+                    rows = cur.fetchall()
+                    return rows
+                finally:
+                    conn.close()
             rows = await asyncio.to_thread(_exec_all)
             return rows
         except Exception as e:
@@ -119,15 +134,17 @@ class Database:
             except Exception as e:
                 logger.error(f"Database batch operation failed: {e}", exc_info=True)
                 raise DatabaseError(f"Database operation failed: {str(e)}")
-        if not self._sqlite_conn:
-            raise DatabaseError("Database not initialized")
         try:
             def _exec_many():
-                cur = self._sqlite_conn.cursor()
-                for params in params_list:
-                    cur.execute(query, params)
-                self._sqlite_conn.commit()
-                return True
+                conn = self._get_sqlite_connection()
+                try:
+                    cur = conn.cursor()
+                    for params in params_list:
+                        cur.execute(query, params)
+                    conn.commit()
+                    return True
+                finally:
+                    conn.close()
             return await asyncio.to_thread(_exec_many)
         except Exception as e:
             logger.error(f"SQLite batch operation failed: {e}", exc_info=True)

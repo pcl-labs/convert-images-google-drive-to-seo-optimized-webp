@@ -14,13 +14,9 @@ OUTPUT_DIR_PREFIX = "optimized_"
 ALT_TEXT_MAP = "alt_text_map.json"
 
 # Google API
-# Include identity scopes so that when include_granted_scopes merges with previously granted scopes,
-# the library's expected scopes match the granted set during token exchange.
+# Only Drive-specific scopes are required for this application.
 GOOGLE_DRIVE_SCOPES = [
     "https://www.googleapis.com/auth/drive",
-    "openid",
-    "https://www.googleapis.com/auth/userinfo.email",
-    "https://www.googleapis.com/auth/userinfo.profile",
 ]
 
 # Extensions (without leading dots)

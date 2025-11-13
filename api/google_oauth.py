@@ -46,7 +46,7 @@ def get_google_oauth_url(state: str, redirect_uri: str) -> str:
     flow.redirect_uri = redirect_uri
     auth_url, _ = flow.authorization_url(
         access_type="offline",
-        include_granted_scopes="true",
+        include_granted_scopes=True,
         state=state,
         prompt="consent",
     )
@@ -69,7 +69,7 @@ async def exchange_google_code(db: Database, user_id: str, code: str, redirect_u
             "web": {
                 "client_id": settings.google_client_id,
                 "client_secret": settings.google_client_secret,
-                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "auth_uri": "https://accounts.google.com/o/oauth2/v2/auth",
                 "token_uri": "https://oauth2.googleapis.com/token",
                 "redirect_uris": [redirect_uri],
             }

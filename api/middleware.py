@@ -165,11 +165,19 @@ class AuthenticationMiddleware(BaseHTTPMiddleware):
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     content={"error": "Invalid or expired token", "error_code": "AUTH_ERROR"}
                 )
-            except Exception as e:
-                logger.error(f"Unexpected error during token verification: {e}", exc_info=True)
+            except ValueError as e:
+                # Malformed token or payload
+                logger.debug(f"Token validation error: {e}")
                 return JSONResponse(
                     status_code=status.HTTP_401_UNAUTHORIZED,
-                    content={"error": "Authentication error", "error_code": "AUTH_ERROR"}
+                    content={"error": "Invalid token format", "error_code": "AUTH_ERROR"}
+                )
+            except Exception as e:
+                # Unexpected errors (database, network, etc.) should be 500, not 401
+                logger.error(f"Unexpected error during token verification: {e}", exc_info=True)
+                return JSONResponse(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    content={"error": "Authentication service error", "error_code": "AUTH_ERROR"}
                 )
         
         if not user:

@@ -246,7 +246,11 @@ async def authenticate_github(db: Database, code: str) -> tuple[str, Dict[str, A
         email = await get_github_primary_email(access_token)
     # As a last resort, synthesize a unique noreply email to satisfy NOT NULL UNIQUE
     if not email:
-        base = (username or "github").replace(" ", "").lower()
+        trimmed = (username or "").strip()
+        base_source = trimmed if trimmed else "github"
+        base = "".join(base_source.split()).lower()
+        if not base:
+            base = "github"
         email = f"{base}_{github_id}@users.noreply.github.com"
     
     # Get or create user

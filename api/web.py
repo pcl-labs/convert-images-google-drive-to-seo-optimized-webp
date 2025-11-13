@@ -5,6 +5,7 @@ from starlette.responses import Response
 from typing import Optional
 import os
 import uuid
+import logging
 
 from .models import OptimizeRequest, JobStatusEnum
 from .deps import ensure_services, ensure_db, parse_job_progress, get_current_user
@@ -12,6 +13,9 @@ from .auth import verify_jwt_token
 from .database import create_job, list_jobs
 from workers.consumer import process_optimization_job
 import asyncio
+from .config import settings
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -39,7 +43,9 @@ async def login_page(request: Request):
     csrf = _get_csrf_token(request)
     resp = templates.TemplateResponse("auth/login.html", {"request": request, "csrf_token": csrf})
     if not request.cookies.get("csrf_token"):
-        resp.set_cookie("csrf_token", csrf, httponly=True, samesite="lax")
+        # Set secure cookies only in production or when the request is over HTTPS
+        is_secure = settings.environment == "production" or request.url.scheme == "https"
+        resp.set_cookie("csrf_token", csrf, httponly=True, samesite="lax", secure=is_secure)
     return resp
 
 
@@ -58,7 +64,9 @@ async def dashboard(request: Request, user: dict = Depends(get_current_user), pa
     }
     resp = templates.TemplateResponse("jobs/dashboard.html", context)
     if not request.cookies.get("csrf_token"):
-        resp.set_cookie("csrf_token", csrf, httponly=True, samesite="lax")
+        # Set secure cookies only in production or when the request is over HTTPS
+        is_secure = settings.environment == "production" or request.url.scheme == "https"
+        resp.set_cookie("csrf_token", csrf, httponly=True, samesite="lax", secure=is_secure)
     return resp
 
 
@@ -83,27 +91,36 @@ async def create_job_html(
     await create_job(db, job_id, user["user_id"], folder_input, None)
 
     req_model = OptimizeRequest(drive_folder=folder_input, extensions=None)
-    enqueued = await queue.send_job(job_id, user["user_id"], req_model)
-    # If no queue configured in local dev, run inline in background so the job progresses
-    if not enqueued:
+    enqueued = False
+    # Only attempt to enqueue when a queue backend is configured
+    if getattr(queue, "queue", None) is not None:
         try:
-            # Use defaults similar to API model
-            asyncio.create_task(
-                process_optimization_job(
-                    db=db,
-                    job_id=job_id,
-                    user_id=user["user_id"],
-                    drive_folder=folder_input,
-                    extensions=req_model.extensions or [],
-                    overwrite=req_model.overwrite,
-                    skip_existing=req_model.skip_existing,
-                    cleanup_originals=req_model.cleanup_originals,
-                    max_retries=req_model.max_retries,
-                )
+            enqueued = await queue.send_job(job_id, user["user_id"], req_model)
+        except Exception as e:
+            logger.error(f"Failed to enqueue job {job_id}: {e}", exc_info=True)
+
+    # If no queue configured or enqueue failed, run inline in background with error visibility
+    if not enqueued:
+        extensions = req_model.extensions if req_model.extensions is not None else []
+        task = asyncio.create_task(
+            process_optimization_job(
+                db=db,
+                job_id=job_id,
+                user_id=user["user_id"],
+                drive_folder=folder_input,
+                extensions=extensions,
+                overwrite=req_model.overwrite,
+                skip_existing=req_model.skip_existing,
+                cleanup_originals=req_model.cleanup_originals,
+                max_retries=req_model.max_retries,
             )
-        except Exception:
-            # If inline kickoff fails, we still return the refreshed list; job will remain pending/failed
-            pass
+        )
+        def _log_task_result(t: asyncio.Task) -> None:
+            try:
+                t.result()
+            except Exception as e:
+                logger.error(f"Inline job {job_id} failed: {e}", exc_info=True)
+        task.add_done_callback(_log_task_result)
 
     jobs_list, total = await list_jobs(db, user["user_id"], page=1, page_size=20, status=None)
 

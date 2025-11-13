@@ -22,7 +22,7 @@ def set_queue_producer(q: QueueProducer) -> None:
 
 
 def ensure_db() -> Database:
-    if not _db_instance:
+    if _db_instance is None:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Database not initialized",
@@ -31,7 +31,7 @@ def ensure_db() -> Database:
 
 
 def ensure_services() -> Tuple[Database, QueueProducer]:
-    if not _db_instance or not _queue_producer:
+    if _db_instance is None or _queue_producer is None:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Service not fully initialized",
@@ -41,7 +41,7 @@ def ensure_services() -> Tuple[Database, QueueProducer]:
 
 def get_current_user(request: Request) -> dict:
     user = getattr(request.state, "user", None)
-    if not user:
+    if user is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Authentication required",
@@ -51,7 +51,7 @@ def get_current_user(request: Request) -> dict:
 
 def parse_job_progress(progress_str: str) -> Any:
     try:
-        data = json.loads(progress_str or "{}")
+        data = json.loads(progress_str if progress_str is not None else "{}")
     except json.JSONDecodeError:
         data = {}
     # Return a plain dict to avoid importing pydantic models here
