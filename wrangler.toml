@@ -1,0 +1,52 @@
+# Cloudflare Workers configuration
+
+name = "image-optimizer-api"
+main = "api/main.py"
+compatibility_date = "2024-01-01"
+
+# Python runtime
+[build]
+command = "pip install -r requirements.txt"
+
+# Environment variables
+[vars]
+ENVIRONMENT = "production"
+DEBUG = "false"
+
+# D1 Database binding
+[[d1_databases]]
+binding = "DB"
+database_name = "image-optimizer-db"
+database_id = ""  # Will be set after creating the database
+
+# Queue binding
+[[queues.producers]]
+queue = "image-optimization-queue"
+binding = "IMAGE_QUEUE"
+
+[[queues.consumers]]
+queue = "image-optimization-queue"
+max_batch_size = 10
+max_batch_timeout = 30
+max_retries = 3
+dead_letter_queue = "image-optimization-dlq"
+
+# Dead letter queue
+[[queues.producers]]
+queue = "image-optimization-dlq"
+binding = "DLQ"
+
+# Secrets (set via wrangler secret put)
+# GITHUB_CLIENT_ID
+# GITHUB_CLIENT_SECRET
+# JWT_SECRET_KEY
+
+# Routes (optional - for custom domain)
+# routes = [
+#   { pattern = "api.example.com/*", zone_name = "example.com" }
+# ]
+
+# Limits
+[limits]
+cpu_ms = 50000  # 50 seconds CPU time
+

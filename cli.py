@@ -68,7 +68,7 @@ def main():
             os.remove('token.json')
             print('Removed token.json for re-authentication.')
         # Trigger auth flow and exit
-        from drive_utils import get_drive_service
+        from core.drive_utils import get_drive_service
         get_drive_service()
         print('Re-authentication complete.')
         sys.exit(0)
@@ -89,7 +89,7 @@ def main():
         sys.exit(1)
 
     # Fetch folder name for SEO-friendly filenames
-    from drive_utils import get_folder_name
+    from core.drive_utils import get_folder_name
     folder_name = get_folder_name(folder_id) or "optimized"
     # Sanitize folder name for filenames
     import re as _re
@@ -100,7 +100,7 @@ def main():
     temp_dir = 'temp_download'
     extensions = [e.strip().lower() for e in args.ext.split(',')] if args.ext else ['jpg', 'jpeg', 'png', 'bmp', 'tiff']
     print(f"Downloading images from Drive folder {folder_id} to {temp_dir}...")
-    from drive_utils import download_images
+    from core.drive_utils import download_images
     downloaded, failed = download_images(
         folder_id,
         temp_dir,
@@ -113,7 +113,7 @@ def main():
         print(f"Failed to download: {failed}")
 
     # Optimize images
-    from image_processor import process_image
+    from core.image_processor import process_image
     os.makedirs(output_dir, exist_ok=True)
     optimized = []
     skipped = []
@@ -135,7 +135,7 @@ def main():
 
     # Automatically upload optimized images to the same Drive folder
     print(f"Uploading optimized images from {output_dir} to Drive folder {folder_id}...")
-    from drive_utils import upload_images, delete_images
+    from core.drive_utils import upload_images, delete_images
     uploaded, failed_uploads = upload_images(output_dir, folder_id, extensions=['.webp'], fail_log_path='failures.log', max_retries=3)
     print(f"\nUpload complete. {len(uploaded)} uploaded, {len(failed_uploads)} failed, {len(os.listdir(output_dir)) - len(uploaded)} skipped (already in Drive).\n")
 

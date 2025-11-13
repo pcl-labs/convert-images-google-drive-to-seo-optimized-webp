@@ -36,21 +36,86 @@ pip install -r requirements.txt
 
 ## Usage
 
-### Basic Usage
+### CLI Usage
+
+#### Basic Usage
 
 ```bash
-python main.py --drive-folder "YOUR_GOOGLE_DRIVE_FOLDER_ID_OR_LINK"
+python cli.py --drive-folder "YOUR_GOOGLE_DRIVE_FOLDER_ID_OR_LINK"
 ```
 
-### Advanced Options
+#### Advanced Options
 
 ```bash
-python main.py \
+python cli.py \
   --drive-folder "https://drive.google.com/drive/folders/YOUR_FOLDER_ID" \
   --ext "jpg,jpeg,png,bmp,tiff,heic" \
   --overwrite \
   --cleanup
 ```
+
+### Web API Usage (FastAPI)
+
+The project includes a FastAPI web server for programmatic access.
+
+#### Start the API Server
+
+```bash
+# Option 1: Using the run script
+python run_api.py
+
+# Option 2: Using uvicorn directly
+uvicorn app:app --reload --host 0.0.0.0 --port 8000
+```
+
+The API will be available at `http://localhost:8000`
+
+#### API Endpoints
+
+- `GET /` - API information
+- `GET /health` - Health check
+- `POST /api/optimize` - Start an optimization job
+- `GET /api/jobs/{job_id}` - Get job status
+- `GET /api/jobs` - List recent jobs
+- `GET /docs` - Interactive API documentation (Swagger UI)
+- `GET /redoc` - Alternative API documentation
+
+#### Example: Start an Optimization Job
+
+```bash
+curl -X POST "http://localhost:8000/api/optimize" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "drive_folder": "YOUR_GOOGLE_DRIVE_FOLDER_ID_OR_LINK",
+    "extensions": ["jpg", "jpeg", "png"],
+    "cleanup_originals": true
+  }'
+```
+
+Response:
+```json
+{
+  "job_id": "uuid-here",
+  "status": "pending",
+  "progress": {
+    "stage": "initializing",
+    "downloaded": 0,
+    "optimized": 0,
+    "uploaded": 0
+  },
+  "created_at": "2025-01-XX..."
+}
+```
+
+#### Example: Check Job Status
+
+```bash
+curl "http://localhost:8000/api/jobs/{job_id}"
+```
+
+#### Interactive API Documentation
+
+Visit `http://localhost:8000/docs` in your browser for interactive API testing.
 
 ### Command Line Arguments
 
@@ -79,11 +144,15 @@ python main.py \
 ## File Structure
 
 ```
-├── main.py              # Main CLI entry point
-├── drive_utils.py       # Google Drive API utilities
-├── image_processor.py   # Image processing and optimization
+├── cli.py               # CLI entry point
+├── api/                 # FastAPI web application
+│   └── main.py         # API entry point
+├── core/                # Core business logic
+│   ├── drive_utils.py  # Google Drive API utilities
+│   └── image_processor.py # Image processing
+├── run_api.py           # Script to run the API server
 ├── requirements.txt     # Python dependencies
-├── .gitignore          # Git ignore rules
+├── docs/                # Documentation
 └── README.md           # This file
 ```
 
@@ -114,6 +183,9 @@ python main.py \
 - `Pillow`: Image processing
 - `pillow-heif`: HEIC image support
 - `tqdm`: Progress bars
+- `fastapi`: Web API framework
+- `uvicorn`: ASGI server for FastAPI
+- `python-multipart`: Form data support
 
 ## License
 
