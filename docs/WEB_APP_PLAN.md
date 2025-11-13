@@ -64,7 +64,14 @@ Note: If you prefer, keep everything in `api/` to avoid a new top-level module. 
 - POST `/jobs` → Enqueue job(s), returns HTMX snippet to update list/table
 - GET `/jobs` → Paginated list (HTML page)
 - GET `/jobs/{id}` → Detail page; HTMX fragment updates for live status
-- Optional later: GET `/settings`, POST `/auth/logout` (client-side cookie clear if needed; current flow uses JWT cookie)
+- GET `/settings` → Settings home with Linked Accounts section
+- GET `/settings/accounts` → Linked Accounts management UI
+- Provider linking (Google now, YouTube later):
+  - GET `/auth/google/start` → Begin Google OAuth (link account)
+  - GET `/auth/google/callback` → Store tokens, upsert linked account
+  - GET `/auth/youtube/start` → Placeholder (future)
+  - GET `/auth/youtube/callback` → Placeholder (future)
+- Optional: POST `/auth/logout` (mainly for dev; production relies on JWT expiry)
 
 HTMX patterns:
 - `hx-post` for form submission, `hx-target` pointing to the list container
@@ -78,14 +85,44 @@ Existing tables for users, api_keys, jobs, google_tokens appear to be in place. 
 - users (existing via GitHub OAuth)
   - id (user_id), github_id, email, role (optional)
 - sessions (optional server-side sessions; current design uses JWT cookie)
-- jobs (existing)
-  - id, user_id, source_url, status, output_refs (json), idempotency_key, options (json), timestamps
+- jobs (existing; extend for multiple job types)
+  - id, user_id, job_type (`optimize_images`, future: `transcribe_video`), source_url, status, output_refs (json), idempotency_key, options (json), timestamps
 - job_events (recommended)
   - id, job_id, type, message, data (json), created_at
 - api_tokens (existing)
   - rotation and scopes later
 - google_tokens (existing)
   - used if/when enabling Google account linking
+- linked_accounts (new, generic provider linking)
+  - id (uuid), user_id (fk → users.user_id)
+  - provider (`google_drive`, later `youtube`, ...)
+  - provider_user_id (text; e.g., Google sub or YouTube channel/user id)
+  - status (`linked|pending|error|revoked`)
+  - scopes (text/json), metadata (json)
+  - created_at, updated_at
+  - unique (user_id, provider)
+
+## Auth and DB naming alignment
+
+Existing schema (from migrations/schema.sql):
+
+- users
+  - user_id (PK), github_id (UNIQUE), email (NOT NULL UNIQUE), created_at, updated_at
+- api_keys
+  - key_hash (PK), user_id (FK → users.user_id), created_at, last_used, salt, iterations, lookup_hash
+- jobs
+  - job_id (PK), user_id (FK), status CHECK in (`pending`,`processing`,`completed`,`failed`,`cancelled`), progress (JSON string), drive_folder, extensions (JSON array string), created_at, completed_at, error
+- google_tokens
+  - user_id (PK, FK), access_token, refresh_token, expiry, token_type, scopes, created_at, updated_at
+
+Planned additions (non-breaking):
+
+- linked_accounts
+  - id (uuid PK), user_id (FK), provider, provider_user_id, status, scopes, metadata, created_at, updated_at, UNIQUE(user_id, provider)
+- jobs (new columns)
+  - job_type (TEXT), source_url (TEXT), idempotency_key (TEXT), options (TEXT), output_refs (TEXT JSON)
+- job_events
+  - id (uuid PK), job_id (FK), type, message, data (JSON), created_at
 
 ## Security
 
@@ -106,7 +143,7 @@ Existing tables for users, api_keys, jobs, google_tokens appear to be in place. 
 
 - `POST /jobs`:
   - Validate/normalize Drive URL(s)
-  - Create job(s) with `queued` status and idempotency key
+  - Create job(s) with `pending` status and idempotency key
   - Publish to Cloudflare Queue
 - Worker:
   - Update `job_events` and `jobs.status` as work progresses
@@ -141,6 +178,13 @@ Existing tables for users, api_keys, jobs, google_tokens appear to be in place. 
 - GitHub OAuth endpoints already implemented in `api/main.py`
 - JWT verification in `api/middleware.py` (plus API Key support)
 - Google OAuth utilities exist (`api/google_oauth.py`) for optional “Link Google Drive” feature later; add routes when needed
+
+## Extensibility: YouTube (future)
+
+- Add YouTube as a provider in `linked_accounts` with placeholder routes now (`/auth/youtube/start|callback`).
+- When implementing, store provider tokens/metadata analogous to `google_tokens` (separate table if needed).
+- Introduce new `job_type='transcribe_video'` with its own enqueue path and worker handler.
+- Reuse dashboard and jobs list UI with filters by `job_type`.
 
 ## Incremental Tasks (Execution Roadmap)
 
@@ -178,3 +222,32 @@ Existing tables for users, api_keys, jobs, google_tokens appear to be in place. 
 ---
 
 Last updated: plan authored to align with existing GitHub OAuth and middleware; designed to scale into a richer CMS without changing core authentication.
+
+## Option A Implementation (separate PR)
+
+Scope: Add a server-rendered web UI with Jinja2 + HTMX using existing GitHub OAuth and middleware.
+
+Deliverables:
+- **Routes**
+  - GET `/login` (links to `/auth/github/start`)
+  - GET `/` dashboard (auth-gated)
+  - POST `/jobs` (create/enqueue; HTMX partial response)
+  - GET `/jobs`, GET `/jobs/{id}` (detail + status partial)
+  - GET `/settings`, GET `/settings/accounts` (linked accounts UI)
+  - GET `/auth/google/start`, GET `/auth/google/callback` (link Google)
+- **Templates**
+  - base.html, components/{form,table,alert}.html
+  - auth/login.html
+  - jobs/{dashboard,list,detail}.html
+  - jobs/partials/{row,status_badge}.html
+  - errors/{404,500}.html
+- **Security**
+  - CSRF token generation/validation for HTML posts
+  - Idempotency for `POST /jobs` via header
+- **Dev toggles**
+  - Local worker stub to simulate queue processing
+  - Env-driven toggle to use in-memory queue in dev
+
+Non-goals in this PR:
+- YouTube provider OAuth and transcription pipeline (placeholders only)
+- Admin/RBAC UI (follow-up PR)
