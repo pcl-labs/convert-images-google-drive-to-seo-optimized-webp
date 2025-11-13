@@ -3,6 +3,7 @@ Database utilities for Cloudflare D1.
 """
 
 import json
+import hashlib
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 import logging
@@ -96,10 +97,10 @@ async def get_user_by_github_id(db: Database, github_id: str) -> Optional[Dict[s
 
 
 # API Key operations
-async def create_api_key(db: Database, user_id: str, key_hash: str, salt: str, iterations: int) -> None:
-    """Create an API key with PBKDF2 hash, salt, and iterations."""
-    query = "INSERT INTO api_keys (key_hash, user_id, salt, iterations) VALUES (?, ?, ?, ?)"
-    await db.execute(query, (key_hash, user_id, salt, iterations))
+async def create_api_key(db: Database, user_id: str, key_hash: str, salt: str, iterations: int, lookup_hash: str) -> None:
+    """Create an API key with PBKDF2 hash, salt, iterations, and lookup hash."""
+    query = "INSERT INTO api_keys (key_hash, user_id, salt, iterations, lookup_hash) VALUES (?, ?, ?, ?, ?)"
+    await db.execute(query, (key_hash, user_id, salt, iterations, lookup_hash))
 
 
 async def get_api_key_record_by_hash(db: Database, key_hash: str) -> Optional[Dict[str, Any]]:
@@ -149,11 +150,23 @@ async def get_all_api_key_records(db: Database) -> List[Dict[str, Any]]:
     For production at scale, consider adding a key_id prefix to API keys.
     """
     query = """
-        SELECT u.*, ak.key_hash, ak.salt, ak.iterations, ak.user_id as api_key_user_id
+        SELECT u.*, ak.key_hash, ak.salt, ak.iterations, ak.lookup_hash, ak.user_id as api_key_user_id
         FROM users u
         JOIN api_keys ak ON u.user_id = ak.user_id
     """
     results = await db.execute_all(query, ())
+    return [dict(row) for row in results] if results else []
+
+
+async def get_api_key_candidates_by_lookup_hash(db: Database, lookup_hash: str) -> List[Dict[str, Any]]:
+    """Get candidate API key records matching a lookup hash (prefix) with user info."""
+    query = """
+        SELECT u.*, ak.key_hash, ak.salt, ak.iterations, ak.user_id as api_key_user_id
+        FROM users u
+        JOIN api_keys ak ON u.user_id = ak.user_id
+        WHERE ak.lookup_hash = ?
+    """
+    results = await db.execute_all(query, (lookup_hash,))
     return [dict(row) for row in results] if results else []
 
 
@@ -163,11 +176,10 @@ async def get_user_by_api_key(db: Database, api_key: str) -> Optional[Dict[str, 
     Returns the API key record with user information for verification.
     Supports both PBKDF2 and legacy SHA256 keys.
     
-    Note: This function returns candidate records. Actual verification
-    should be done in the calling code (auth.py) using verify_api_key.
+    Note: For PBKDF2 keys, this function returns all candidate records
+    for the caller to verify using verify_api_key in auth.py.
     """
     # First, try legacy SHA256 lookup for backward compatibility
-    import hashlib
     legacy_hash = hashlib.sha256(api_key.encode()).hexdigest()
     legacy_record = await get_api_key_record_by_hash(db, legacy_hash)
     if legacy_record:
@@ -185,9 +197,8 @@ async def get_user_by_api_key(db: Database, api_key: str) -> Optional[Dict[str, 
         if key_record.get('salt') is not None and key_record.get('iterations') is not None
     ]
     
-    # Return the first record (caller will verify)
-    # In practice, we'll verify in auth.py, but return here for structure
-    return pbkdf2_records[0] if pbkdf2_records else None
+    # Return structure with all candidates for caller to verify
+    return {'candidates': pbkdf2_records, 'api_key': api_key} if pbkdf2_records else None
 
 
 # Google OAuth token operations

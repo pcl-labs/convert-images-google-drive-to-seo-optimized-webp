@@ -9,13 +9,18 @@ import pytest
 @pytest.fixture(scope="session", autouse=True)
 def setup_test_env():
     """Set up test environment variables before any tests run."""
-    # Set JWT_SECRET_KEY for tests if not already set
-    if "JWT_SECRET_KEY" not in os.environ:
+    # Capture original value before making any changes
+    original = os.environ.get("JWT_SECRET_KEY")
+    
+    # Set JWT_SECRET_KEY for tests only if it wasn't already set
+    if original is None:
         os.environ["JWT_SECRET_KEY"] = "test-jwt-secret-key-for-testing-only-not-for-production"
     
     yield
     
-    # Cleanup: remove test env var if we set it
-    if os.environ.get("JWT_SECRET_KEY") == "test-jwt-secret-key-for-testing-only-not-for-production":
-        del os.environ["JWT_SECRET_KEY"]
+    # Restore original state: delete if it was None, otherwise restore original value
+    if original is None:
+        os.environ.pop("JWT_SECRET_KEY", None)
+    else:
+        os.environ["JWT_SECRET_KEY"] = original
 

@@ -42,7 +42,7 @@ class JSONFormatter(logging.Formatter):
             'name', 'msg', 'args', 'levelname', 'levelno', 'pathname', 'filename',
             'module', 'exc_info', 'exc_text', 'stack_info', 'lineno', 'funcName',
             'created', 'msecs', 'relativeCreated', 'thread', 'threadName',
-            'processName', 'process'
+            'processName', 'process', 'message', 'taskName'
         }
         for key, value in record.__dict__.items():
             if key not in standard_attrs:

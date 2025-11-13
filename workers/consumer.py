@@ -34,7 +34,7 @@ from api.database import Database, update_job_status
 from api.app_logging import setup_logging, get_logger
 from core.filename_utils import FILENAME_ID_SEPARATOR, sanitize_folder_name, parse_download_name, make_output_dir_name
 from core.constants import TEMP_DIR, FAIL_LOG_PATH
-from core.extension_utils import normalize_extensions
+from core.extension_utils import normalize_extensions, detect_extensions_in_dir
 from api.google_oauth import build_drive_service_for_user
 
 # Set up logging
@@ -238,11 +238,18 @@ async def process_optimization_job(
             processing_failed=len(failed_processing),
         ))
         
+        # Detect actual extensions in output directory, with fallback defaults
+        upload_extensions = detect_extensions_in_dir(output_dir)
+        app_logger.info(
+            f"Detected extensions for upload: {upload_extensions}",
+            extra={"output_dir": output_dir, "extensions": upload_extensions}
+        )
+        
         uploaded, failed_uploads = await asyncio.to_thread(
             upload_images,
             output_dir,
             folder_id,
-            ['.webp'],
+            upload_extensions,
             FAIL_LOG_PATH,
             max_retries,
             service

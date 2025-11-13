@@ -10,6 +10,7 @@ import traceback
 from core.drive_utils import extract_folder_id_from_input, is_valid_drive_file_id
 from core.filename_utils import sanitize_folder_name, parse_download_name, FILENAME_ID_SEPARATOR, make_output_dir_name
 from core.constants import TEMP_DIR, FAIL_LOG_PATH, DEFAULT_EXTENSIONS
+from core.extension_utils import detect_extensions_in_dir
 
 def load_cache(cache_path):
     if os.path.exists(cache_path):
@@ -259,7 +260,7 @@ def main():
             temp_dir,
             extensions=extensions,
             fail_log_path=FAIL_LOG_PATH,
-            max_retries=3
+            max_retries=args.max_retries
         )
         print(f"Downloaded: {downloaded}")
         if failed:
@@ -285,9 +286,9 @@ def main():
             out_path, status = process_image(
                 input_path,
                 output_dir,
-                overwrite=False,
-                skip_existing=True,
-                versioned=False,
+                overwrite=args.overwrite,
+                skip_existing=args.skip_existing,
+                versioned=args.versioned,
                 seo_prefix=folder_name_clean
             )
             # Only handle out_path/status on success
@@ -311,7 +312,10 @@ def main():
     uploaded = []
     failed_uploads = []
     try:
-        uploaded, failed_uploads = upload_images(output_dir, folder_id, extensions=['.webp'], fail_log_path=FAIL_LOG_PATH, max_retries=3)
+        # Detect actual extensions in output directory, with fallback defaults
+        upload_extensions = detect_extensions_in_dir(output_dir)
+        print(f"Detected extensions for upload: {upload_extensions}")
+        uploaded, failed_uploads = upload_images(output_dir, folder_id, extensions=upload_extensions, fail_log_path=FAIL_LOG_PATH, max_retries=args.max_retries)
         print(f"\nUpload complete. {len(uploaded)} uploaded, {len(failed_uploads)} failed, {len(os.listdir(output_dir)) - len(uploaded)} skipped (already in Drive).\n")
     except Exception as e:
         error_msg = f"Failed to upload images: {type(e).__name__}: {e}"

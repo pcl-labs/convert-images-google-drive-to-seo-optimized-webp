@@ -4,6 +4,8 @@ Google Drive upload, download, and delete utilities.
 
 import os
 import io
+import json
+import time
 import logging
 import re
 from .extension_utils import normalize_extensions
@@ -30,31 +32,126 @@ def get_drive_service():
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
+            # Validate credentials.json exists and is readable before attempting OAuth flow
+            try:
+                if not os.path.exists("credentials.json"):
+                    raise FileNotFoundError("credentials.json not found")
+                if not os.access("credentials.json", os.R_OK):
+                    raise PermissionError("credentials.json is not readable")
+                # Try to parse JSON to catch malformed files early
+                with open("credentials.json", "r") as f:
+                    json.load(f)
+            except FileNotFoundError:
+                error_msg = "credentials.json not found or unreadable — please provide OAuth client secrets"
+                logger.error(error_msg)
+                raise FileNotFoundError(error_msg)
+            except (json.JSONDecodeError, PermissionError) as e:
+                error_msg = f"credentials.json is malformed or unreadable — please provide valid OAuth client secrets: {e}"
+                logger.error(error_msg)
+                raise ValueError(error_msg)
+            except Exception as e:
+                error_msg = f"Error reading credentials.json — please provide valid OAuth client secrets: {e}"
+                logger.error(error_msg)
+                raise RuntimeError(error_msg)
+            
             flow = InstalledAppFlow.from_client_secrets_file(
                 "credentials.json", SCOPES
             )
             creds = flow.run_local_server(port=0)
+        # Only write token.json after successful authentication
         with open("token.json", "w") as token:
             token.write(creds.to_json())
     return build("drive", "v3", credentials=creds)
 
-def list_files_in_folder(drive_folder_id, service=None):
-    """Return a set of filenames in the given Google Drive folder."""
+def list_files_in_folder(drive_folder_id, service=None, max_retries=3, retry_delay=1):
+    """Return a set of filenames in the given Google Drive folder.
+    
+    Args:
+        drive_folder_id: Google Drive folder ID
+        service: Optional Drive service instance
+        max_retries: Maximum number of retry attempts for transient errors (default: 3)
+        retry_delay: Initial delay in seconds for exponential backoff (default: 1)
+    
+    Returns:
+        Set of filenames in the folder
+    
+    Raises:
+        HttpError: For non-retriable API errors
+        Exception: For other unexpected errors
+    """
     service = service or get_drive_service()
     page_token = None
     filenames = set()
+    
     while True:
-        response = service.files().list(
-            q=f"'{drive_folder_id}' in parents and trashed = false",
-            spaces='drive',
-            fields='nextPageToken, files(name)',
-            pageToken=page_token
-        ).execute()
+        attempt = 0
+        response = None
+        
+        while attempt < max_retries:
+            try:
+                response = service.files().list(
+                    q=f"'{drive_folder_id}' in parents and trashed = false",
+                    spaces='drive',
+                    fields='nextPageToken, files(name)',
+                    pageToken=page_token
+                ).execute()
+                break  # Success, exit retry loop
+            except HttpError as error:
+                attempt += 1
+                error_code = error.resp.status if hasattr(error, 'resp') else None
+                
+                # Check if error is retriable (5xx server errors, rate limits)
+                is_retriable = (
+                    error_code and (
+                        error_code >= 500 or  # Server errors
+                        error_code == 429 or  # Rate limit
+                        error_code == 408     # Request timeout
+                    )
+                )
+                
+                if not is_retriable or attempt >= max_retries:
+                    # Non-retriable error or max retries reached
+                    logger.error(
+                        f"Failed to list files in folder {drive_folder_id} "
+                        f"(page_token: {page_token}, attempt: {attempt}/{max_retries}): {error}"
+                    )
+                    if not is_retriable:
+                        # Exit cleanly on non-retriable errors
+                        raise
+                    else:
+                        # Max retries reached, re-raise the last error
+                        raise
+                
+                # Retry with exponential backoff
+                delay = retry_delay * (2 ** (attempt - 1))
+                logger.warning(
+                    f"Transient error listing files in folder {drive_folder_id} "
+                    f"(page_token: {page_token}, attempt: {attempt}/{max_retries}): {error}. "
+                    f"Retrying in {delay}s..."
+                )
+                time.sleep(delay)
+                
+            except Exception as e:
+                # Unexpected error - log and re-raise
+                logger.error(
+                    f"Unexpected error listing files in folder {drive_folder_id} "
+                    f"(page_token: {page_token}, attempt: {attempt}): {e}"
+                )
+                raise
+        
+        if response is None:
+            # Should not reach here, but handle gracefully
+            logger.error(f"Failed to get response for folder {drive_folder_id} after {max_retries} attempts")
+            break
+        
+        # Process response
         for file in response.get('files', []):
             filenames.add(file['name'])
+        
         page_token = response.get('nextPageToken', None)
         if page_token is None:
             break
+    
     return filenames
 
 def upload_images(local_folder, drive_folder_id, extensions=DEFAULT_EXTENSIONS, fail_log_path=None, max_retries=3, service=None):

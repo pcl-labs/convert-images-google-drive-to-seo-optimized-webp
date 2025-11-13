@@ -60,13 +60,22 @@ def extract_alt_text(filename):
 def update_alt_text_map(webp_filename, alt_text, map_path='alt_text_map.json'):
     """Update alt_text_map.json with new alt text."""
     if os.path.exists(map_path):
-        with open(map_path, 'r') as f:
-            alt_map = json.load(f)
+        try:
+            with open(map_path, 'r') as f:
+                alt_map = json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning(f"Failed to read/parse {map_path}: {e}")
+            alt_map = {}
     else:
         alt_map = {}
     alt_map[webp_filename] = alt_text
-    with open(map_path, 'w') as f:
-        json.dump(alt_map, f, indent=2)
+    tmp_path = f"{map_path}.tmp"
+    try:
+        with open(tmp_path, 'w') as f:
+            json.dump(alt_map, f, indent=2)
+        os.replace(tmp_path, map_path)
+    except OSError as e:
+        logger.error(f"Failed to write {map_path}: {e}")
 
 
 def process_image(input_path, output_dir, overwrite=False, skip_existing=False, versioned=False, max_size_kb=DEFAULT_MAX_SIZE_KB, alt_text_map_path='alt_text_map.json', seo_prefix=None):

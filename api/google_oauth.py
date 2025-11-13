@@ -4,6 +4,8 @@ per-user Google Drive clients from stored tokens.
 """
 from typing import Optional
 from datetime import timezone
+import asyncio
+import json
 
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
@@ -75,7 +77,10 @@ async def exchange_google_code(db: Database, user_id: str, code: str, redirect_u
         scopes=GOOGLE_DRIVE_SCOPES,
     )
     flow.redirect_uri = redirect_uri
-    flow.fetch_token(code=code)
+    try:
+        await asyncio.to_thread(flow.fetch_token, code=code)
+    except Exception:
+        raise
     creds: Credentials = flow.credentials
     expiry_iso = None
     if creds.expiry:
@@ -100,18 +105,39 @@ async def build_drive_service_for_user(db: Database, user_id: str):
     if not token_row:
         raise ValueError("Google account not linked for this user")
 
+    raw_scopes = token_row.get("scopes")
+    parsed_scopes = None
+    if isinstance(raw_scopes, list):
+        parsed_scopes = [str(s) for s in raw_scopes]
+    elif isinstance(raw_scopes, str):
+        s = raw_scopes.strip()
+        if s:
+            try:
+                maybe = json.loads(s)
+                if isinstance(maybe, list):
+                    parsed_scopes = [str(x) for x in maybe]
+                else:
+                    parsed_scopes = [tok for tok in s.replace(",", " ").split() if tok]
+            except json.JSONDecodeError:
+                parsed_scopes = [tok for tok in s.replace(",", " ").split() if tok]
+    if not parsed_scopes:
+        parsed_scopes = list(GOOGLE_DRIVE_SCOPES)
+
     creds = Credentials(
         token=token_row.get("access_token"),
         refresh_token=token_row.get("refresh_token"),
         token_uri="https://oauth2.googleapis.com/token",
         client_id=settings.google_client_id,
         client_secret=settings.google_client_secret,
-        scopes=GOOGLE_DRIVE_SCOPES,
+        scopes=parsed_scopes,
     )
 
     if not creds.valid:
         if creds.expired and creds.refresh_token:
-            creds.refresh(Request())
+            try:
+                await asyncio.to_thread(creds.refresh, Request())
+            except Exception:
+                raise
             expiry_iso = None
             if creds.expiry:
                 expiry_iso = creds.expiry.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")

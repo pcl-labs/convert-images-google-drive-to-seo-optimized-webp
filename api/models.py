@@ -2,7 +2,7 @@
 Pydantic models for request/response validation.
 """
 
-from pydantic import BaseModel, Field, field_validator, ConfigDict
+from pydantic import BaseModel, Field, field_validator, model_validator, ConfigDict
 from typing import Optional, List, Dict, Any
 from enum import Enum
 from datetime import datetime, timezone
@@ -33,11 +33,11 @@ class OptimizeRequest(BaseModel):
     )
     overwrite: bool = Field(
         default=False,
-        description="Overwrite existing optimized files"
+        description="If True, will overwrite existing files; mutually exclusive with skip_existing"
     )
     skip_existing: bool = Field(
         default=True,
-        description="Skip files that are already optimized"
+        description="If True, will skip existing optimized files; mutually exclusive with overwrite"
     )
     cleanup_originals: bool = Field(
         default=False,
@@ -54,17 +54,28 @@ class OptimizeRequest(BaseModel):
     @classmethod
     def validate_extensions(cls, v):
         """Validate image extensions."""
-        allowed = {'jpg', 'jpeg', 'png', 'bmp', 'tiff', 'heic', 'webp'}
+        allowed = {'jpg', 'jpeg', 'png', 'bmp', 'tiff', 'tif', 'heic', 'webp'}
         if not v:
             return ["jpg", "jpeg", "png", "bmp", "tiff", "heic", "webp"]
         validated = []
+        invalid = []
         for ext in v:
-            ext_clean = ext.lower().lstrip('.')
+            ext_clean = str(ext).lower().lstrip('.')
             if ext_clean in allowed:
                 validated.append(ext_clean)
-        if not validated:
-            raise ValueError("At least one valid image extension required")
+            else:
+                invalid.append(ext)
+        if invalid:
+            raise ValueError(
+                f"Invalid extensions: {invalid}. Allowed: {sorted(allowed)}"
+            )
         return validated
+
+    @model_validator(mode="after")
+    def validate_flags(self):
+        if self.overwrite and self.skip_existing:
+            raise ValueError("'overwrite' and 'skip_existing' cannot both be True")
+        return self
 
 
 class JobProgress(BaseModel):

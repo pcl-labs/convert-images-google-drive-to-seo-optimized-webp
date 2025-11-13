@@ -48,10 +48,15 @@ def test_jobs_endpoint_requires_auth(client):
 
 def test_github_auth_redirect(client):
     """Test GitHub OAuth redirect."""
-    with patch('api.auth.get_github_oauth_url', return_value=("https://github.com/login/oauth/authorize?test=1", "test_state_token")):
+    mock_url = "https://github.com/login/oauth/authorize?test=1"
+    with patch('api.auth.get_github_oauth_url', return_value=(mock_url, "test_state_token")) as mock_get_url:
         response = client.get("/auth/github/start", follow_redirects=False)
-        # Should redirect (302 or 307) or return error (500) if not configured
-        assert response.status_code in [302, 307, 500]
+        # Should redirect (302 or 307)
+        assert response.status_code in [302, 307]
+        # Verify Location header matches mocked URL
+        assert response.headers['Location'] == mock_url
+        # Verify the mock was called exactly once
+        mock_get_url.assert_called_once()
 
 
 def test_google_oauth_start_requires_auth(client):

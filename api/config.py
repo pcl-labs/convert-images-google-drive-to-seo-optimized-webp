@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     
     # API Keys
     api_key_length: int = 32
+    pbkdf2_iterations: int = 600000  # OWASP recommendation for PBKDF2-HMAC-SHA256; can be tuned via env
     
     # Rate Limiting
     rate_limit_per_minute: int = Field(default=60)
@@ -71,7 +72,10 @@ class Settings(BaseSettings):
                 self.cors_origins = [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
             else:
                 self.cors_origins = [self.cors_origins.strip()] if self.cors_origins.strip() else ["http://localhost:8000"]
-        elif not isinstance(self.cors_origins, list):
+        elif isinstance(self.cors_origins, list):
+            if not self.cors_origins:
+                self.cors_origins = ["http://localhost:8000"]
+        else:
             self.cors_origins = ["http://localhost:8000"]
         return self
 

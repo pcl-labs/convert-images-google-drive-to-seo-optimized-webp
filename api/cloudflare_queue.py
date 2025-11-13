@@ -5,7 +5,7 @@ Cloudflare Queues integration for background job processing.
 import json
 import logging
 import datetime
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Protocol
 
 from .config import settings
 from .models import OptimizeRequest
@@ -13,13 +13,17 @@ from .models import OptimizeRequest
 logger = logging.getLogger(__name__)
 
 
+class QueueLike(Protocol):
+    async def send(self, message: Dict[str, Any]) -> Any: ...
+
+
 class QueueProducer:
     """Producer for sending jobs to Cloudflare Queues."""
     
-    def __init__(self, queue=None, dlq=None):
+    def __init__(self, queue: Optional["QueueLike"] = None, dlq: Optional["QueueLike"] = None):
         """Initialize queue producer."""
-        self.queue = queue or settings.queue
-        self.dlq = dlq or settings.dlq
+        self.queue: Optional[QueueLike] = queue or settings.queue
+        self.dlq: Optional[QueueLike] = dlq or settings.dlq
     
     async def send_job(self, job_id: str, user_id: str, request: OptimizeRequest) -> bool:
         """Send a job to the queue."""
@@ -73,9 +77,9 @@ class QueueProducer:
 class QueueConsumer:
     """Consumer for processing jobs from Cloudflare Queues."""
     
-    def __init__(self, queue=None):
+    def __init__(self, queue: Optional["QueueLike"] = None):
         """Initialize queue consumer."""
-        self.queue = queue or settings.queue
+        self.queue: Optional[QueueLike] = queue or settings.queue
     
     async def process_message(self, message: Dict[str, Any]) -> bool:
         """Process a message from the queue."""
@@ -96,4 +100,3 @@ class QueueConsumer:
         except Exception as e:
             logger.error(f"Error processing message: {e}", exc_info=True)
             return False
-

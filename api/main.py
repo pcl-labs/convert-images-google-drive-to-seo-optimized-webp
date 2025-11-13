@@ -37,8 +37,8 @@ from .database import (
 from .auth import (
     authenticate_github,
     create_user_api_key,
-    get_github_oauth_url
 )
+from . import auth as auth
 from .cloudflare_queue import QueueProducer
 from .constants import COOKIE_OAUTH_STATE, COOKIE_GOOGLE_OAUTH_STATE
 from .google_oauth import get_google_oauth_url, exchange_google_code, build_drive_service_for_user
@@ -192,7 +192,7 @@ async def github_auth_start(request: Request):
             redirect_uri = f"{settings.base_url.rstrip('/')}/auth/github/callback"
         else:
             redirect_uri = str(request.url.replace(path="/auth/github/callback", query=""))
-        auth_url, state = get_github_oauth_url(redirect_uri)
+        auth_url, state = auth.get_github_oauth_url(redirect_uri)
         
         # Determine if we're behind HTTPS (production)
         is_secure = settings.environment == "production" or request.url.scheme == "https"
@@ -678,11 +678,11 @@ async def cancel_job(
     if not job:
         raise JobNotFoundError(job_id)
     
-    current_status = job["status"]
-    if current_status in ["completed", "failed", "cancelled"]:
+    current_status = JobStatusEnum(job["status"])
+    if current_status in [JobStatusEnum.COMPLETED, JobStatusEnum.FAILED, JobStatusEnum.CANCELLED]:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Cannot cancel job with status: {current_status}"
+            detail=f"Cannot cancel job with status: {current_status.value}"
         )
     
     await update_job_status(db, job_id, "cancelled")

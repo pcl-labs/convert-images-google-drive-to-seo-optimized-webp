@@ -23,6 +23,10 @@ def compose_download_name(name: str, file_id: str, ext: str, sep: str = FILENAME
     """Compose filename using `<name><sep><file_id>.<ext>`.
     `ext` may be with or without a leading dot.
     """
+    # Validate file_id matches the expected pattern
+    if not re.match(r"^[A-Za-z0-9_-]+$", file_id):
+        raise ValueError(f"file_id must match pattern [A-Za-z0-9_-]+, got: {file_id!r}")
+    
     ext = ext if ext.startswith(".") else f".{ext}"
     return f"{name}{sep}{file_id}{ext}"
 

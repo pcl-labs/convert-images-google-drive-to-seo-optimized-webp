@@ -13,20 +13,28 @@ CREATE TABLE IF NOT EXISTS users (
 -- These steps handle existing data in tables that were created before constraints were added
 -- They are safe to run multiple times (idempotent) and will only affect existing data
 
+-- Destructive cleanup block: wraps deletes in a transaction for atomicity.
+-- WARNING: The following statements permanently remove data.
+-- Consider taking a backup or migrating to a soft-delete/archive strategy before running.
+BEGIN TRANSACTION;
+
 -- Step 1: Handle NULL emails (delete rows with NULL email as they're invalid)
--- Note: This assumes NULL emails are invalid. Adjust if your use case differs.
 DELETE FROM users WHERE email IS NULL;
 
--- Step 2: Handle duplicate emails (keep the oldest record, delete newer duplicates)
-DELETE FROM users 
-WHERE user_id IN (
-    SELECT user_id FROM (
-        SELECT user_id,
-               ROW_NUMBER() OVER (PARTITION BY email ORDER BY created_at ASC) as rn
-        FROM users
-        WHERE email IS NOT NULL
-    ) WHERE rn > 1
-);
+-- Step 2: Handle duplicate emails without ROW_NUMBER (D1/SQLite-compatible)
+-- Keep the canonical (oldest) row per email based on created_at, then user_id as tiebreaker.
+-- Delete any other rows for the same email.
+DELETE FROM users
+WHERE email IS NOT NULL
+  AND user_id != (
+    SELECT u.user_id
+    FROM users u
+    WHERE u.email = users.email
+    ORDER BY u.created_at ASC, u.user_id ASC
+    LIMIT 1
+  );
+
+COMMIT;
 
 -- Step 3: Create UNIQUE index on email (if it doesn't exist)
 -- This provides an additional enforcement layer and improves query performance
@@ -40,6 +48,7 @@ CREATE TABLE IF NOT EXISTS api_keys (
     last_used TEXT,
     salt TEXT, -- Base64-encoded salt for PBKDF2 (NULL for legacy SHA256 keys)
     iterations INTEGER, -- PBKDF2 iteration count (NULL for legacy SHA256 keys)
+    lookup_hash TEXT, -- Short SHA-256 hex prefix for targeted lookups (NULL for legacy rows)
     FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
 );
 
@@ -90,6 +99,7 @@ CREATE INDEX IF NOT EXISTS idx_jobs_user_id ON jobs(user_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
 CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_api_keys_user_id ON api_keys(user_id);
+CREATE INDEX IF NOT EXISTS idx_api_keys_lookup_hash ON api_keys(lookup_hash);
 CREATE INDEX IF NOT EXISTS idx_users_github_id ON users(github_id);
 
 -- Google OAuth tokens per user

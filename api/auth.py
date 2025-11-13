@@ -13,13 +13,22 @@ import jwt
 import logging
 
 from .config import settings
-from .database import Database, get_user_by_github_id, create_user, create_api_key, get_api_key_record_by_hash, get_all_api_key_records
+from .database import (
+    Database,
+    get_user_by_github_id,
+    create_user,
+    create_api_key,
+    get_api_key_record_by_hash,
+    get_all_api_key_records,
+    get_api_key_candidates_by_lookup_hash,
+)
 from .exceptions import AuthenticationError
 
 logger = logging.getLogger(__name__)
 
 # PBKDF2 configuration
-PBKDF2_ITERATIONS = 100000  # OWASP recommends at least 600,000, but 100k is reasonable for API keys
+# Use a secure default and allow tuning via configuration
+PBKDF2_ITERATIONS = settings.pbkdf2_iterations  # OWASP recommends ~600,000 for PBKDF2-HMAC-SHA256
 PBKDF2_SALT_LENGTH = 32  # 32 bytes = 256 bits
 PBKDF2_KEY_LENGTH = 32  # 32 bytes = 256 bits
 
@@ -111,7 +120,7 @@ def generate_jwt_token(user_id: str, github_id: Optional[str] = None) -> str:
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
 
-def verify_jwt_token(token: str) -> Optional[Dict[str, Any]]:
+def verify_jwt_token(token: str) -> Dict[str, Any]:
     """Verify and decode a JWT token."""
     try:
         payload = jwt.decode(
@@ -127,16 +136,22 @@ def verify_jwt_token(token: str) -> Optional[Dict[str, Any]]:
 
 
 async def get_github_user_info(access_token: str) -> Dict[str, Any]:
-    """Get user information from GitHub using access token."""
-    async with httpx.AsyncClient() as client:
-        response = await client.get(
-            "https://api.github.com/user",
-            headers={"Authorization": f"Bearer {access_token}"},
-            timeout=10
-        )
-        if response.status_code != 200:
-            raise AuthenticationError("Failed to get GitHub user info")
-        return response.json()
+    """Get user information from GitHub using access token with robust error handling."""
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(
+                "https://api.github.com/user",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            response.raise_for_status()
+            try:
+                return response.json()
+            except Exception as e:
+                raise AuthenticationError(f"Failed to parse GitHub user JSON: {e}")
+    except httpx.HTTPStatusError as e:
+        raise AuthenticationError(f"GitHub userinfo HTTP error: {e.response.status_code} {e.response.text}")
+    except httpx.RequestError as e:
+        raise AuthenticationError(f"GitHub userinfo network error: {e}")
 
 
 async def exchange_github_code(code: str) -> Dict[str, Any]:
@@ -188,7 +203,12 @@ async def authenticate_github(db: Database, code: str) -> tuple[str, Dict[str, A
     
     # Get user info from GitHub
     github_user = await get_github_user_info(access_token)
-    github_id = str(github_user.get("id"))
+    raw_github_id = github_user.get("id")
+    if raw_github_id is None:
+        raise AuthenticationError("GitHub user id missing in response")
+    if not isinstance(raw_github_id, (int, str)):
+        raise AuthenticationError("GitHub user id has unexpected type")
+    github_id = str(raw_github_id)
     email = github_user.get("email")
     username = github_user.get("login")
     
@@ -207,6 +227,12 @@ async def authenticate_github(db: Database, code: str) -> tuple[str, Dict[str, A
     return jwt_token, user
 
 
+def _compute_lookup_hash(api_key: str) -> str:
+    """Compute a short, indexed lookup hash to target API key candidates (hex prefix)."""
+    digest = hashlib.sha256(api_key.encode()).hexdigest()
+    return digest[:18]  # 9 bytes hex prefix
+
+
 async def authenticate_api_key(db: Database, api_key: str) -> Optional[Dict[str, Any]]:
     """
     Authenticate user with API key.
@@ -216,8 +242,11 @@ async def authenticate_api_key(db: Database, api_key: str) -> Optional[Dict[str,
     legacy_hash = hash_api_key_legacy(api_key)
     legacy_record = await get_api_key_record_by_hash(db, legacy_hash)
     if legacy_record:
-        # Legacy key verified - migrate to PBKDF2
-        await migrate_api_key_to_pbkdf2(db, legacy_hash, api_key)
+        # Legacy key verified - migrate to PBKDF2 (non-blocking best-effort)
+        try:
+            await migrate_api_key_to_pbkdf2(db, legacy_hash, api_key)
+        except Exception:
+            pass
         # Return user after successful verification
         return {
             'user_id': legacy_record.get('user_id'),
@@ -226,12 +255,10 @@ async def authenticate_api_key(db: Database, api_key: str) -> Optional[Dict[str,
             'created_at': legacy_record.get('created_at')
         }
     
-    # For PBKDF2 keys, check all stored keys
-    # Note: This is less efficient but necessary without a key_id prefix
-    # In production at scale, consider adding a key_id prefix to API keys
-    all_keys = await get_all_api_key_records(db)
-    
-    for key_record in all_keys:
+    # For PBKDF2 keys, perform targeted lookup using lookup_hash
+    lookup_hash = _compute_lookup_hash(api_key)
+    candidate_keys = await get_api_key_candidates_by_lookup_hash(db, lookup_hash)
+    for key_record in candidate_keys:
         stored_hash = key_record.get('key_hash')
         salt = key_record.get('salt')
         iterations = key_record.get('iterations')
@@ -279,12 +306,17 @@ async def migrate_api_key_to_pbkdf2(db: Database, old_hash: str, api_key: str) -
         # Generate new PBKDF2 hash
         key_hash, salt, iterations = hash_api_key(api_key)
         
-        # Update the database record
-        await db.execute(
-            "UPDATE api_keys SET key_hash = ?, salt = ?, iterations = ? WHERE key_hash = ?",
-            (key_hash, salt, iterations, old_hash)
+        # Compute lookup_hash for targeted queries
+        lookup_hash = _compute_lookup_hash(api_key)
+        # Update the database record only if it's still legacy (salt IS NULL)
+        result = await db.execute(
+            "UPDATE api_keys SET key_hash = ?, salt = ?, iterations = ?, lookup_hash = ? WHERE key_hash = ? AND salt IS NULL RETURNING key_hash",
+            (key_hash, salt, iterations, lookup_hash, old_hash)
         )
-        logger.info(f"Migrated legacy API key to PBKDF2")
+        if result:
+            logger.info("Migrated legacy API key to PBKDF2")
+        else:
+            logger.info("API key already migrated; skipping update")
     except Exception as e:
         logger.error(f"Failed to migrate API key to PBKDF2: {e}", exc_info=True)
         # Don't raise - migration failure shouldn't break authentication
@@ -294,7 +326,8 @@ async def create_user_api_key(db: Database, user_id: str) -> str:
     """Create a new API key for a user using PBKDF2."""
     api_key = generate_api_key()
     key_hash, salt, iterations = hash_api_key(api_key)
-    await create_api_key(db, user_id, key_hash, salt, iterations)
+    lookup_hash = _compute_lookup_hash(api_key)
+    await create_api_key(db, user_id, key_hash, salt, iterations, lookup_hash)
     logger.info(f"Created API key for user {user_id}")
     return api_key
 

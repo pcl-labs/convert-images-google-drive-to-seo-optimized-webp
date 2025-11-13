@@ -52,7 +52,7 @@ class NotFoundError(APIException):
         )
 
 
-class ValidationError(APIException):
+class APIValidationError(APIException):
     """Validation error."""
     
     def __init__(self, detail: str = "Validation failed"):
