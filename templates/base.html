@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{ title or 'App' }}</title>
+    <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+  </head>
+  <body>
+    <nav class="container-fluid">
+      <ul>
+        <li><strong>{{ app_name or 'App' }}</strong></li>
+      </ul>
+      <ul>
+        {% if user %}
+          <li><a href="/dashboard">Dashboard</a></li>
+          <li><a href="/settings">Settings</a></li>
+        {% else %}
+          <li><a href="/login">Login</a></li>
+        {% endif %}
+      </ul>
+    </nav>
+
+    <main class="container">
+      <div id="flash-area">{% block flash %}{% endblock %}</div>
+      {% block content %}{% endblock %}
+    </main>
+  </body>
+</html>

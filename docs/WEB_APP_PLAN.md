@@ -251,3 +251,44 @@ Deliverables:
 Non-goals in this PR:
 - YouTube provider OAuth and transcription pipeline (placeholders only)
 - Admin/RBAC UI (follow-up PR)
+
+## Troubleshooting and Postmortem (local scaffold)
+
+What went wrong and how we fixed it during the first pass of integrating the web UI with existing auth.
+
+- **Middleware public path matching bug**
+  - Cause: Public paths included `/` and the logic used `startswith`, so `/dashboard` matched `/` and skipped auth.
+  - Symptom: `/dashboard` returned 401 from `get_current_user` because middleware never set `request.state.user`.
+  - Fix: Make `/` match exact-only; keep other prefixes as intended. Verified middleware runs on `/dashboard`.
+
+- **Circular import between `api.main` and web routes**
+  - Cause: `api/web.py` imported helpers from `api/main`, while `api/main` imported the web router.
+  - Symptom: ImportError: partially initialized module.
+  - Fix: Extracted shared helpers into `api/deps.py` (`ensure_db`, `ensure_services`, `get_current_user`, etc.), imported from there.
+
+- **Local database initialization**
+  - Cause: No Cloudflare D1 binding available in local dev → `Database not initialized`.
+  - Fix: Added SQLite fallback (`dev.db`) with migrations auto-applied from `migrations/schema.sql`.
+  - Tip: Override path via `LOCAL_SQLITE_PATH` if needed.
+
+- **GitHub email NULL constraint**
+  - Cause: Some GitHub users don’t expose an email in `/user` response; `users.email` is NOT NULL UNIQUE.
+  - Fix: Fetch primary verified email from `/user/emails` (scope `user:email`), else synthesize a stable `noreply` email using username/id.
+
+- **SQLite Row semantics**
+  - Cause: Used `.get()` on `sqlite3.Row` in `list_jobs` and counters.
+  - Symptom: 500 errors on dashboard load.
+  - Fix: Convert rows to `dict(row)` before access.
+
+- **Host consistency and cookies**
+  - Note: Mixing `localhost` and `127.0.0.1` can lead to cookies not being sent.
+  - Mitigation: Redirect/callback consistently use `http://localhost:8000`. Don’t set cookie domain explicitly; rely on default.
+
+- **Login redirect UX**
+  - Improvement: After GitHub callback, redirect to `/dashboard` and if visiting `/login` with a valid cookie, redirect to `/dashboard`.
+
+Validation checklist (local):
+- Visit `/login` → GitHub OAuth → redirected to `/dashboard`.
+- `Set-Cookie: access_token` present on `/auth/github/callback` response.
+- `/dashboard` processed by middleware (auth not skipped), `request.state.user` set.
+- Dashboard loads; job list queries succeed against SQLite.

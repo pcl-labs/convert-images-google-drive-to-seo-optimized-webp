@@ -1,5 +1,5 @@
 """
-Database utilities for Cloudflare D1.
+Database utilities for Cloudflare D1 with a local SQLite fallback for development.
 """
 
 import json
@@ -7,6 +7,9 @@ import hashlib
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 import logging
+import os
+import asyncio
+import sqlite3
 
 from .config import settings
 from .models import JobStatus, JobStatusEnum, JobProgress
@@ -23,46 +26,137 @@ TERMINAL_JOB_STATES = {
 
 
 class Database:
-    """Database wrapper for D1 operations."""
+    """Database wrapper for D1 operations with SQLite fallback."""
     
     def __init__(self, db=None):
-        """Initialize database connection."""
+        """Initialize database connection.
+        If Cloudflare D1 binding is unavailable, use a local SQLite database for development.
+        """
         self.db = db or settings.d1_database
+        self._sqlite_path: Optional[str] = None
+        if not self.db:
+            # Local fallback: initialize SQLite in repo directory
+            db_path = os.environ.get("LOCAL_SQLITE_PATH", os.path.join(os.getcwd(), "dev.db"))
+            self._sqlite_path = db_path
+            try:
+                # Apply migrations once at startup using a temporary connection
+                self._apply_sqlite_migrations()
+                logger.info(f"Initialized local SQLite database at {db_path}")
+            except Exception as e:
+                logger.error(f"Failed to initialize local SQLite database: {e}", exc_info=True)
+                raise DatabaseError("Database not initialized") from e
+    
+    def _apply_sqlite_migrations(self) -> None:
+        """Apply migrations from migrations/schema.sql to local SQLite using a temp connection."""
+        if not self._sqlite_path:
+            return
+        try:
+            schema_path = os.path.join(os.getcwd(), "migrations", "schema.sql")
+            if os.path.exists(schema_path):
+                with open(schema_path, "r", encoding="utf-8") as f:
+                    sql = f.read()
+                conn = sqlite3.connect(self._sqlite_path, timeout=30, isolation_level=None)
+                try:
+                    conn.row_factory = sqlite3.Row
+                    conn.executescript(sql)
+                    conn.commit()
+                finally:
+                    conn.close()
+        except Exception as e:
+            logger.warning(f"Applying migrations to SQLite failed: {e}")
+
+    def _get_sqlite_connection(self) -> sqlite3.Connection:
+        """Create a new short-lived SQLite connection for each operation."""
+        if not self._sqlite_path:
+            raise DatabaseError("Database not initialized")
+        conn = sqlite3.connect(self._sqlite_path, timeout=30, isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        return conn
     
     async def execute(self, query: str, params: tuple = ()) -> Any:
-        """Execute a query."""
-        if not self.db:
-            raise DatabaseError("Database not initialized")
+        """Execute a query and return the first row (as dict-like)."""
+        if self.db and hasattr(self.db, "prepare"):
+            try:
+                return await self.db.prepare(query).bind(*params).first()
+            except Exception as e:
+                logger.error(f"Database query failed: {e}", exc_info=True)
+                raise DatabaseError(f"Database operation failed: {str(e)}")
         try:
-            return await self.db.prepare(query).bind(*params).first()
+            def _exec_one():
+                conn = self._get_sqlite_connection()
+                try:
+                    cur = conn.execute(query, params)
+                    row = cur.fetchone()
+                    if not conn.in_transaction:
+                        conn.commit()
+                    return row
+                finally:
+                    conn.close()
+            row = await asyncio.to_thread(_exec_one)
+            return row
         except Exception as e:
-            logger.error(f"Database query failed: {e}", exc_info=True)
+            logger.error(f"SQLite query failed: {e}", exc_info=True)
             raise DatabaseError(f"Database operation failed: {str(e)}")
     
     async def execute_all(self, query: str, params: tuple = ()) -> List[Any]:
-        """Execute a query and return all results."""
-        if not self.db:
-            raise DatabaseError("Database not initialized")
+        """Execute a query and return all rows."""
+        if self.db and hasattr(self.db, "prepare"):
+            try:
+                result = await self.db.prepare(query).bind(*params).all()
+                return result.results if hasattr(result, 'results') else result
+            except Exception as e:
+                logger.error(f"Database query failed: {e}", exc_info=True)
+                raise DatabaseError(f"Database operation failed: {str(e)}")
         try:
-            result = await self.db.prepare(query).bind(*params).all()
-            return result.results if hasattr(result, 'results') else result
+            def _exec_all():
+                conn = self._get_sqlite_connection()
+                try:
+                    cur = conn.execute(query, params)
+                    rows = cur.fetchall()
+                    return rows
+                finally:
+                    conn.close()
+            rows = await asyncio.to_thread(_exec_all)
+            return rows
         except Exception as e:
-            logger.error(f"Database query failed: {e}", exc_info=True)
+            logger.error(f"SQLite query-all failed: {e}", exc_info=True)
             raise DatabaseError(f"Database operation failed: {str(e)}")
     
     async def execute_many(self, query: str, params_list: List[tuple]) -> Any:
         """Execute a query multiple times with different parameters."""
-        if not self.db:
-            raise DatabaseError("Database not initialized")
+        if self.db and hasattr(self.db, "prepare"):
+            try:
+                results = []
+                for params in params_list:
+                    result = await self.db.prepare(query).bind(*params).run()
+                    results.append(result)
+                return results
+            except Exception as e:
+                logger.error(f"Database batch operation failed: {e}", exc_info=True)
+                raise DatabaseError(f"Database operation failed: {str(e)}")
         try:
-            # D1 doesn't support batch operations directly, so we'll do them sequentially
-            results = []
-            for params in params_list:
-                result = await self.db.prepare(query).bind(*params).run()
-                results.append(result)
-            return results
+            def _exec_many():
+                conn = self._get_sqlite_connection()
+                try:
+                    cur = conn.cursor()
+                    try:
+                        # Begin explicit transaction so the whole batch is atomic
+                        conn.execute("BEGIN")
+                        for params in params_list:
+                            cur.execute(query, params)
+                        conn.commit()
+                        return True
+                    except Exception:
+                        # Roll back entire batch on any error
+                        try:
+                            conn.rollback()
+                        finally:
+                            raise
+                finally:
+                    conn.close()
+            return await asyncio.to_thread(_exec_many)
         except Exception as e:
-            logger.error(f"Database batch operation failed: {e}", exc_info=True)
+            logger.error(f"SQLite batch operation failed: {e}", exc_info=True)
             raise DatabaseError(f"Database operation failed: {str(e)}")
 
 
@@ -78,8 +172,16 @@ async def create_user(db: Database, user_id: str, github_id: Optional[str] = Non
             updated_at = datetime('now')
         RETURNING *
     """
-    result = await db.execute(query, (user_id, github_id, email))
-    return dict(result) if result else {}
+    try:
+        result = await db.execute(query, (user_id, github_id, email))
+        if not result:
+            # If RETURNING doesn't work, fetch the user manually
+            logger.warning(f"RETURNING clause didn't return result, fetching user manually: {user_id}")
+            return await get_user_by_id(db, user_id) or {}
+        return dict(result) if result else {}
+    except Exception as e:
+        logger.error(f"create_user failed: {e}", exc_info=True)
+        raise
 
 
 async def get_user_by_id(db: Database, user_id: str) -> Optional[Dict[str, Any]]:
@@ -332,7 +434,7 @@ async def list_jobs(
     # Get total count
     count_query = f"SELECT COUNT(*) as total FROM jobs {where_clause}"
     count_result = await db.execute(count_query, tuple(params))
-    total = count_result.get("total", 0) if count_result else 0
+    total = dict(count_result).get("total", 0) if count_result else 0
     
     # Get jobs
     query = f"""
@@ -387,5 +489,5 @@ async def get_user_count(db: Database) -> int:
     """Get total user count."""
     query = "SELECT COUNT(*) as total FROM users"
     result = await db.execute(query, ())
-    return result.get("total", 0) if result else 0
+    return dict(result).get("total", 0) if result else 0
 

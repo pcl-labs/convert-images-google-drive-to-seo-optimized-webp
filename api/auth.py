@@ -154,6 +154,36 @@ async def get_github_user_info(access_token: str) -> Dict[str, Any]:
         raise AuthenticationError(f"GitHub userinfo network error: {e}")
 
 
+async def get_github_primary_email(access_token: str) -> Optional[str]:
+    """Fetch the user's primary verified email from GitHub.
+    Requires the user:email scope. Returns None if not available.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                "https://api.github.com/user/emails",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            resp.raise_for_status()
+            emails = resp.json()
+            # Find primary verified email
+            if isinstance(emails, list):
+                primary = next((e for e in emails if e.get("primary") and e.get("verified")), None)
+                if primary and primary.get("email"):
+                    return primary["email"]
+                # fallback: any verified email
+                any_verified = next((e for e in emails if e.get("verified")), None)
+                if any_verified and any_verified.get("email"):
+                    return any_verified["email"]
+    except httpx.HTTPStatusError as e:
+        logger.warning(f"GitHub emails HTTP error: {e.response.status_code} {e.response.text}")
+    except httpx.RequestError as e:
+        logger.warning(f"GitHub emails network error: {e}")
+    except Exception as e:
+        logger.warning(f"GitHub emails parse error: {e}")
+    return None
+
+
 async def exchange_github_code(code: str) -> Dict[str, Any]:
     """Exchange GitHub OAuth code for access token."""
     if not settings.github_client_id or not settings.github_client_secret:
@@ -211,6 +241,17 @@ async def authenticate_github(db: Database, code: str) -> tuple[str, Dict[str, A
     github_id = str(raw_github_id)
     email = github_user.get("email")
     username = github_user.get("login")
+    # If email is not present, fetch via /user/emails (requires user:email scope)
+    if not email:
+        email = await get_github_primary_email(access_token)
+    # As a last resort, synthesize a unique noreply email to satisfy NOT NULL UNIQUE
+    if not email:
+        trimmed = (username or "").strip()
+        base_source = trimmed if trimmed else "github"
+        base = "".join(base_source.split()).lower()
+        if not base:
+            base = "github"
+        email = f"{base}_{github_id}@users.noreply.github.com"
     
     # Get or create user
     user = await get_user_by_github_id(db, github_id)
