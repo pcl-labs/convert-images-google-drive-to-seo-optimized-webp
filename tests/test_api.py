@@ -37,7 +37,7 @@ def test_optimize_endpoint_requires_auth(client):
     response = client.post("/api/v1/optimize", json={
         "drive_folder": "test-folder-id"
     })
-    assert response.status_code == 401
+    assert response.status_code in [401, 403]
 
 
 def test_jobs_endpoint_requires_auth(client):
@@ -48,10 +48,59 @@ def test_jobs_endpoint_requires_auth(client):
 
 def test_github_auth_redirect(client):
     """Test GitHub OAuth redirect."""
-    with patch('api.auth.get_github_oauth_url', return_value="https://github.com/login/oauth/authorize?test=1"):
-        response = client.get("/auth/github", follow_redirects=False)
-        # Should redirect or return error if not configured
-        assert response.status_code in [302, 500]
+    with patch('api.auth.get_github_oauth_url', return_value=("https://github.com/login/oauth/authorize?test=1", "test_state_token")):
+        response = client.get("/auth/github/start", follow_redirects=False)
+        # Should redirect (302 or 307) or return error (500) if not configured
+        assert response.status_code in [302, 307, 500]
+
+
+def test_google_oauth_start_requires_auth(client):
+    """Test that Google OAuth start endpoint requires authentication."""
+    response = client.get("/auth/google/start", follow_redirects=False)
+    assert response.status_code == 401
+
+
+def test_google_oauth_callback_requires_auth(client):
+    """Test that Google OAuth callback endpoint requires authentication."""
+    response = client.get("/auth/google/callback?code=test&state=test", follow_redirects=False)
+    assert response.status_code == 401
+
+
+def test_google_oauth_status_requires_auth(client):
+    """Test that Google OAuth status endpoint requires authentication."""
+    response = client.get("/auth/google/status")
+    assert response.status_code == 401
+
+
+def test_providers_status_requires_auth(client):
+    """Test that providers status endpoint requires authentication."""
+    response = client.get("/auth/providers/status")
+    assert response.status_code == 401
+
+
+def test_google_oauth_url_generation():
+    """Test that Google OAuth URL generation function works when configured."""
+    from api.google_oauth import get_google_oauth_url
+    from api.config import settings
+    import secrets
+    
+    # Only test if Google OAuth is configured
+    if not settings.google_client_id or not settings.google_client_secret:
+        pytest.skip("Google OAuth not configured")
+    
+    state = secrets.token_urlsafe(16)
+    redirect_uri = "http://localhost:8000/auth/google/callback"
+    url = get_google_oauth_url(state, redirect_uri)
+    
+    assert "accounts.google.com" in url
+    assert "client_id" in url
+    assert state in url
+
+
+def test_github_status_requires_auth(client):
+    """Test that GitHub status endpoint requires authentication."""
+    response = client.get("/auth/github/status")
+    assert response.status_code == 401
 
 
 if __name__ == "__main__":

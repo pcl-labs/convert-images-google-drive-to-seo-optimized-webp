@@ -3,17 +3,34 @@ Image resizing, compression, and conversion utilities.
 """
 
 import os
+import logging
 from PIL import Image
 import io
 import json
 import pillow_heif
+from .constants import PORTRAIT_SIZE, LANDSCAPE_SIZE, DEFAULT_MAX_SIZE_KB
 
 pillow_heif.register_heif_opener()
 
-# Portrait: 1200x900, Landscape: 900x1200
-PORTRAIT_SIZE = (900, 1200)
-LANDSCAPE_SIZE = (1200, 900)
-DEFAULT_MAX_SIZE_KB = 300
+# Sizes and defaults are defined in core.constants
+
+logger = logging.getLogger(__name__)
+
+
+def _save_as_webp_under_size(img, max_size_kb, start_quality=80, min_quality=10, step=5):
+    buffer = io.BytesIO()
+    for q in range(start_quality, min_quality, -step):
+        buffer.seek(0)
+        buffer.truncate(0)
+        img.save(buffer, format='WEBP', quality=q)
+        size_kb = buffer.tell() / 1024
+        if size_kb <= max_size_kb:
+            return buffer.getvalue(), int(size_kb)
+    # If not small enough, save at lowest quality
+    buffer.seek(0)
+    buffer.truncate(0)
+    img.save(buffer, format='WEBP', quality=min_quality)
+    return buffer.getvalue(), int(buffer.tell() / 1024)
 
 
 def resize_image(input_path, output_path, target_size):
@@ -28,17 +45,10 @@ def compress_and_convert_to_webp(input_path, output_path, max_size_kb=DEFAULT_MA
     """Compress and convert image to .webp under max_size_kb."""
     with Image.open(input_path) as img:
         img = img.convert('RGB')
-        for q in range(quality, 10, -5):
-            buffer = io.BytesIO()
-            img.save(buffer, format='WEBP', quality=q)
-            size_kb = buffer.tell() / 1024
-            if size_kb <= max_size_kb:
-                with open(output_path, 'wb') as f:
-                    f.write(buffer.getvalue())
-                return True
-        # If not small enough, save at lowest quality
-        img.save(output_path, format='WEBP', quality=10)
-    return False
+        data, size_kb = _save_as_webp_under_size(img, max_size_kb, start_quality=quality, min_quality=10, step=5)
+        with open(output_path, 'wb') as f:
+            f.write(data)
+        return size_kb <= max_size_kb
 
 
 def extract_alt_text(filename):
@@ -70,7 +80,7 @@ def process_image(input_path, output_dir, overwrite=False, skip_existing=False, 
     output_path = os.path.join(output_dir, out_name)
     if os.path.exists(output_path):
         if skip_existing:
-            print(f"Skipping existing: {output_path}")
+            logger.info(f"Skipping existing: {output_path}")
             return output_path, 'skipped'
         if not overwrite and versioned:
             # Find next available versioned filename
@@ -86,28 +96,27 @@ def process_image(input_path, output_dir, overwrite=False, skip_existing=False, 
                     break
                 v += 1
         elif not overwrite:
-            print(f"Skipping (exists, no overwrite): {output_path}")
+            logger.info(f"Skipping (exists, no overwrite): {output_path}")
             return output_path, 'skipped'
     with Image.open(input_path) as img:
+        # Convert to RGB before processing to handle RGBA, P, and other modes
+        img = img.convert('RGB')
         w, h = img.size
         if h > w:
             target_size = PORTRAIT_SIZE
         else:
             target_size = LANDSCAPE_SIZE
         resized = img.resize(target_size, Image.LANCZOS)
-        for q in range(80, 10, -5):
-            buffer = io.BytesIO()
-            resized.save(buffer, format='WEBP', quality=q)
-            size_kb = buffer.tell() / 1024
-            if size_kb <= max_size_kb:
-                with open(output_path, 'wb') as f:
-                    f.write(buffer.getvalue())
-                print(f"Optimized: {output_path} ({int(size_kb)} KB)")
-                alt_text = extract_alt_text(base)
-                update_alt_text_map(os.path.basename(output_path), alt_text, alt_text_map_path)
-                return output_path, 'ok'
-        resized.save(output_path, format='WEBP', quality=10)
-        print(f"Saved at lowest quality: {output_path}")
+        data, size_kb = _save_as_webp_under_size(resized, max_size_kb, start_quality=80, min_quality=10, step=5)
+        with open(output_path, 'wb') as f:
+            f.write(data)
+        if size_kb <= max_size_kb:
+            logger.info(f"Optimized: {output_path} ({int(size_kb)} KB)")
+            alt_text = extract_alt_text(base)
+            update_alt_text_map(os.path.basename(output_path), alt_text, alt_text_map_path)
+            return output_path, 'ok'
+        logger.info(f"Saved at lowest quality: {output_path}")
         alt_text = extract_alt_text(base)
         update_alt_text_map(os.path.basename(output_path), alt_text, alt_text_map_path)
-    return output_path, 'low_quality' 
+    return output_path, 'low_quality'
+ 

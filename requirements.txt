@@ -9,7 +9,6 @@ python-multipart
 pillow-heif
 pyjwt[crypto]
 cryptography
-python-jose[cryptography]
 passlib[bcrypt]
 httpx
 pydantic-settings

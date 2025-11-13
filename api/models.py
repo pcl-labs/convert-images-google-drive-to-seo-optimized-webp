@@ -2,10 +2,10 @@
 Pydantic models for request/response validation.
 """
 
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 from typing import Optional, List, Dict, Any
 from enum import Enum
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 class JobStatusEnum(str, Enum):
@@ -27,9 +27,9 @@ class OptimizeRequest(BaseModel):
         max_length=500
     )
     extensions: Optional[List[str]] = Field(
-        default=["jpg", "jpeg", "png", "bmp", "tiff", "heic"],
+        default=["jpg", "jpeg", "png", "bmp", "tiff", "heic", "webp"],
         description="List of image extensions to process",
-        max_items=10
+        max_length=10
     )
     overwrite: bool = Field(
         default=False,
@@ -40,7 +40,7 @@ class OptimizeRequest(BaseModel):
         description="Skip files that are already optimized"
     )
     cleanup_originals: bool = Field(
-        default=True,
+        default=False,
         description="Delete original images after optimization"
     )
     max_retries: int = Field(
@@ -50,12 +50,13 @@ class OptimizeRequest(BaseModel):
         description="Number of retry attempts for failed operations"
     )
     
-    @validator('extensions')
+    @field_validator('extensions')
+    @classmethod
     def validate_extensions(cls, v):
         """Validate image extensions."""
         allowed = {'jpg', 'jpeg', 'png', 'bmp', 'tiff', 'heic', 'webp'}
         if not v:
-            return ["jpg", "jpeg", "png", "bmp", "tiff", "heic"]
+            return ["jpg", "jpeg", "png", "bmp", "tiff", "heic", "webp"]
         validated = []
         for ext in v:
             ext_clean = ext.lower().lstrip('.')
@@ -91,8 +92,7 @@ class JobStatus(BaseModel):
     error: Optional[str] = None
     drive_folder: Optional[str] = None
     
-    class Config:
-        use_enum_values = True
+    model_config = ConfigDict(use_enum_values=True)
 
 
 class JobListResponse(BaseModel):
@@ -138,7 +138,7 @@ class HealthResponse(BaseModel):
     version: str
     database: Optional[str] = None
     queue: Optional[str] = None
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class StatsResponse(BaseModel):

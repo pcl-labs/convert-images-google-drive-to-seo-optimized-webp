@@ -4,6 +4,7 @@ Cloudflare Queues integration for background job processing.
 
 import json
 import logging
+import datetime
 from typing import Dict, Any, Optional
 
 from .config import settings
@@ -15,9 +16,10 @@ logger = logging.getLogger(__name__)
 class QueueProducer:
     """Producer for sending jobs to Cloudflare Queues."""
     
-    def __init__(self, queue=None):
+    def __init__(self, queue=None, dlq=None):
         """Initialize queue producer."""
         self.queue = queue or settings.queue
+        self.dlq = dlq or settings.dlq
     
     async def send_job(self, job_id: str, user_id: str, request: OptimizeRequest) -> bool:
         """Send a job to the queue."""
@@ -47,8 +49,8 @@ class QueueProducer:
     
     async def send_to_dlq(self, job_id: str, error: str, original_message: Dict[str, Any]) -> bool:
         """Send a failed job to the dead letter queue."""
-        if not settings.dead_letter_queue_name:
-            logger.warning("Dead letter queue not configured")
+        if not self.dlq:
+            logger.warning("Dead letter queue not configured, job will not be sent to DLQ")
             return False
         
         try:
@@ -56,11 +58,12 @@ class QueueProducer:
                 "job_id": job_id,
                 "error": error,
                 "original_message": original_message,
-                "failed_at": str(logger.info),  # Timestamp
+                "failed_at": datetime.datetime.now(tz=datetime.timezone.utc).isoformat().replace('+00:00', 'Z'),
             }
-            # Note: In Cloudflare, you'd bind a separate queue for DLQ
-            # For now, we'll log it
-            logger.error(f"Job {job_id} sent to DLQ: {error}")
+            
+            # Send to dead letter queue
+            await self.dlq.send(dlq_message)
+            logger.info(f"Job {job_id} sent to DLQ: {error}")
             return True
         except Exception as e:
             logger.error(f"Failed to send job {job_id} to DLQ: {e}", exc_info=True)

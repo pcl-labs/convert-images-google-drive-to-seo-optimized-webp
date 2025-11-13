@@ -13,6 +13,13 @@ from .exceptions import DatabaseError
 
 logger = logging.getLogger(__name__)
 
+# Terminal job states - jobs in these states are considered finished
+TERMINAL_JOB_STATES = {
+    JobStatusEnum.COMPLETED.value,
+    JobStatusEnum.FAILED.value,
+    JobStatusEnum.CANCELLED.value
+}
+
 
 class Database:
     """Database wrapper for D1 operations."""
@@ -24,9 +31,7 @@ class Database:
     async def execute(self, query: str, params: tuple = ()) -> Any:
         """Execute a query."""
         if not self.db:
-            # For local testing, return None instead of raising error
-            logger.warning("Database not initialized - returning None for local testing")
-            return None
+            raise DatabaseError("Database not initialized")
         try:
             return await self.db.prepare(query).bind(*params).first()
         except Exception as e:
@@ -36,9 +41,7 @@ class Database:
     async def execute_all(self, query: str, params: tuple = ()) -> List[Any]:
         """Execute a query and return all results."""
         if not self.db:
-            # For local testing, return empty list
-            logger.warning("Database not initialized - returning empty list for local testing")
-            return []
+            raise DatabaseError("Database not initialized")
         try:
             result = await self.db.prepare(query).bind(*params).all()
             return result.results if hasattr(result, 'results') else result
@@ -93,28 +96,141 @@ async def get_user_by_github_id(db: Database, github_id: str) -> Optional[Dict[s
 
 
 # API Key operations
-async def create_api_key(db: Database, user_id: str, key_hash: str) -> None:
-    """Create an API key."""
-    query = "INSERT INTO api_keys (key_hash, user_id) VALUES (?, ?)"
-    await db.execute(query, (key_hash, user_id))
+async def create_api_key(db: Database, user_id: str, key_hash: str, salt: str, iterations: int) -> None:
+    """Create an API key with PBKDF2 hash, salt, and iterations."""
+    query = "INSERT INTO api_keys (key_hash, user_id, salt, iterations) VALUES (?, ?, ?, ?)"
+    await db.execute(query, (key_hash, user_id, salt, iterations))
 
 
-async def get_user_by_api_key(db: Database, key_hash: str) -> Optional[Dict[str, Any]]:
-    """Get user by API key hash."""
+async def get_api_key_record_by_hash(db: Database, key_hash: str) -> Optional[Dict[str, Any]]:
+    """
+    Get API key record by hash (for legacy SHA256 keys).
+    Returns the API key record with user information.
+    
+    This function atomically updates last_used and retrieves the user data
+    to prevent race conditions where the API key or user could change
+    between SELECT and UPDATE operations.
+    
+    Uses a single UPDATE ... RETURNING statement with subqueries to atomically
+    update and retrieve all required data. Only returns a result if the UPDATE
+    succeeded (i.e., the key exists).
+    """
+    # Use UPDATE ... RETURNING with subqueries to get user data atomically
+    # This ensures the update and retrieval happen in a single atomic operation
     query = """
-        SELECT u.* FROM users u
-        JOIN api_keys ak ON u.user_id = ak.user_id
-        WHERE ak.key_hash = ?
+        UPDATE api_keys
+        SET last_used = datetime('now')
+        WHERE key_hash = ?
+        RETURNING 
+            (SELECT user_id FROM users WHERE user_id = api_keys.user_id) as user_id,
+            (SELECT github_id FROM users WHERE user_id = api_keys.user_id) as github_id,
+            (SELECT email FROM users WHERE user_id = api_keys.user_id) as email,
+            (SELECT created_at FROM users WHERE user_id = api_keys.user_id) as created_at,
+            (SELECT updated_at FROM users WHERE user_id = api_keys.user_id) as updated_at,
+            api_keys.key_hash,
+            api_keys.salt,
+            api_keys.iterations,
+            api_keys.user_id as api_key_user_id
     """
     result = await db.execute(query, (key_hash,))
-    if result:
-        # Update last_used
-        await db.execute(
-            "UPDATE api_keys SET last_used = datetime('now') WHERE key_hash = ?",
-            (key_hash,)
-        )
+    
+    # Only return result if the UPDATE actually affected a row (key exists)
+    # and the user still exists (user_id subquery returned a value)
+    if result and result.get('user_id'):
+        return dict(result)
+    return None
+
+
+async def get_all_api_key_records(db: Database) -> List[Dict[str, Any]]:
+    """
+    Get all API key records with user information.
+    Used for API key verification when we need to check against all keys.
+    Note: This is less efficient but necessary for PBKDF2 verification.
+    For production at scale, consider adding a key_id prefix to API keys.
+    """
+    query = """
+        SELECT u.*, ak.key_hash, ak.salt, ak.iterations, ak.user_id as api_key_user_id
+        FROM users u
+        JOIN api_keys ak ON u.user_id = ak.user_id
+    """
+    results = await db.execute_all(query, ())
+    return [dict(row) for row in results] if results else []
+
+
+async def get_user_by_api_key(db: Database, api_key: str) -> Optional[Dict[str, Any]]:
+    """
+    Get API key record by raw API key.
+    Returns the API key record with user information for verification.
+    Supports both PBKDF2 and legacy SHA256 keys.
+    
+    Note: This function returns candidate records. Actual verification
+    should be done in the calling code (auth.py) using verify_api_key.
+    """
+    # First, try legacy SHA256 lookup for backward compatibility
+    import hashlib
+    legacy_hash = hashlib.sha256(api_key.encode()).hexdigest()
+    legacy_record = await get_api_key_record_by_hash(db, legacy_hash)
+    if legacy_record:
+        return legacy_record
+    
+    # For PBKDF2 keys, we need to check all keys
+    # This is less efficient but necessary without a key_id prefix
+    # In production at scale, consider adding a key_id prefix to API keys
+    all_keys = await get_all_api_key_records(db)
+    
+    # Return all PBKDF2 records for verification in auth.py
+    # The caller will verify each one
+    pbkdf2_records = [
+        key_record for key_record in all_keys
+        if key_record.get('salt') is not None and key_record.get('iterations') is not None
+    ]
+    
+    # Return the first record (caller will verify)
+    # In practice, we'll verify in auth.py, but return here for structure
+    return pbkdf2_records[0] if pbkdf2_records else None
+
+
+# Google OAuth token operations
+async def get_google_tokens(db: Database, user_id: str) -> Optional[Dict[str, Any]]:
+    """Get stored Google OAuth tokens for a user."""
+    query = "SELECT * FROM google_tokens WHERE user_id = ?"
+    result = await db.execute(query, (user_id,))
     return dict(result) if result else None
 
+
+async def upsert_google_tokens(
+    db: Database,
+    user_id: str,
+    access_token: str,
+    refresh_token: Optional[str],
+    expiry: Optional[str],
+    token_type: Optional[str],
+    scopes: Optional[str]
+) -> None:
+    """Insert or update Google OAuth tokens for a user."""
+    query = (
+        "INSERT INTO google_tokens (user_id, access_token, refresh_token, expiry, token_type, scopes) "
+        "VALUES (?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(user_id) DO UPDATE SET "
+        "access_token = excluded.access_token, "
+        "refresh_token = COALESCE(excluded.refresh_token, google_tokens.refresh_token), "
+        "expiry = excluded.expiry, "
+        "token_type = excluded.token_type, "
+        "scopes = excluded.scopes, "
+        "updated_at = datetime('now')"
+    )
+    await db.execute(query, (user_id, access_token, refresh_token, expiry, token_type, scopes))
+
+
+async def update_google_tokens_expiry(
+    db: Database,
+    user_id: str,
+    access_token: str,
+    expiry: Optional[str]
+) -> None:
+    """Update access token and expiry after a refresh."""
+    query = "UPDATE google_tokens SET access_token = ?, expiry = ?, updated_at = datetime('now') WHERE user_id = ?"
+    await db.execute(query, (access_token, expiry, user_id))
 
 # Job operations
 async def create_job(
@@ -143,7 +259,7 @@ async def create_job(
     extensions_json = json.dumps(extensions)
     result = await db.execute(
         query,
-        (job_id, user_id, "pending", progress, drive_folder, extensions_json)
+        (job_id, user_id, JobStatusEnum.PENDING.value, progress, drive_folder, extensions_json)
     )
     return dict(result) if result else {}
 
@@ -178,7 +294,7 @@ async def update_job_status(
         updates.append("error = ?")
         params.append(error)
     
-    if status in ["completed", "failed", "cancelled"]:
+    if status in TERMINAL_JOB_STATES:
         updates.append("completed_at = datetime('now')")
     
     params.append(job_id)
@@ -224,25 +340,25 @@ async def list_jobs(
 async def get_job_stats(db: Database, user_id: Optional[str] = None) -> Dict[str, int]:
     """Get job statistics."""
     if user_id:
-        query = """
+        query = f"""
             SELECT 
                 COUNT(*) as total,
-                SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed,
-                SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
-                SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending,
-                SUM(CASE WHEN status = 'processing' THEN 1 ELSE 0 END) as processing
+                SUM(CASE WHEN status = '{JobStatusEnum.COMPLETED.value}' THEN 1 ELSE 0 END) as completed,
+                SUM(CASE WHEN status = '{JobStatusEnum.FAILED.value}' THEN 1 ELSE 0 END) as failed,
+                SUM(CASE WHEN status = '{JobStatusEnum.PENDING.value}' THEN 1 ELSE 0 END) as pending,
+                SUM(CASE WHEN status = '{JobStatusEnum.PROCESSING.value}' THEN 1 ELSE 0 END) as processing
             FROM jobs
             WHERE user_id = ?
         """
         result = await db.execute(query, (user_id,))
     else:
-        query = """
+        query = f"""
             SELECT 
                 COUNT(*) as total,
-                SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed,
-                SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
-                SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending,
-                SUM(CASE WHEN status = 'processing' THEN 1 ELSE 0 END) as processing
+                SUM(CASE WHEN status = '{JobStatusEnum.COMPLETED.value}' THEN 1 ELSE 0 END) as completed,
+                SUM(CASE WHEN status = '{JobStatusEnum.FAILED.value}' THEN 1 ELSE 0 END) as failed,
+                SUM(CASE WHEN status = '{JobStatusEnum.PENDING.value}' THEN 1 ELSE 0 END) as pending,
+                SUM(CASE WHEN status = '{JobStatusEnum.PROCESSING.value}' THEN 1 ELSE 0 END) as processing
             FROM jobs
         """
         result = await db.execute(query, ())

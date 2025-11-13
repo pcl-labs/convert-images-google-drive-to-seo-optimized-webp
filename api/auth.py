@@ -4,17 +4,24 @@ Authentication and authorization utilities.
 
 import secrets
 import hashlib
+import base64
 import httpx
-from datetime import datetime, timedelta
-from typing import Optional, Dict, Any
+from datetime import datetime, timedelta, timezone
+from typing import Optional, Dict, Any, Tuple
+from urllib.parse import urlencode
 import jwt
 import logging
 
 from .config import settings
-from .database import Database, get_user_by_github_id, create_user, get_user_by_api_key, create_api_key
+from .database import Database, get_user_by_github_id, create_user, create_api_key, get_api_key_record_by_hash, get_all_api_key_records
 from .exceptions import AuthenticationError
 
 logger = logging.getLogger(__name__)
+
+# PBKDF2 configuration
+PBKDF2_ITERATIONS = 100000  # OWASP recommends at least 600,000, but 100k is reasonable for API keys
+PBKDF2_SALT_LENGTH = 32  # 32 bytes = 256 bits
+PBKDF2_KEY_LENGTH = 32  # 32 bytes = 256 bits
 
 
 def generate_api_key() -> str:
@@ -22,8 +29,74 @@ def generate_api_key() -> str:
     return secrets.token_urlsafe(settings.api_key_length)
 
 
-def hash_api_key(api_key: str) -> str:
-    """Hash an API key for storage."""
+def hash_api_key(api_key: str) -> Tuple[str, str, int]:
+    """
+    Hash an API key using PBKDF2-HMAC-SHA256 with a random salt.
+    
+    Returns:
+        Tuple of (key_hash, salt, iterations) where:
+        - key_hash: base64-encoded derived key
+        - salt: base64-encoded random salt
+        - iterations: number of PBKDF2 iterations
+    """
+    # Generate a random salt for this key
+    salt = secrets.token_bytes(PBKDF2_SALT_LENGTH)
+    
+    # Derive key using PBKDF2-HMAC-SHA256
+    key_hash = hashlib.pbkdf2_hmac(
+        'sha256',
+        api_key.encode('utf-8'),
+        salt,
+        PBKDF2_ITERATIONS,
+        PBKDF2_KEY_LENGTH
+    )
+    
+    # Encode both salt and hash as base64 for storage
+    salt_b64 = base64.b64encode(salt).decode('utf-8')
+    key_hash_b64 = base64.b64encode(key_hash).decode('utf-8')
+    
+    return key_hash_b64, salt_b64, PBKDF2_ITERATIONS
+
+
+def verify_api_key(api_key: str, stored_hash: str, salt: str, iterations: int) -> bool:
+    """
+    Verify an API key against stored hash using constant-time comparison.
+    
+    Args:
+        api_key: The API key to verify
+        stored_hash: Base64-encoded stored hash
+        salt: Base64-encoded salt used for the stored hash
+        iterations: Number of PBKDF2 iterations used
+    
+    Returns:
+        True if the API key matches, False otherwise
+    """
+    try:
+        # Decode stored salt and hash
+        salt_bytes = base64.b64decode(salt)
+        stored_hash_bytes = base64.b64decode(stored_hash)
+        
+        # Derive key from provided API key using same salt and iterations
+        derived_hash = hashlib.pbkdf2_hmac(
+            'sha256',
+            api_key.encode('utf-8'),
+            salt_bytes,
+            iterations,
+            PBKDF2_KEY_LENGTH
+        )
+        
+        # Constant-time comparison to prevent timing attacks
+        return secrets.compare_digest(derived_hash, stored_hash_bytes)
+    except Exception as e:
+        logger.warning(f"API key verification failed: {e}")
+        return False
+
+
+def hash_api_key_legacy(api_key: str) -> str:
+    """
+    Legacy SHA256 hashing for migration purposes.
+    This function is used to identify old-style hashes during migration.
+    """
     return hashlib.sha256(api_key.encode()).hexdigest()
 
 
@@ -32,8 +105,8 @@ def generate_jwt_token(user_id: str, github_id: Optional[str] = None) -> str:
     payload = {
         "user_id": user_id,
         "github_id": github_id,
-        "exp": datetime.utcnow() + timedelta(hours=settings.jwt_expiration_hours),
-        "iat": datetime.utcnow(),
+        "exp": datetime.now(timezone.utc) + timedelta(hours=settings.jwt_expiration_hours),
+        "iat": datetime.now(timezone.utc),
     }
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
@@ -58,7 +131,8 @@ async def get_github_user_info(access_token: str) -> Dict[str, Any]:
     async with httpx.AsyncClient() as client:
         response = await client.get(
             "https://api.github.com/user",
-            headers={"Authorization": f"token {access_token}"}
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=10
         )
         if response.status_code != 200:
             raise AuthenticationError("Failed to get GitHub user info")
@@ -70,19 +144,38 @@ async def exchange_github_code(code: str) -> Dict[str, Any]:
     if not settings.github_client_id or not settings.github_client_secret:
         raise AuthenticationError("GitHub OAuth not configured")
     
-    async with httpx.AsyncClient() as client:
-        response = await client.post(
-            "https://github.com/login/oauth/access_token",
-            data={
-                "client_id": settings.github_client_id,
-                "client_secret": settings.github_client_secret,
-                "code": code,
-            },
-            headers={"Accept": "application/json"},
-        )
-        if response.status_code != 200:
-            raise AuthenticationError("Failed to exchange GitHub code")
-        return response.json()
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                "https://github.com/login/oauth/access_token",
+                data={
+                    "client_id": settings.github_client_id,
+                    "client_secret": settings.github_client_secret,
+                    "code": code,
+                },
+                headers={"Accept": "application/json"},
+            )
+            response.raise_for_status()
+            
+            # Parse JSON response
+            try:
+                json_data = response.json()
+            except Exception as e:
+                logger.error(f"Failed to parse JSON response from GitHub: {e}")
+                raise AuthenticationError("Invalid response format from GitHub OAuth service")
+            
+            # Check for API-level errors in the JSON response
+            if "error" in json_data or "error_description" in json_data:
+                error_msg = json_data.get("error_description") or json_data.get("error", "Unknown error")
+                raise AuthenticationError(f"GitHub OAuth error: {error_msg}")
+            
+            return json_data
+    except httpx.RequestError as e:
+        logger.error(f"Network error during GitHub token exchange: {e}")
+        raise AuthenticationError("Failed to connect to GitHub OAuth service")
+    except httpx.HTTPStatusError as e:
+        logger.error(f"HTTP error during GitHub token exchange: {e.response.status_code}")
+        raise AuthenticationError(f"Failed to exchange GitHub code: HTTP {e.response.status_code}")
 
 
 async def authenticate_github(db: Database, code: str) -> tuple[str, Dict[str, Any]]:
@@ -115,32 +208,114 @@ async def authenticate_github(db: Database, code: str) -> tuple[str, Dict[str, A
 
 
 async def authenticate_api_key(db: Database, api_key: str) -> Optional[Dict[str, Any]]:
-    """Authenticate user with API key."""
-    key_hash = hash_api_key(api_key)
-    user = await get_user_by_api_key(db, key_hash)
-    return user
+    """
+    Authenticate user with API key.
+    Supports both new PBKDF2-hashed keys and legacy SHA256-hashed keys for migration.
+    """
+    # First, try legacy SHA256 lookup for backward compatibility
+    legacy_hash = hash_api_key_legacy(api_key)
+    legacy_record = await get_api_key_record_by_hash(db, legacy_hash)
+    if legacy_record:
+        # Legacy key verified - migrate to PBKDF2
+        await migrate_api_key_to_pbkdf2(db, legacy_hash, api_key)
+        # Return user after successful verification
+        return {
+            'user_id': legacy_record.get('user_id'),
+            'github_id': legacy_record.get('github_id'),
+            'email': legacy_record.get('email'),
+            'created_at': legacy_record.get('created_at')
+        }
+    
+    # For PBKDF2 keys, check all stored keys
+    # Note: This is less efficient but necessary without a key_id prefix
+    # In production at scale, consider adding a key_id prefix to API keys
+    all_keys = await get_all_api_key_records(db)
+    
+    for key_record in all_keys:
+        stored_hash = key_record.get('key_hash')
+        salt = key_record.get('salt')
+        iterations = key_record.get('iterations')
+        
+        # Skip legacy keys (already checked above)
+        if salt is None or iterations is None:
+            continue
+        
+        # Verify using PBKDF2
+        if verify_api_key(api_key, stored_hash, salt, iterations):
+            # Update last_used
+            await db.execute(
+                "UPDATE api_keys SET last_used = datetime('now') WHERE key_hash = ?",
+                (stored_hash,)
+            )
+            # Return user after successful verification
+            return {
+                'user_id': key_record.get('user_id'),
+                'github_id': key_record.get('github_id'),
+                'email': key_record.get('email'),
+                'created_at': key_record.get('created_at')
+            }
+    
+    return None
+
+
+async def migrate_api_key_to_pbkdf2(db: Database, old_hash: str, api_key: str) -> None:
+    """
+    Migrate a legacy SHA256-hashed API key to PBKDF2.
+    This is called when a legacy key is successfully verified.
+    
+    Migration Strategy:
+    - Legacy SHA256 keys are automatically migrated to PBKDF2 on first use after deployment
+    - The migration happens transparently during authentication
+    - If migration fails, authentication still succeeds (migration is non-blocking)
+    - All new API keys are created with PBKDF2 from the start
+    - To force migration of all keys, users can regenerate their API keys via the API
+    
+    This approach ensures:
+    1. No service disruption - legacy keys continue to work
+    2. Gradual migration - keys are upgraded as they're used
+    3. Security improvement - all active keys eventually use PBKDF2
+    """
+    try:
+        # Generate new PBKDF2 hash
+        key_hash, salt, iterations = hash_api_key(api_key)
+        
+        # Update the database record
+        await db.execute(
+            "UPDATE api_keys SET key_hash = ?, salt = ?, iterations = ? WHERE key_hash = ?",
+            (key_hash, salt, iterations, old_hash)
+        )
+        logger.info(f"Migrated legacy API key to PBKDF2")
+    except Exception as e:
+        logger.error(f"Failed to migrate API key to PBKDF2: {e}", exc_info=True)
+        # Don't raise - migration failure shouldn't break authentication
 
 
 async def create_user_api_key(db: Database, user_id: str) -> str:
-    """Create a new API key for a user."""
+    """Create a new API key for a user using PBKDF2."""
     api_key = generate_api_key()
-    key_hash = hash_api_key(api_key)
-    await create_api_key(db, user_id, key_hash)
+    key_hash, salt, iterations = hash_api_key(api_key)
+    await create_api_key(db, user_id, key_hash, salt, iterations)
     logger.info(f"Created API key for user {user_id}")
     return api_key
 
 
-def get_github_oauth_url() -> str:
-    """Get GitHub OAuth authorization URL."""
+def get_github_oauth_url(redirect_uri: str) -> Tuple[str, str]:
+    """Get GitHub OAuth authorization URL and state token.
+    
+    Args:
+        redirect_uri: The callback URL to redirect to after OAuth (built from request URL)
+    """
     if not settings.github_client_id:
         raise AuthenticationError("GitHub OAuth not configured")
     
+    state = secrets.token_urlsafe(16)
     params = {
         "client_id": settings.github_client_id,
-        "redirect_uri": settings.github_redirect_uri,
+        "redirect_uri": redirect_uri,
         "scope": "user:email",
-        "state": secrets.token_urlsafe(16),
+        "state": state,
     }
-    query_string = "&".join([f"{k}={v}" for k, v in params.items()])
-    return f"https://github.com/login/oauth/authorize?{query_string}"
+    query_string = urlencode(params)
+    url = f"https://github.com/login/oauth/authorize?{query_string}"
+    return url, state
 

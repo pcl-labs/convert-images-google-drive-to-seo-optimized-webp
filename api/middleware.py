@@ -13,11 +13,22 @@ import logging
 
 from .config import settings
 from .auth import verify_jwt_token, authenticate_api_key
-from .database import Database
+from .database import Database, get_user_by_id
 from .exceptions import AuthenticationError, RateLimitError
 from .app_logging import set_request_id, get_request_id
 
 logger = logging.getLogger(__name__)
+
+# Shared database instance (lazily initialized)
+_db_instance: Optional[Database] = None
+
+
+def get_database() -> Optional[Database]:
+    """Get or create a shared Database instance."""
+    global _db_instance
+    if _db_instance is None and settings.d1_database:
+        _db_instance = Database(db=settings.d1_database)
+    return _db_instance
 
 
 class RequestIDMiddleware(BaseHTTPMiddleware):
@@ -46,56 +57,65 @@ class AuthenticationMiddleware(BaseHTTPMiddleware):
             "/docs",
             "/redoc",
             "/openapi.json",
-            "/auth/github",
-            "/auth/callback",
+            "/auth/github/start",
+            "/auth/github/callback",
         ]
         
         if any(request.url.path.startswith(path) for path in public_paths):
             return await call_next(request)
         
-        # Get authorization header
-        auth_header = request.headers.get("Authorization")
-        if not auth_header:
-            return JSONResponse(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                content={"error": "Authentication required", "error_code": "AUTH_ERROR"}
-            )
-        
         user = None
         
-        # Try JWT token
-        if auth_header.startswith("Bearer "):
-            token = auth_header.replace("Bearer ", "")
+        # Get authorization header
+        auth_header = request.headers.get("Authorization")
+        
+        # Try API key first (if present in header)
+        if auth_header and auth_header.startswith("ApiKey "):
+            api_key = auth_header.replace("ApiKey ", "")
+            # Get shared database instance (reused across requests)
+            db = get_database()
+            if db:
+                user = await authenticate_api_key(db, api_key)
+            else:
+                # For local testing, reject API keys without database
+                user = None
+        
+        # If no user from API key, try JWT token
+        if not user:
+            token = None
+            
+            # Try to get token from Authorization header first
+            if auth_header and auth_header.startswith("Bearer "):
+                token = auth_header.replace("Bearer ", "")
+            
+            # If no token in header, try to get from cookie
+            if not token:
+                token = request.cookies.get("access_token")
+            
+            # If still no token, return unauthorized
+            if not token:
+                return JSONResponse(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    content={"error": "Authentication required", "error_code": "AUTH_ERROR"}
+                )
+            
+            # Try JWT token
             try:
                 payload = verify_jwt_token(token)
                 if payload:
                     user_id = payload.get("user_id")
-                    # For local testing without database, create a mock user
-                    from config import settings
-                    if settings.d1_database:
-                        from database import Database, get_user_by_id
-                        db = Database(db=settings.d1_database)
+                    # Get shared database instance (reused across requests)
+                    db = get_database()
+                    if db:
                         user = await get_user_by_id(db, user_id)
                     else:
-                        # Mock user for local testing
+                        # Mock user for local testing without database
                         user = {"user_id": user_id, "github_id": None, "email": None, "created_at": "2025-01-01T00:00:00"}
             except AuthenticationError:
                 return JSONResponse(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     content={"error": "Invalid or expired token", "error_code": "AUTH_ERROR"}
                 )
-        
-        # Try API key
-        elif auth_header.startswith("ApiKey "):
-            api_key = auth_header.replace("ApiKey ", "")
-            from config import settings
-            if settings.d1_database:
-                from database import Database
-                db = Database(db=settings.d1_database)
-                user = await authenticate_api_key(db, api_key)
-            else:
-                # For local testing, reject API keys without database
-                user = None
         
         if not user:
             return JSONResponse(
@@ -195,15 +215,10 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["X-XSS-Protection"] = "1; mode=block"
-        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
         
-        # CORS headers (if needed)
-        origin = request.headers.get("Origin")
-        if origin and (origin in settings.cors_origins or "*" in settings.cors_origins):
-            response.headers["Access-Control-Allow-Origin"] = origin
-            response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
-            response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type"
-            response.headers["Access-Control-Allow-Credentials"] = "true"
+        # HSTS header only in production
+        if settings.environment == "production" or (not settings.debug and settings.environment != "development"):
+            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
         
         return response
 

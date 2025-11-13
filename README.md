@@ -65,30 +65,56 @@ The project includes a FastAPI web server for programmatic access.
 python run_api.py
 
 # Option 2: Using uvicorn directly
-uvicorn app:app --reload --host 0.0.0.0 --port 8000
+uvicorn api.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 The API will be available at `http://localhost:8000`
 
+**Note:** Before starting the API server, ensure you have set the required environment variable:
+- `JWT_SECRET_KEY` - Secret key for JWT token generation (required). You can set this in a `.env` file or export it in your shell.
+
 #### API Endpoints
 
+**Public Endpoints:**
 - `GET /` - API information
 - `GET /health` - Health check
-- `POST /api/optimize` - Start an optimization job
-- `GET /api/jobs/{job_id}` - Get job status
-- `GET /api/jobs` - List recent jobs
 - `GET /docs` - Interactive API documentation (Swagger UI)
 - `GET /redoc` - Alternative API documentation
+
+**Authentication Endpoints:**
+
+*Public (no authentication required):*
+- `GET /auth/github/start` - Initiate GitHub OAuth flow (redirects to GitHub)
+- `GET /auth/github/callback` - GitHub OAuth callback
+
+*Protected (require authentication):*
+- `GET /auth/github/status` - GitHub link status
+- `GET /auth/google/start` - Initiate Google OAuth flow (link Google Drive)
+- `GET /auth/google/callback` - Google OAuth callback
+- `GET /auth/google/status` - Google link status
+- `GET /auth/providers/status` - Unified provider status (GitHub + Google)
+- `GET /auth/me` - Get current user information
+- `POST /auth/keys` - Generate API key
+
+**Job Endpoints (require authentication):**
+- `POST /api/v1/optimize` - Start an optimization job
+- `GET /api/v1/jobs/{job_id}` - Get job status
+- `GET /api/v1/jobs` - List recent jobs
+- `DELETE /api/v1/jobs/{job_id}` - Cancel a job
+
+**Admin Endpoints (require authentication):**
+- `GET /api/v1/stats` - Get API statistics
 
 #### Example: Start an Optimization Job
 
 ```bash
-curl -X POST "http://localhost:8000/api/optimize" \
+curl -X POST "http://localhost:8000/api/v1/optimize" \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_JWT_TOKEN" \
   -d '{
     "drive_folder": "YOUR_GOOGLE_DRIVE_FOLDER_ID_OR_LINK",
     "extensions": ["jpg", "jpeg", "png"],
-    "cleanup_originals": true
+    "cleanup_originals": false
   }'
 ```
 
@@ -110,8 +136,14 @@ Response:
 #### Example: Check Job Status
 
 ```bash
-curl "http://localhost:8000/api/jobs/{job_id}"
+curl -H "Authorization: Bearer YOUR_JWT_TOKEN" \
+  "http://localhost:8000/api/v1/jobs/{job_id}"
 ```
+
+**Note:** Most endpoints require authentication. You can authenticate via:
+1. GitHub OAuth: Visit `/auth/github/start` to start the OAuth flow
+2. API Key: Use `POST /auth/keys` to generate an API key (requires GitHub auth first)
+3. Google OAuth (link account for Drive access): Visit `/auth/google/start` after authenticating with GitHub
 
 #### Interactive API Documentation
 
@@ -144,16 +176,17 @@ Visit `http://localhost:8000/docs` in your browser for interactive API testing.
 ## File Structure
 
 ```
-├── cli.py               # CLI entry point
-├── api/                 # FastAPI web application
-│   └── main.py         # API entry point
-├── core/                # Core business logic
-│   ├── drive_utils.py  # Google Drive API utilities
+├── cli.py                 # CLI entry point
+├── api/                   # FastAPI web application
+│   └── main.py            # API entry point
+├── core/                  # Core business logic
+│   ├── drive_utils.py     # Google Drive API utilities
+│   ├── filename_utils.py  # Filename parsing/sanitization helpers
 │   └── image_processor.py # Image processing
-├── run_api.py           # Script to run the API server
-├── requirements.txt     # Python dependencies
-├── docs/                # Documentation
-└── README.md           # This file
+├── run_api.py             # Script to run the API server
+├── requirements.txt       # Python dependencies
+├── docs/                  # Documentation
+└── README.md             # This file
 ```
 
 ## Output
@@ -169,11 +202,52 @@ Visit `http://localhost:8000/docs` in your browser for interactive API testing.
 - All sensitive files are listed in `.gitignore`
 - No API keys or secrets are stored in the repository
 
+## Testing
+
+The project includes a comprehensive test suite using pytest.
+
+### Running Tests
+
+```bash
+# Run all tests
+pytest tests/ -v
+
+# Run specific test files
+pytest tests/test_api.py -v
+pytest tests/test_server.py -v
+pytest tests/test_local.py -v  # Requires server to be running
+```
+
+### Test Structure
+
+- `tests/test_api.py` - Unit tests for API endpoints (uses TestClient, no server required)
+- `tests/test_server.py` - Tests for app initialization and structure
+- `tests/test_local.py` - Integration tests against a running server (requires `python run_api.py` to be running)
+
+**Note:** For local integration tests, start the server first:
+```bash
+export JWT_SECRET_KEY="test-jwt-secret-key-for-testing-only"
+python run_api.py
+```
+
+Then in another terminal:
+```bash
+pytest tests/test_local.py -v
+```
+
 ## Requirements
 
-- Python 3.7+
+- Python 3.12+
 - Google Drive API access
 - Internet connection for Drive API calls
+
+### Environment variables
+
+Set in `.env` or your shell as needed:
+
+- `JWT_SECRET_KEY` (required)
+- `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_REDIRECT_URI`
+- `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`
 
 ## Dependencies
 
@@ -186,6 +260,8 @@ Visit `http://localhost:8000/docs` in your browser for interactive API testing.
 - `fastapi`: Web API framework
 - `uvicorn`: ASGI server for FastAPI
 - `python-multipart`: Form data support
+- `pydantic` & `pydantic-settings`: Data validation and settings management (V2 compatible)
+- `pytest`: Testing framework
 
 ## License
 

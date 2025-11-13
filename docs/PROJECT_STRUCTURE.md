@@ -20,8 +20,9 @@ This document describes the organization of the Google Drive Image Optimizer pro
 │
 ├── core/                   # Core business logic (shared between CLI and API)
 │   ├── __init__.py
-│   ├── drive_utils.py    # Google Drive API utilities
-│   └── image_processor.py # Image processing and optimization
+│   ├── drive_utils.py      # Google Drive API utilities
+│   ├── filename_utils.py   # Filename parsing/sanitization helpers
+│   └── image_processor.py  # Image processing and optimization
 │
 ├── workers/                # Background workers
 │   ├── __init__.py

@@ -4,12 +4,13 @@ Production-ready FastAPI web application for Google Drive Image Optimizer.
 
 from fastapi import FastAPI, Request, Depends, HTTPException, status
 from fastapi.responses import JSONResponse, RedirectResponse
-from fastapi.middleware.cors import CORSMiddleware as FastAPICORSMiddleware
 from contextlib import asynccontextmanager
 from typing import Optional
 import uuid
-import re
-from datetime import datetime
+import inspect
+import secrets
+import json
+from datetime import datetime, timezone
 
 from .config import settings
 from .models import (
@@ -19,7 +20,6 @@ from .models import (
     JobListResponse,
     UserResponse,
     APIKeyResponse,
-    ErrorResponse,
     HealthResponse,
     StatsResponse,
     JobStatusEnum
@@ -31,7 +31,8 @@ from .database import (
     list_jobs,
     get_job_stats,
     get_user_count,
-    get_user_by_id
+    get_user_by_id,
+    update_job_status
 )
 from .auth import (
     authenticate_github,
@@ -39,11 +40,12 @@ from .auth import (
     get_github_oauth_url
 )
 from .cloudflare_queue import QueueProducer
+from .constants import COOKIE_OAUTH_STATE, COOKIE_GOOGLE_OAUTH_STATE
+from .google_oauth import get_google_oauth_url, exchange_google_code, build_drive_service_for_user
+from .database import get_google_tokens
 from .exceptions import (
     APIException,
     JobNotFoundError,
-    NotFoundError,
-    ValidationError
 )
 from .app_logging import setup_logging, get_logger, get_request_id
 from .middleware import (
@@ -53,6 +55,7 @@ from .middleware import (
     SecurityHeadersMiddleware,
     CORSMiddleware
 )
+from core.drive_utils import extract_folder_id_from_input
 
 # Set up logging
 logger = setup_logging(level="INFO" if not settings.debug else "DEBUG", use_json=True)
@@ -77,7 +80,7 @@ async def lifespan(app: FastAPI):
     app_logger.info("Database initialized")
     
     # Initialize queue producer
-    queue_producer = QueueProducer(queue=settings.queue)
+    queue_producer = QueueProducer(queue=settings.queue, dlq=settings.dlq)
     app_logger.info("Queue producer initialized")
     
     # Add authentication middleware after db is initialized
@@ -88,6 +91,50 @@ async def lifespan(app: FastAPI):
     
     # Shutdown
     app_logger.info("Shutting down application")
+    
+    # Cleanup database connection
+    if db_instance is not None:
+        try:
+            # Check if the underlying db object has a close method
+            if hasattr(db_instance, 'db') and db_instance.db is not None:
+                db_obj = db_instance.db
+                # Check for common close/disconnect method names
+                for method_name in ['close', 'disconnect', 'cleanup']:
+                    if hasattr(db_obj, method_name):
+                        method = getattr(db_obj, method_name)
+                        if inspect.iscoroutinefunction(method):
+                            await method()
+                        else:
+                            method()
+                        app_logger.info(f"Database {method_name} called successfully")
+                        break
+            app_logger.info("Database connection closed")
+        except Exception as e:
+            app_logger.error(f"Error closing database connection: {e}", exc_info=True)
+        finally:
+            db_instance = None
+    
+    # Cleanup queue producer
+    if queue_producer is not None:
+        try:
+            # Check if the underlying queue object has a close method
+            if hasattr(queue_producer, 'queue') and queue_producer.queue is not None:
+                queue_obj = queue_producer.queue
+                # Check for common close/stop method names
+                for method_name in ['close', 'stop', 'cleanup', 'shutdown']:
+                    if hasattr(queue_obj, method_name):
+                        method = getattr(queue_obj, method_name)
+                        if inspect.iscoroutinefunction(method):
+                            await method()
+                        else:
+                            method()
+                        app_logger.info(f"Queue {method_name} called successfully")
+                        break
+            app_logger.info("Queue producer closed")
+        except Exception as e:
+            app_logger.error(f"Error closing queue producer: {e}", exc_info=True)
+        finally:
+            queue_producer = None
 
 
 # Create FastAPI app
@@ -120,6 +167,289 @@ async def api_exception_handler(request: Request, exc: APIException):
     )
 
 
+# Dependency to get current user
+async def get_current_user(request: Request) -> dict:
+    """Get current authenticated user from request state."""
+    user = getattr(request.state, "user", None)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required"
+        )
+    return user
+
+
+# Authentication endpoints
+# ========================
+
+# GitHub OAuth (Public - no auth required)
+@app.get("/auth/github/start", tags=["Authentication"])
+async def github_auth_start(request: Request):
+    """Initiate GitHub OAuth flow."""
+    try:
+        # Build redirect URI: use BASE_URL if set, otherwise use request URL
+        if settings.base_url:
+            redirect_uri = f"{settings.base_url.rstrip('/')}/auth/github/callback"
+        else:
+            redirect_uri = str(request.url.replace(path="/auth/github/callback", query=""))
+        auth_url, state = get_github_oauth_url(redirect_uri)
+        
+        # Determine if we're behind HTTPS (production)
+        is_secure = settings.environment == "production" or request.url.scheme == "https"
+        
+        # Create redirect response
+        response = RedirectResponse(url=auth_url)
+        
+        # Store state in secure cookie for CSRF protection
+        # State expires in 10 minutes (enough time for OAuth flow)
+        response.set_cookie(
+            key=COOKIE_OAUTH_STATE,
+            value=state,
+            httponly=True,
+            secure=is_secure,
+            samesite="lax",
+            max_age=600,  # 10 minutes
+            path="/"
+        )
+        
+        return response
+    except Exception as e:
+        app_logger.error(f"GitHub auth initiation failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="GitHub OAuth not configured"
+        )
+
+
+@app.get("/auth/github/callback", tags=["Authentication"])
+async def github_callback(code: str, state: str, request: Request):
+    """Handle GitHub OAuth callback."""
+    db = ensure_db()
+    
+    # Verify CSRF state token
+    stored_state = request.cookies.get(COOKIE_OAUTH_STATE)
+    if not stored_state or not secrets.compare_digest(stored_state, state):
+        app_logger.warning("OAuth state verification failed - possible CSRF attack")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid state parameter - possible CSRF attack"
+        )
+    
+    try:
+        jwt_token, user = await authenticate_github(db, code)
+        
+        # Prepare user response
+        user_response = {
+            "user_id": user["user_id"],
+            "email": user.get("email"),
+            "github_id": user.get("github_id")
+        }
+        
+        # Determine if we're behind HTTPS (production)
+        is_secure = settings.environment == "production" or request.url.scheme == "https"
+        
+        # Use secure cookies in production, body in dev (if configured)
+        if settings.jwt_use_cookies:
+            # Calculate max_age from JWT expiration
+            max_age_seconds = settings.jwt_expiration_hours * 3600
+            
+            # Create response with user data only
+            response = JSONResponse(content={"user": user_response})
+            
+            # Set secure HTTP-only cookie
+            response.set_cookie(
+                key="access_token",
+                value=jwt_token,
+                httponly=True,
+                secure=is_secure,
+                samesite="lax",
+                max_age=max_age_seconds,
+                path="/"
+            )
+            
+            # Clear the OAuth state cookie after successful verification
+            response.delete_cookie(
+                key=COOKIE_OAUTH_STATE,
+                path="/",
+                samesite="lax"
+            )
+            
+            return response
+        else:
+            # Fallback to body for local/dev environments
+            # Create response to clear state cookie
+            response = JSONResponse(content={
+                "access_token": jwt_token,
+                "token_type": "bearer",
+                "user": user_response
+            })
+            
+            # Clear the OAuth state cookie after successful verification
+            response.delete_cookie(
+                key=COOKIE_OAUTH_STATE,
+                path="/",
+                samesite="lax"
+            )
+            
+            return response
+    except Exception as e:
+        app_logger.error(f"GitHub callback failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Authentication failed: {str(e)}"
+        )
+
+
+# GitHub OAuth (Protected - requires auth)
+@app.get("/auth/github/status", tags=["Authentication"])
+async def github_link_status(user: dict = Depends(get_current_user)):
+    """Return whether the current user has linked GitHub (always true if authenticated)."""
+    # If we got here, JWT is valid so GitHub session is established
+    return {
+        "linked": True,
+        "github_id": user.get("github_id"),
+        "email": user.get("email")
+    }
+
+
+# Google OAuth (Protected - requires auth)
+@app.get("/auth/google/start", tags=["Authentication"])
+async def google_auth_start(request: Request, user: dict = Depends(get_current_user)):
+    """Initiate Google OAuth flow for the authenticated user."""
+    try:
+        # Build redirect URI: use BASE_URL if set, otherwise use request URL
+        if settings.base_url:
+            redirect_uri = f"{settings.base_url.rstrip('/')}/auth/google/callback"
+        else:
+            redirect_uri = str(request.url.replace(path="/auth/google/callback", query=""))
+        state = secrets.token_urlsafe(16)
+        auth_url = get_google_oauth_url(state, redirect_uri)
+
+        is_secure = settings.environment == "production" or request.url.scheme == "https"
+        response = RedirectResponse(url=auth_url)
+        response.set_cookie(
+            key=COOKIE_GOOGLE_OAUTH_STATE,
+            value=state,
+            httponly=True,
+            secure=is_secure,
+            samesite="lax",
+            max_age=600,
+            path="/",
+        )
+        # Store redirect_uri in cookie for callback verification
+        response.set_cookie(
+            key="google_redirect_uri",
+            value=redirect_uri,
+            httponly=True,
+            secure=is_secure,
+            samesite="lax",
+            max_age=600,
+            path="/",
+        )
+        return response
+    except Exception as e:
+        app_logger.error(f"Google auth initiation failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Google OAuth not configured"
+        )
+
+
+@app.get("/auth/google/callback", tags=["Authentication"])
+async def google_auth_callback(code: str, state: str, request: Request, user: dict = Depends(get_current_user)):
+    """Handle Google OAuth callback and store tokens for the user."""
+    db = ensure_db()
+
+    stored_state = request.cookies.get(COOKIE_GOOGLE_OAUTH_STATE)
+    if not stored_state or not secrets.compare_digest(stored_state, state):
+        app_logger.warning("Google OAuth state verification failed - possible CSRF attack")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid state parameter - possible CSRF attack"
+        )
+
+    # Get redirect URI from cookie (set during /start)
+    redirect_uri = request.cookies.get("google_redirect_uri")
+    if not redirect_uri:
+        # Fallback: build from request URL
+        redirect_uri = str(request.url.replace(query=""))
+
+    try:
+        await exchange_google_code(db, user["user_id"], code, redirect_uri)
+        response = JSONResponse(content={"linked": True})
+        response.delete_cookie(key=COOKIE_GOOGLE_OAUTH_STATE, path="/", samesite="lax")
+        response.delete_cookie(key="google_redirect_uri", path="/", samesite="lax")
+        return response
+    except Exception as e:
+        app_logger.error(f"Google callback failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Google authentication failed: {str(e)}"
+        )
+
+
+@app.get("/auth/google/status", tags=["Authentication"])
+async def google_link_status(user: dict = Depends(get_current_user)):
+    """Return whether the current user has linked Google, with basic token info."""
+    db = ensure_db()
+    tokens = await get_google_tokens(db, user["user_id"])  # type: ignore
+    if not tokens:
+        return {"linked": False}
+    return {
+        "linked": True,
+        "expiry": tokens.get("expiry"),
+        "scopes": tokens.get("scopes"),
+    }
+
+
+# Provider status (Protected - requires auth)
+@app.get("/auth/providers/status", tags=["Authentication"])
+async def providers_status(user: dict = Depends(get_current_user)):
+    """Unified provider status for the authenticated user."""
+    db = ensure_db()
+    # If we got here, JWT is valid so GitHub session is established
+    github_linked = True
+    tokens = await get_google_tokens(db, user["user_id"])  # type: ignore
+    google_linked = bool(tokens)
+    return {
+        "github_linked": github_linked,
+        "google_linked": google_linked,
+        "google_expiry": tokens.get("expiry") if tokens else None,
+        "google_scopes": tokens.get("scopes") if tokens else None,
+    }
+
+
+# User and session management (Protected - requires auth)
+@app.get("/auth/me", response_model=UserResponse, tags=["Authentication"])
+async def get_current_user_info(user: dict = Depends(get_current_user)):
+    """Get current authenticated user information."""
+    return UserResponse(
+        user_id=user["user_id"],
+        github_id=user.get("github_id"),
+        email=user.get("email"),
+        created_at=datetime.fromisoformat(user["created_at"]) if user.get("created_at") else datetime.now(timezone.utc)
+    )
+
+
+# API key management (Protected - requires auth)
+@app.post("/auth/keys", response_model=APIKeyResponse, tags=["Authentication"])
+async def create_api_key_endpoint(user: dict = Depends(get_current_user)):
+    """Generate a new API key for the authenticated user."""
+    db = ensure_db()
+    
+    try:
+        api_key = await create_user_api_key(db, user["user_id"])
+        return APIKeyResponse(
+            api_key=api_key,
+            created_at=datetime.now(timezone.utc)
+        )
+    except Exception as e:
+        app_logger.error(f"API key creation failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to create API key"
+        )
+
 @app.exception_handler(Exception)
 async def general_exception_handler(request: Request, exc: Exception):
     """Handle unexpected exceptions."""
@@ -133,28 +463,29 @@ async def general_exception_handler(request: Request, exc: Exception):
         }
     )
 
-
-# Dependency to get current user
-async def get_current_user(request: Request) -> dict:
-    """Get current authenticated user from request state."""
-    user = getattr(request.state, "user", None)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication required"
-        )
-    return user
-
-
 # Utility functions
-def extract_folder_id_from_input(folder_input: str) -> str:
-    """Extract folder ID from share link or return as-is if already an ID."""
-    match = re.search(r"/folders/([\w-]+)", folder_input)
-    if match:
-        return match.group(1)
-    if re.match(r"^[\w-]{10,}$", folder_input):
-        return folder_input
-    raise ValidationError("Invalid Google Drive folder link or ID.")
+def parse_job_progress(progress_str: str) -> JobProgress:
+    try:
+        data = json.loads(progress_str or "{}")
+    except json.JSONDecodeError:
+        data = {}
+    return JobProgress(**data)
+
+def ensure_db() -> Database:
+    if not db_instance:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Database not initialized"
+        )
+    return db_instance  # type: ignore
+
+def ensure_services() -> tuple[Database, QueueProducer]:
+    if not db_instance or not queue_producer:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Service not fully initialized"
+        )
+    return db_instance, queue_producer  # type: ignore
 
 
 # Public endpoints
@@ -166,7 +497,7 @@ async def root():
         "version": settings.app_version,
         "environment": settings.environment,
         "endpoints": {
-            "auth": "/auth/github",
+            "auth": "/auth/github/start",
             "optimize": "/api/v1/optimize",
             "jobs": "/api/v1/jobs",
             "health": "/health",
@@ -181,7 +512,7 @@ async def health():
     health_data = {
         "status": "healthy",
         "version": settings.app_version,
-        "timestamp": datetime.utcnow()
+        "timestamp": datetime.now(timezone.utc)
     }
     
     # Check database
@@ -204,84 +535,6 @@ async def health():
     return health_data
 
 
-# Authentication endpoints
-@app.get("/auth/github", tags=["Authentication"])
-async def github_auth():
-    """Initiate GitHub OAuth flow."""
-    try:
-        auth_url = get_github_oauth_url()
-        return RedirectResponse(url=auth_url)
-    except Exception as e:
-        app_logger.error(f"GitHub auth initiation failed: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="GitHub OAuth not configured"
-        )
-
-
-@app.get("/auth/callback", tags=["Authentication"])
-async def github_callback(code: str, request: Request):
-    """Handle GitHub OAuth callback."""
-    if not db_instance:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Database not initialized"
-        )
-    
-    try:
-        jwt_token, user = await authenticate_github(db_instance, code)
-        
-        # Redirect to frontend with token (in production, use secure cookie)
-        # For now, return token in response
-        return {
-            "access_token": jwt_token,
-            "token_type": "bearer",
-            "user": {
-                "user_id": user["user_id"],
-                "email": user.get("email"),
-                "github_id": user.get("github_id")
-            }
-        }
-    except Exception as e:
-        app_logger.error(f"GitHub callback failed: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Authentication failed: {str(e)}"
-        )
-
-
-@app.post("/auth/api-key", response_model=APIKeyResponse, tags=["Authentication"])
-async def create_api_key_endpoint(user: dict = Depends(get_current_user)):
-    """Generate a new API key for the authenticated user."""
-    if not db_instance:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Database not initialized"
-        )
-    
-    try:
-        api_key = await create_user_api_key(db_instance, user["user_id"])
-        return APIKeyResponse(
-            api_key=api_key,
-            created_at=datetime.utcnow()
-        )
-    except Exception as e:
-        app_logger.error(f"API key creation failed: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to create API key"
-        )
-
-
-@app.get("/auth/me", response_model=UserResponse, tags=["Authentication"])
-async def get_current_user_info(user: dict = Depends(get_current_user)):
-    """Get current authenticated user information."""
-    return UserResponse(
-        user_id=user["user_id"],
-        github_id=user.get("github_id"),
-        email=user.get("email"),
-        created_at=datetime.fromisoformat(user["created_at"]) if user.get("created_at") else datetime.utcnow()
-    )
 
 
 # Job endpoints
@@ -291,26 +544,25 @@ async def optimize_images(
     user: dict = Depends(get_current_user)
 ):
     """Start an image optimization job."""
-    if not db_instance or not queue_producer:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Service not fully initialized"
-        )
+    db = ensure_db()
+    queue = ensure_services()[1]
     
-    # Validate folder ID
+    # Ensure user has linked Google and validate folder access using user's Drive service
     try:
-        folder_id = extract_folder_id_from_input(request.drive_folder)
-    except ValidationError as e:
+        # Will raise if not linked or cannot refresh
+        service = await build_drive_service_for_user(db, user["user_id"])  # type: ignore
+        folder_id = extract_folder_id_from_input(request.drive_folder, service=service)
+    except Exception as e:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=str(e)
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Google not linked or folder not accessible: {str(e)}"
         )
     
     # Create job
     job_id = str(uuid.uuid4())
     try:
         job_data = await create_job(
-            db_instance,
+            db,
             job_id,
             user["user_id"],
             request.drive_folder,
@@ -318,18 +570,18 @@ async def optimize_images(
         )
         
         # Send to queue
-        await queue_producer.send_job(job_id, user["user_id"], request)
+        await queue.send_job(job_id, user["user_id"], request)
         
         app_logger.info(f"Created job {job_id} for user {user['user_id']}")
         
         # Return job status
-        progress = JobProgress(stage="queued")
+        progress = parse_job_progress(job_data.get("progress", "{}"))
         return JobStatus(
             job_id=job_id,
             user_id=user["user_id"],
             status=JobStatusEnum.PENDING,
             progress=progress,
-            created_at=datetime.fromisoformat(job_data["created_at"]) if job_data.get("created_at") else datetime.utcnow(),
+            created_at=datetime.fromisoformat(job_data["created_at"]) if job_data.get("created_at") else datetime.now(timezone.utc),
             drive_folder=request.drive_folder
         )
     except Exception as e:
@@ -346,19 +598,14 @@ async def get_job_status(
     user: dict = Depends(get_current_user)
 ):
     """Get the status of an optimization job."""
-    if not db_instance:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Database not initialized"
-        )
+    db = ensure_db()
     
-    job = await get_job(db_instance, job_id, user["user_id"])
+    job = await get_job(db, job_id, user["user_id"]) 
     if not job:
         raise JobNotFoundError(job_id)
     
-    import json
-    progress_data = json.loads(job.get("progress", "{}"))
-    progress = JobProgress(**progress_data)
+    # Parse progress data with error handling
+    progress = parse_job_progress(job.get("progress", "{}"))
     
     return JobStatus(
         job_id=job["job_id"],
@@ -380,11 +627,7 @@ async def list_user_jobs(
     user: dict = Depends(get_current_user)
 ):
     """List jobs for the authenticated user."""
-    if not db_instance:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Database not initialized"
-        )
+    db = ensure_db()
     
     if page < 1:
         page = 1
@@ -392,18 +635,17 @@ async def list_user_jobs(
         page_size = 20
     
     jobs_list, total = await list_jobs(
-        db_instance,
+        db,
         user["user_id"],
         page=page,
         page_size=page_size,
         status=status_filter.value if status_filter else None
     )
     
-    import json
     job_statuses = []
     for job in jobs_list:
-        progress_data = json.loads(job.get("progress", "{}"))
-        progress = JobProgress(**progress_data)
+        # Parse progress data with error handling
+        progress = parse_job_progress(job.get("progress", "{}"))
         job_statuses.append(JobStatus(
             job_id=job["job_id"],
             user_id=job["user_id"],
@@ -430,13 +672,9 @@ async def cancel_job(
     user: dict = Depends(get_current_user)
 ):
     """Cancel a job (if it's still pending or processing)."""
-    if not db_instance:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Database not initialized"
-        )
+    db = ensure_db()
     
-    job = await get_job(db_instance, job_id, user["user_id"])
+    job = await get_job(db, job_id, user["user_id"])
     if not job:
         raise JobNotFoundError(job_id)
     
@@ -447,8 +685,7 @@ async def cancel_job(
             detail=f"Cannot cancel job with status: {current_status}"
         )
     
-    from database import update_job_status
-    await update_job_status(db_instance, job_id, "cancelled")
+    await update_job_status(db, job_id, "cancelled")
     
     app_logger.info(f"Cancelled job {job_id} for user {user['user_id']}")
     
@@ -459,15 +696,11 @@ async def cancel_job(
 @app.get("/api/v1/stats", response_model=StatsResponse, tags=["Admin"])
 async def get_stats(user: dict = Depends(get_current_user)):
     """Get API usage statistics."""
-    if not db_instance:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Database not initialized"
-        )
+    db = ensure_db()
     
     # Get user-specific stats
-    job_stats = await get_job_stats(db_instance, user["user_id"])
-    total_users = await get_user_count(db_instance)
+    job_stats = await get_job_stats(db, user["user_id"]) 
+    total_users = await get_user_count(db)
     
     return StatsResponse(
         total_jobs=job_stats.get("total", 0),

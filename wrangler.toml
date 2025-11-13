@@ -3,6 +3,7 @@
 name = "image-optimizer-api"
 main = "api/main.py"
 compatibility_date = "2024-01-01"
+compatibility_flags = ["python_workers"]
 
 # Python runtime
 [build]

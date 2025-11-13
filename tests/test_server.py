@@ -1,42 +1,48 @@
-"""Test server startup and basic endpoint."""
-import traceback
+"""
+Test server startup and basic functionality.
+These tests verify that the FastAPI application can be imported, initialized, and basic components work.
+Endpoint-specific tests are in test_api.py.
+"""
+import pytest
 from fastapi.testclient import TestClient
 
-try:
+
+@pytest.fixture
+def client():
+    """Create test client fixture."""
     from api.main import app
-    print("✓ App imported successfully")
-    
-    client = TestClient(app)
-    print("✓ Test client created")
-    
-    # Test health endpoint
-    try:
-        response = client.get("/health")
-        print(f"✓ Health endpoint: {response.status_code}")
-        print(f"  Response: {response.json()}")
-    except Exception as e:
-        print(f"✗ Health endpoint failed: {e}")
-        traceback.print_exc()
-    
-    # Test root endpoint
-    try:
-        response = client.get("/")
-        print(f"✓ Root endpoint: {response.status_code}")
-        print(f"  Response: {response.json()}")
-    except Exception as e:
-        print(f"✗ Root endpoint failed: {e}")
-        traceback.print_exc()
-    
-    # Test protected endpoint
-    try:
-        response = client.post("/api/v1/optimize", json={"drive_folder": "test"})
-        print(f"✓ Optimize endpoint (no auth): {response.status_code}")
-        print(f"  Response: {response.json()}")
-    except Exception as e:
-        print(f"✗ Optimize endpoint failed: {e}")
-        traceback.print_exc()
-        
-except Exception as e:
-    print(f"✗ Failed to import app: {e}")
-    traceback.print_exc()
+    return TestClient(app)
+
+
+def test_app_imports():
+    """Test that the application can be imported successfully."""
+    from api.main import app
+    assert app is not None
+    assert app.title is not None
+    assert hasattr(app, "title")
+    assert hasattr(app, "version")
+
+
+def test_test_client_creation(client):
+    """Test that TestClient can be created from the app."""
+    assert client is not None
+    assert client.app is not None
+    assert hasattr(client, "get")
+    assert hasattr(client, "post")
+
+
+def test_app_has_middleware():
+    """Test that the app has middleware configured."""
+    from api.main import app
+    # FastAPI stores middleware in app.user_middleware
+    assert hasattr(app, "user_middleware")
+    assert len(app.user_middleware) > 0
+
+
+def test_app_has_exception_handlers():
+    """Test that the app has exception handlers configured."""
+    from api.main import app
+    assert hasattr(app, "exception_handlers")
+    # Should have handlers for APIException and general Exception
+    assert len(app.exception_handlers) > 0
 

@@ -64,7 +64,7 @@ wrangler secret put GITHUB_REDIRECT_URI
 
 1. Go to GitHub Settings > Developer settings > OAuth Apps
 2. Create a new OAuth App
-3. Set Authorization callback URL to your deployed API URL + `/auth/callback`
+3. Set Authorization callback URL to your deployed API URL + `/auth/github/callback`
 4. Copy Client ID and Client Secret
 
 ### 6. Deploy
