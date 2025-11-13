@@ -76,6 +76,12 @@ def update_alt_text_map(webp_filename, alt_text, map_path='alt_text_map.json'):
         os.replace(tmp_path, map_path)
     except OSError as e:
         logger.error(f"Failed to write {map_path}: {e}")
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except OSError as cleanup_err:
+            logger.warning(f"Failed to remove temp file {tmp_path}: {cleanup_err}")
+        raise
 
 
 def process_image(input_path, output_dir, overwrite=False, skip_existing=False, versioned=False, max_size_kb=DEFAULT_MAX_SIZE_KB, alt_text_map_path='alt_text_map.json', seo_prefix=None):
@@ -122,10 +128,16 @@ def process_image(input_path, output_dir, overwrite=False, skip_existing=False, 
         if size_kb <= max_size_kb:
             logger.info(f"Optimized: {output_path} ({int(size_kb)} KB)")
             alt_text = extract_alt_text(base)
-            update_alt_text_map(os.path.basename(output_path), alt_text, alt_text_map_path)
+            try:
+                update_alt_text_map(os.path.basename(output_path), alt_text, alt_text_map_path)
+            except Exception as e:
+                logger.error(f"Failed to update alt text map for {output_path}: {e}")
             return output_path, 'ok'
         logger.info(f"Saved at lowest quality: {output_path}")
         alt_text = extract_alt_text(base)
-        update_alt_text_map(os.path.basename(output_path), alt_text, alt_text_map_path)
+        try:
+            update_alt_text_map(os.path.basename(output_path), alt_text, alt_text_map_path)
+        except Exception as e:
+            logger.error(f"Failed to update alt text map for {output_path}: {e}")
     return output_path, 'low_quality'
  
