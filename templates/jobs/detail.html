@@ -59,7 +59,7 @@
          class="p-4 space-y-2"
          data-status="{{ job.status }}"
          hx-get="/dashboard/jobs/{{ job.id or job.job_id }}"
-         hx-trigger="every 2s[document.querySelector('#job-status') && document.querySelector('#job-status').dataset.status === 'running']"
+         hx-trigger="every 2s[document.querySelector('#job-status') && document.querySelector('#job-status').dataset.status === 'processing']"
          hx-swap="outerHTML">
       {% if job.output %}
         <pre class="whitespace-pre-wrap text-sm text-slate-300">{{ job.output }}</pre>

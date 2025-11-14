@@ -1,4 +1,4 @@
-<div x-data="{ toasts: [] }" x-on:toast.window="toasts.push($event.detail); setTimeout(()=>toasts.shift(), 4000)" class="fixed bottom-4 right-4 z-50 space-y-2" role="status" aria-live="polite">
+<div x-data="{ toasts: [] }" x-on:toast.window="(() => { const d = $event.detail || {}; const id = (Date.now().toString(36) + Math.random().toString(36).slice(2)); toasts.push({ id, ...d }); setTimeout(() => { toasts = toasts.filter(t => t.id !== id) }, 4000); })()" class="fixed bottom-4 right-4 z-50 space-y-2" role="status" aria-live="polite">
   <template x-for="t in toasts" :key="t.id">
     <div class="px-3 py-2 rounded-md text-sm"
       :class="{

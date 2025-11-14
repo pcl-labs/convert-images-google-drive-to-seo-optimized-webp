@@ -652,7 +652,7 @@ async def list_notifications(db: Database, user_id: str, after_id: str | None = 
     )
     params: List[Any] = [user_id, user_id]
     if cursor_created_at is not None and cursor_id is not None:
-        query += " AND (n.created_at < ? OR (n.created_at = ? AND n.id < ?))"
+        query += " AND (n.created_at > ? OR (n.created_at = ? AND n.id > ?))"
         params.extend([cursor_created_at, cursor_created_at, cursor_id])
     query += " ORDER BY n.created_at DESC, n.id DESC LIMIT ?"
     params.append(limit)
