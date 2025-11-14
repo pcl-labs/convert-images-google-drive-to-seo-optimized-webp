@@ -2,6 +2,7 @@
 Configuration management for the application.
 """
 
+import base64
 from typing import Optional, Union
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -39,6 +40,9 @@ class Settings(BaseSettings):
     jwt_expiration_hours: int = 24
     jwt_use_cookies: bool = Field(default=True)
     
+    # Encryption (Fernet)
+    encryption_key: Optional[str] = None  # Required in production - base64 URL-safe 32-byte key (Fernet.generate_key())
+    
     # API Keys
     api_key_length: int = 32
     pbkdf2_iterations: int = 600000  # OWASP recommendation for PBKDF2-HMAC-SHA256; can be tuned via env
@@ -63,6 +67,20 @@ class Settings(BaseSettings):
     
     # CORS - accept string or list, will be converted to list
     cors_origins: Union[str, list[str]] = Field(default="http://localhost:8000")
+    
+    @field_validator("encryption_key")
+    @classmethod
+    def validate_encryption_key(cls, v: Optional[str]) -> Optional[str]:
+        """Validate ENCRYPTION_KEY is a base64 URL-safe 32-byte key."""
+        if v is None:
+            return None
+        try:
+            raw = base64.urlsafe_b64decode(v)
+        except Exception as e:
+            raise ValueError("ENCRYPTION_KEY must be base64 URL-safe encoded") from e
+        if len(raw) != 32:
+            raise ValueError("ENCRYPTION_KEY must decode to exactly 32 bytes (use Fernet.generate_key())")
+        return v
     
     @model_validator(mode="after")
     def parse_cors_origins(self):

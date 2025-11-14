@@ -2,7 +2,7 @@
 Production-ready FastAPI web application for Google Drive Image Optimizer.
 """
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, status
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
@@ -146,6 +146,8 @@ app.include_router(protected_router)
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(CORSMiddleware)
 app.add_middleware(RequestIDMiddleware)
+from .middleware import AuthCookieMiddleware
+app.add_middleware(AuthCookieMiddleware)
 app.add_middleware(RateLimitMiddleware)
 
 # Global exception handler

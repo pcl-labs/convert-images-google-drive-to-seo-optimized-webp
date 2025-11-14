@@ -36,8 +36,10 @@ from .database import (
     list_notifications,
     mark_notification_seen,
     dismiss_notification,
+    get_user_by_id,
 )
 from .auth import create_user_api_key
+from .protected import get_job_status as protected_get_job_status
 from workers.consumer import process_optimization_job
 from .config import settings
 from .notifications import notify_job
@@ -63,7 +65,24 @@ def _get_csrf_token(request: Request) -> str:
     return token
 
 
- 
+def _is_secure_request(request: Request) -> bool:
+    xf_proto = request.headers.get("x-forwarded-proto", "").lower()
+    if xf_proto:
+        return xf_proto == "https"
+    return request.url.scheme == "https"
+
+
+def _render_auth_page(request: Request, view_mode: str) -> Response:
+    """Render shared login/signup template with CSRF setup."""
+    if getattr(request.state, "user", None):
+        return RedirectResponse(url="/dashboard", status_code=status.HTTP_302_FOUND)
+    csrf = _get_csrf_token(request)
+    context = {"request": request, "csrf_token": csrf, "view_mode": view_mode}
+    resp = templates.TemplateResponse("auth/login.html", context)
+    if not request.cookies.get("csrf_token"):
+        is_secure = _is_secure_request(request)
+        resp.set_cookie("csrf_token", csrf, httponly=True, samesite="lax", secure=is_secure)
+    return resp
 
 
 @router.get("/api/notifications")
@@ -78,7 +97,7 @@ async def api_mark_seen(notification_id: str, request: Request, user: dict = Dep
     # CSRF protection via header token for HTMX
     cookie_token = request.cookies.get("csrf_token")
     header_token = request.headers.get("X-CSRF-Token")
-    if not cookie_token or not header_token or cookie_token != header_token:
+    if cookie_token is None or header_token is None or not hmac.compare_digest(str(cookie_token), str(header_token)):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
     db = ensure_db()
     await mark_notification_seen(db, user["user_id"], notification_id)
@@ -90,7 +109,7 @@ async def api_dismiss(notification_id: str, request: Request, user: dict = Depen
     # CSRF protection via header token for HTMX
     cookie_token = request.cookies.get("csrf_token")
     header_token = request.headers.get("X-CSRF-Token")
-    if not cookie_token or not header_token or cookie_token != header_token:
+    if cookie_token is None or header_token is None or not hmac.compare_digest(str(cookie_token), str(header_token)):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
     db = ensure_db()
     await dismiss_notification(db, user["user_id"], notification_id)
@@ -103,7 +122,7 @@ async def api_stream(request: Request, user: dict = Depends(get_current_user)):
     return notifications_stream_response(request, db, user)
 
 
-@router.get("/activity", response_class=HTMLResponse)
+@router.get("/dashboard/activity", response_class=HTMLResponse)
 async def activity_page(request: Request, user: dict = Depends(get_current_user), after_id: Optional[str] = None):
     db = ensure_db()
     notifs = await list_notifications(db, user["user_id"], after_id=after_id, limit=50)
@@ -118,40 +137,42 @@ async def logout(request: Request, csrf_token: str = Form(...)) -> RedirectRespo
     if not cookie_token or not secrets.compare_digest(cookie_token, csrf_token):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
     
-    response = RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
+    response = RedirectResponse(url="/", status_code=status.HTTP_302_FOUND)
     
-    # Clear all authentication-related cookies
-    response.delete_cookie("access_token", path="/", samesite="lax")
-    response.delete_cookie(COOKIE_OAUTH_STATE, path="/", samesite="lax")
-    response.delete_cookie(COOKIE_GOOGLE_OAUTH_STATE, path="/", samesite="lax")
-    response.delete_cookie("google_redirect_uri", path="/", samesite="lax")
+    # Determine secure flag consistently with how cookies were set
+    is_secure = _is_secure_request(request)
+    
+    # Clear all authentication-related cookies with matching attributes
+    response.delete_cookie("access_token", path="/", samesite="lax", httponly=True, secure=is_secure)
+    response.delete_cookie(COOKIE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
+    response.delete_cookie(COOKIE_GOOGLE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
+    response.delete_cookie("google_redirect_uri", path="/", samesite="lax", httponly=True, secure=is_secure)
     # Clear CSRF token on logout for security
-    response.delete_cookie("csrf_token", path="/", samesite="lax")
+    response.delete_cookie("csrf_token", path="/", samesite="lax", httponly=True, secure=is_secure)
     
     return response
 
 
+@router.get("/", response_class=HTMLResponse)
+async def home(request: Request):
+    if getattr(request.state, "user", None):
+        return RedirectResponse(url="/dashboard", status_code=status.HTTP_302_FOUND)
+    return templates.TemplateResponse("home.html", {"request": request})
+
+
 @router.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
-    # If already authenticated via JWT cookie, go straight to dashboard
-    token = request.cookies.get("access_token")
-    if token:
-        try:
-            verify_jwt_token(token)
-            return RedirectResponse(url="/", status_code=status.HTTP_302_FOUND)
-        except Exception:
-            pass
-    csrf = _get_csrf_token(request)
-    resp = templates.TemplateResponse("auth/login.html", {"request": request, "csrf_token": csrf})
-    if not request.cookies.get("csrf_token"):
-        # Set secure cookies only in production or when the request is over HTTPS
-        is_secure = settings.environment == "production" or request.url.scheme == "https"
-        resp.set_cookie("csrf_token", csrf, httponly=True, samesite="lax", secure=is_secure)
-    return resp
+    return _render_auth_page(request, view_mode="login")
 
 
-@router.get("/", response_class=HTMLResponse)
-async def dashboard(request: Request, user: dict = Depends(get_current_user), page: int = 1):
+@router.get("/signup", response_class=HTMLResponse)
+async def signup_page(request: Request):
+    return _render_auth_page(request, view_mode="signup")
+
+
+@router.get("/dashboard", response_class=HTMLResponse)
+async def dashboard(request: Request, page: int = 1, user: dict = Depends(get_current_user)):
+    
     db = ensure_db()
     jobs_list, total = await list_jobs(db, user["user_id"], page=page, page_size=10, status=None)
     stats = await get_job_stats(db, user["user_id"])  # { total, completed, failed, pending, processing }
@@ -192,7 +213,7 @@ async def dashboard(request: Request, user: dict = Depends(get_current_user), pa
     return resp
 
 
-@router.post("/jobs", response_class=HTMLResponse)
+@router.post("/dashboard/jobs", response_class=HTMLResponse)
 async def create_job_html(
     request: Request,
     background_tasks: BackgroundTasks,
@@ -287,10 +308,9 @@ async def create_job_html(
     )
 
 
-@router.get("/jobs/{job_id}", response_class=HTMLResponse)
+@router.get("/dashboard/jobs/{job_id}", response_class=HTMLResponse)
 async def job_detail_partial(job_id: str, request: Request, user: dict = Depends(get_current_user)):
-    from .main import get_job_status
-    data = await get_job_status(job_id, user)  # reuse existing handler logic
+    data = await protected_get_job_status(job_id, user)  # reuse existing handler logic
     progress = parse_job_progress(data.progress.model_dump_json() if hasattr(data.progress, "model_dump_json") else "{}")
     csrf = _get_csrf_token(request)
     context = {
@@ -307,15 +327,16 @@ async def job_detail_partial(job_id: str, request: Request, user: dict = Depends
             "events": [],
         },
         "csrf_token": csrf,
+        "user": user,
     }
     resp = templates.TemplateResponse("jobs/detail.html", context)
     if not request.cookies.get("csrf_token"):
-        is_secure = settings.environment == "production" or request.url.scheme == "https"
+        is_secure = _is_secure_request(request)
         resp.set_cookie("csrf_token", csrf, httponly=True, samesite="lax", secure=is_secure)
     return resp
 
 
-@router.get("/jobs", response_class=HTMLResponse)
+@router.get("/dashboard/jobs", response_class=HTMLResponse)
 async def jobs_page(request: Request, user: dict = Depends(get_current_user), page: int = 1, status: Optional[str] = None):
     db = ensure_db()
     csrf = _get_csrf_token(request)
@@ -326,7 +347,22 @@ async def jobs_page(request: Request, user: dict = Depends(get_current_user), pa
             status_filter = JobStatusEnum(norm) if norm else None
         except Exception:
             status_filter = None
-    jobs_list, total = await list_jobs(db, user["user_id"], page=page, page_size=20, status=(status_filter.value if status_filter else None))
+    jobs_list: list[dict] = []
+    total = 0
+    stats: dict = {}
+    load_error: Optional[str] = None
+    try:
+        jobs_list, total = await list_jobs(
+            db,
+            user["user_id"],
+            page=page,
+            page_size=20,
+            status=(status_filter.value if status_filter else None),
+        )
+        stats = await get_job_stats(db, user["user_id"])
+    except Exception as exc:
+        logger.exception("Failed loading jobs list: %s", exc)
+        load_error = "We couldn't load your jobs right now. Please refresh in a moment."
 
     def to_view(j):
         st = j.get("status", "queued")
@@ -347,6 +383,8 @@ async def jobs_page(request: Request, user: dict = Depends(get_current_user), pa
         "page_title": "Jobs",
         "current_status": (status_filter.value if status_filter else None),
         "csrf_token": csrf,
+        "stats": stats or {},
+        "load_error": load_error,
     }
     resp = templates.TemplateResponse("jobs/index.html", context)
     if not request.cookies.get("csrf_token"):
@@ -355,7 +393,7 @@ async def jobs_page(request: Request, user: dict = Depends(get_current_user), pa
     return resp
 
 
-@router.get("/integrations", response_class=HTMLResponse)
+@router.get("/dashboard/integrations", response_class=HTMLResponse)
 async def integrations_page(request: Request, user: dict = Depends(get_current_user)):
     db = ensure_db()
     tokens = await get_google_tokens(db, user["user_id"])  # type: ignore
@@ -365,8 +403,43 @@ async def integrations_page(request: Request, user: dict = Depends(get_current_u
         "drive": {"connected": google_connected, "status": ("completed" if google_connected else "disconnected"), "status_label": ("Connected" if google_connected else "Disconnected")},
         "youtube": {"connected": False, "status": "disconnected", "status_label": "Disconnected"},
     }
+    services_meta = {
+        "gmail": {
+            "key": "gmail",
+            "name": "Gmail",
+            "capability": "Alerts, approvals",
+            "description": "Send status alerts and approvals directly from Gmail.",
+            "category": "Email",
+            "developer": "Google",
+            "website": "https://mail.google.com/",
+            "privacy": "https://policies.google.com/privacy",
+            "created_at": None,
+        },
+        "drive": {
+            "key": "drive",
+            "name": "Google Drive",
+            "capability": "File uploads",
+            "description": "Sync folders and enqueue conversions without exporting files.",
+            "category": "Storage",
+            "developer": "Google",
+            "website": "https://drive.google.com/",
+            "privacy": "https://policies.google.com/privacy",
+            "created_at": None,
+        },
+        "youtube": {
+            "key": "youtube",
+            "name": "YouTube",
+            "capability": "Media",
+            "description": "Convert thumbnails or channel assets via queued jobs.",
+            "category": "Media",
+            "developer": "Google",
+            "website": "https://youtube.com/",
+            "privacy": "https://policies.google.com/privacy",
+            "created_at": None,
+        },
+    }
     csrf = _get_csrf_token(request)
-    context = {"request": request, "user": user, "integrations": integrations, "page_title": "Integrations", "csrf_token": csrf}
+    context = {"request": request, "user": user, "integrations": integrations, "services_meta": services_meta, "page_title": "Integrations", "csrf_token": csrf}
     resp = templates.TemplateResponse("integrations/index.html", context)
     if not request.cookies.get("csrf_token"):
         is_secure = settings.environment == "production" or request.url.scheme == "https"
@@ -374,23 +447,23 @@ async def integrations_page(request: Request, user: dict = Depends(get_current_u
     return resp
 
 
-@router.post("/integrations/drive/disconnect")
+@router.post("/dashboard/integrations/drive/disconnect")
 async def integrations_drive_disconnect(request: Request, csrf_token: str = Form(...), user: dict = Depends(get_current_user)):
     cookie_token = request.cookies.get("csrf_token")
     if cookie_token is None or csrf_token is None or not hmac.compare_digest(str(cookie_token), str(csrf_token)):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
     db = ensure_db()
     await delete_google_tokens(db, user["user_id"])  # type: ignore
-    return RedirectResponse(url="/integrations", status_code=status.HTTP_302_FOUND)
+    return RedirectResponse(url="/dashboard/integrations", status_code=status.HTTP_302_FOUND)
 
 
-@router.post("/jobs/{job_id}/retry")
+@router.post("/dashboard/jobs/{job_id}/retry")
 async def retry_job(job_id: str, request: Request, user: dict = Depends(get_current_user)):
     db, queue = ensure_services()
     # CSRF protection via header token for HTMX
     cookie_token = request.cookies.get("csrf_token")
     header_token = request.headers.get("X-CSRF-Token")
-    if not cookie_token or not header_token or cookie_token != header_token:
+    if cookie_token is None or header_token is None or not secrets.compare_digest(str(cookie_token), str(header_token)):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
     job = await get_job(db, job_id, user["user_id"])  # type: ignore
     if not job:
@@ -428,14 +501,13 @@ async def retry_job(job_id: str, request: Request, user: dict = Depends(get_curr
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.delete("/jobs/{job_id}")
+@router.delete("/dashboard/jobs/{job_id}")
 async def cancel_job_html(job_id: str, request: Request, user: dict = Depends(get_current_user)):
-    from .models import JobStatusEnum
     db = ensure_db()
     # CSRF protection via header token for HTMX
     cookie_token = request.cookies.get("csrf_token")
     header_token = request.headers.get("X-CSRF-Token")
-    if not cookie_token or not header_token or cookie_token != header_token:
+    if cookie_token is None or header_token is None or not secrets.compare_digest(str(cookie_token), str(header_token)):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
     job = await get_job(db, job_id, user["user_id"])  # type: ignore
     if not job:
@@ -458,7 +530,7 @@ async def cancel_job_html(job_id: str, request: Request, user: dict = Depends(ge
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.post("/integrations/{service}/connect")
+@router.post("/dashboard/integrations/{service}/connect")
 async def integration_connect_stub(service: str, request: Request, user: dict = Depends(get_current_user)):
     """Stub connect for non-Drive services."""
     if service not in {"gmail", "youtube"}:
@@ -466,7 +538,7 @@ async def integration_connect_stub(service: str, request: Request, user: dict = 
     raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=f"{service} connect not implemented yet")
 
 
-@router.post("/integrations/{service}/disconnect")
+@router.post("/dashboard/integrations/{service}/disconnect")
 async def integration_disconnect_stub(service: str, request: Request, user: dict = Depends(get_current_user)):
     """Stub disconnect for non-Drive services."""
     if service not in {"gmail", "youtube"}:
@@ -474,7 +546,7 @@ async def integration_disconnect_stub(service: str, request: Request, user: dict
     raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=f"{service} disconnect not implemented yet")
 
 
-@router.get("/settings", response_class=HTMLResponse)
+@router.get("/dashboard/settings", response_class=HTMLResponse)
 async def settings_page(request: Request, user: dict = Depends(get_current_user)):
     csrf = _get_csrf_token(request)
     context = {"request": request, "user": user, "page_title": "Settings", "csrf_token": csrf}
@@ -485,12 +557,32 @@ async def settings_page(request: Request, user: dict = Depends(get_current_user)
     return resp
 
 
+@router.post("/dashboard/settings/api-key", response_class=HTMLResponse)
+async def settings_api_key(request: Request, csrf_token: str = Form(...), user: dict = Depends(get_current_user)):
+    cookie_token = request.cookies.get("csrf_token")
+    if cookie_token is None or not secrets.compare_digest(str(cookie_token), str(csrf_token)):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
+    db = ensure_db()
+    api_key = await create_user_api_key(db, user["user_id"])  # type: ignore
+    return templates.TemplateResponse("settings_api_key_result.html", {"request": request, "api_key": api_key})
 
 
-@router.get("/account", response_class=HTMLResponse)
+@router.get("/dashboard/account", response_class=HTMLResponse)
 async def account_page(request: Request, user: dict = Depends(get_current_user)):
     csrf = _get_csrf_token(request)
-    context = {"request": request, "user": user, "page_title": "Account", "csrf_token": csrf}
+    db = ensure_db()
+    stored = None
+    try:
+        stored = await get_user_by_id(db, user["user_id"])  # type: ignore
+    except Exception:
+        stored = None
+    display_user = {
+        "user_id": user.get("user_id"),
+        "github_id": user.get("github_id") or (stored.get("github_id") if stored else None),
+        "email": user.get("email") or (stored.get("email") if stored else None),
+        "created_at": stored.get("created_at") if stored else None,
+    }
+    context = {"request": request, "user": display_user, "page_title": "Account", "csrf_token": csrf}
     resp = templates.TemplateResponse("account/index.html", context)
     if not request.cookies.get("csrf_token"):
         is_secure = settings.environment == "production" or request.url.scheme == "https"
@@ -498,9 +590,8 @@ async def account_page(request: Request, user: dict = Depends(get_current_user))
     return resp
 
 
-@router.get("/integrations/partials/grid", response_class=HTMLResponse)
+@router.get("/dashboard/integrations/partials/grid", response_class=HTMLResponse)
 async def integrations_grid_partial(request: Request, user: dict = Depends(get_current_user)):
-    """Return integrations grid partial for HTMX polling."""
     db = ensure_db()
     tokens = await get_google_tokens(db, user["user_id"])  # type: ignore
     google_connected = bool(tokens)
@@ -509,5 +600,82 @@ async def integrations_grid_partial(request: Request, user: dict = Depends(get_c
         "drive": {"connected": google_connected, "status": ("completed" if google_connected else "disconnected"), "status_label": ("Connected" if google_connected else "Disconnected")},
         "youtube": {"connected": False, "status": "disconnected", "status_label": "Disconnected"},
     }
+    services_meta = {
+        "gmail": {
+            "key": "gmail",
+            "name": "Gmail",
+            "capability": "Alerts, approvals",
+            "description": "Send status alerts and approvals directly from Gmail.",
+            "category": "Email",
+            "developer": "Google",
+            "website": "https://mail.google.com/",
+            "privacy": "https://policies.google.com/privacy",
+            "created_at": None,
+        },
+        "drive": {
+            "key": "drive",
+            "name": "Google Drive",
+            "capability": "File uploads",
+            "description": "Sync folders and enqueue conversions without exporting files.",
+            "category": "Storage",
+            "developer": "Google",
+            "website": "https://drive.google.com/",
+            "privacy": "https://policies.google.com/privacy",
+            "created_at": None,
+        },
+        "youtube": {
+            "key": "youtube",
+            "name": "YouTube",
+            "capability": "Media",
+            "description": "Convert thumbnails or channel assets via queued jobs.",
+            "category": "Media",
+            "developer": "Google",
+            "website": "https://youtube.com/",
+            "privacy": "https://policies.google.com/privacy",
+            "created_at": None,
+        },
+    }
     csrf = _get_csrf_token(request)
-    return templates.TemplateResponse("integrations/partials/grid.html", {"request": request, "integrations": integrations, "csrf_token": csrf})
+    return templates.TemplateResponse("integrations/partials/grid.html", {"request": request, "integrations": integrations, "services_meta": services_meta, "csrf_token": csrf})
+
+
+@router.get("/dashboard/integrations/{service}", response_class=HTMLResponse)
+async def integration_detail(service: str, request: Request, user: dict = Depends(get_current_user)):
+    db = ensure_db()
+    tokens = await get_google_tokens(db, user["user_id"])  # type: ignore
+    google_connected = bool(tokens)
+    integrations = {
+        "gmail": {"connected": False, "status": "disconnected", "status_label": "Disconnected"},
+        "drive": {"connected": google_connected, "status": ("completed" if google_connected else "disconnected"), "status_label": ("Connected" if google_connected else "Disconnected")},
+        "youtube": {"connected": False, "status": "disconnected", "status_label": "Disconnected"},
+    }
+    services_meta = {
+        "gmail": {
+            "key": "gmail", "name": "Gmail", "capability": "Alerts, approvals",
+            "description": "Send status alerts and approvals directly from Gmail.",
+            "category": "Email", "developer": "Google",
+            "website": "https://mail.google.com/", "privacy": "https://policies.google.com/privacy",
+            "created_at": None,
+        },
+        "drive": {
+            "key": "drive", "name": "Google Drive", "capability": "File uploads",
+            "description": "Sync folders and enqueue conversions without exporting files.",
+            "category": "Storage", "developer": "Google",
+            "website": "https://drive.google.com/", "privacy": "https://policies.google.com/privacy",
+            "created_at": None,
+        },
+        "youtube": {
+            "key": "youtube", "name": "YouTube", "capability": "Media",
+            "description": "Convert thumbnails or channel assets via queued jobs.",
+            "category": "Media", "developer": "Google",
+            "website": "https://youtube.com/", "privacy": "https://policies.google.com/privacy",
+            "created_at": None,
+        },
+    }
+    if service not in services_meta:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    csrf = _get_csrf_token(request)
+    return templates.TemplateResponse(
+        "integrations/detail.html",
+        {"request": request, "user": user, "service": services_meta[service], "integration": integrations.get(service), "csrf_token": csrf}
+    )

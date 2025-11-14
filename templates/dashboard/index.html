@@ -6,20 +6,6 @@
     <h1 class="text-xl font-semibold text-white">Dashboard</h1>
     <p class="text-sm text-slate-400">Overview and quick actions</p>
   </div>
-  <div class="flex items-center gap-3">
-    {% from 'components/elements/badge.html' import badge %}
-    {% if google_connected %}
-      <div class="flex items-center gap-2">
-        {{ badge('Google Drive Connected', status='completed') }}
-        <form method="post" action="/integrations/drive/disconnect">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-          <button type="submit" class="text-xs text-slate-300 hover:text-white underline">Disconnect</button>
-        </form>
-      </div>
-    {% else %}
-      <a href="/auth/google/start" class="text-xs text-sky-400 hover:text-sky-300 underline">Connect Google Drive</a>
-    {% endif %}
-  </div>
 
   <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
     <div class="bg-slate-800/50 border border-slate-700 rounded-xl p-4">
@@ -41,7 +27,7 @@
       <div class="font-semibold text-white">Create Job</div>
     </div>
     <div class="p-4 space-y-3">
-      <form hx-post="/jobs" hx-target="#recent-jobs-table" hx-swap="outerHTML">
+      <form hx-post="/dashboard/jobs" hx-target="#recent-jobs-table" hx-swap="outerHTML">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
         <label class="block text-sm text-slate-300">YouTube URL or Drive Folder URL</label>
         <div class="mt-1 flex gap-2">
@@ -55,11 +41,11 @@
   <div id="recent-jobs" class="bg-slate-900/60 border border-slate-800 rounded-xl">
     <div class="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
       <div class="font-semibold text-white">Recent Jobs</div>
-      <a href="/jobs" class="text-sm text-sky-400 hover:text-sky-300">View all</a>
+      <a href="/dashboard/jobs" class="text-sm text-sky-400 hover:text-sky-300">View all</a>
     </div>
     <div id="recent-jobs-table" class="p-0 overflow-x-auto">
       {% from 'components/data/table.html' import table with context %}
-      {% call table(headers=["Job ID","Type","Status","Created","Actions"]) %}
+      {% call table(headers=["Job ID","Type","Status","Created","View"]) %}
         {% for job in jobs %}
           <tr>
             <td class="px-3 py-2 md:px-4 md:py-3 whitespace-nowrap">{{ job.id }}</td>
@@ -70,7 +56,7 @@
             </td>
             <td class="px-3 py-2 md:px-4 md:py-3">{{ job.created_at }}</td>
             <td class="px-3 py-2 md:px-4 md:py-3">
-              <a href="/jobs/{{ job.id }}" class="text-sky-400 hover:text-sky-300">View</a>
+              <a href="/dashboard/jobs/{{ job.id }}" class="text-sky-400 hover:text-sky-300">View</a>
             </td>
           </tr>
         {% else %}

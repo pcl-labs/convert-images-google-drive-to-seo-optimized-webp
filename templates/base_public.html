@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{ title or 'App' }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='css/app.css') }}">
+    <style>[x-cloak]{display:none !important;}</style>
+    <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <script>
+      window.modalState = function(id){
+        return {
+          open:false,
+          prevEl:null,
+          titleId:`modal-title-${id}`,
+          trap(){},
+          openModal(){
+            this.prevEl = document.activeElement;
+            if(document.body){ document.body.style.overflow = 'hidden'; }
+          },
+          closeModal(){
+            if(document.body){ document.body.style.overflow = ''; }
+            this.open = false;
+            this.prevEl && this.prevEl.focus && this.prevEl.focus();
+          }
+        };
+      };
+    </script>
+  </head>
+  <body class="dark">
+    <div class="min-h-screen bg-slate-950 text-white flex flex-col">
+      <main class="flex-1">
+        {% block content %}{% endblock %}
+      </main>
+      {% include 'components/overlays/toast.html' %}
+    </div>
+  </body>
+</html>

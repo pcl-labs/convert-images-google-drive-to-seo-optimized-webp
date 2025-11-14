@@ -9,8 +9,8 @@
     </div>
     <div class="flex items-center gap-2">
       {% from 'components/elements/button.html' import button %}
-      <form hx-post="/jobs/{{ job.id or job.job_id }}/retry" hx-headers='{"X-CSRF-Token":"{{ csrf_token }}"}' hx-swap="none" hx-on:htmx:afterOnLoad="window.dispatchEvent(new CustomEvent('toast',{detail:{type:'success',text:'Job retried'}}))">{{ button('Retry','secondary') }}</form>
-      <form hx-delete="/jobs/{{ job.id or job.job_id }}" hx-headers='{"X-CSRF-Token":"{{ csrf_token }}"}' hx-swap="none" hx-on:htmx:afterOnLoad="window.dispatchEvent(new CustomEvent('toast',{detail:{type:'success',text:'Job cancelled'}}))">{{ button('Cancel','destructive') }}</form>
+      <form hx-post="/dashboard/jobs/{{ job.id or job.job_id }}/retry" hx-headers='{"X-CSRF-Token":"{{ csrf_token }}"}' hx-swap="none" hx-on:htmx:afterOnLoad="window.dispatchEvent(new CustomEvent('toast',{detail:{type:'success',text:'Job retried'}}))">{{ button('Retry','secondary') }}</form>
+      <form hx-delete="/dashboard/jobs/{{ job.id or job.job_id }}" hx-headers='{"X-CSRF-Token":"{{ csrf_token }}"}' hx-swap="none" hx-on:htmx:afterOnLoad="window.dispatchEvent(new CustomEvent('toast',{detail:{type:'success',text:'Job cancelled'}}))">{{ button('Cancel','destructive') }}</form>
     </div>
   </div>
 
@@ -58,7 +58,7 @@
     <div id="job-status"
          class="p-4 space-y-2"
          data-status="{{ job.status }}"
-         hx-get="/jobs/{{ job.id or job.job_id }}"
+         hx-get="/dashboard/jobs/{{ job.id or job.job_id }}"
          hx-trigger="every 2s[document.querySelector('#job-status') && document.querySelector('#job-status').dataset.status === 'running']"
          hx-swap="outerHTML">
       {% if job.output %}
@@ -89,7 +89,7 @@
   </div>
 
   <div>
-    <a href="/jobs" class="text-sky-400 hover:text-sky-300">Back to Jobs</a>
+    <a href="/dashboard/jobs" class="text-sky-400 hover:text-sky-300">Back to Jobs</a>
   </div>
 </div>
 {% endblock %}

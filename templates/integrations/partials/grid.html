@@ -1,36 +1,70 @@
-{% set services = [
-  {'name': 'Gmail', 'key': 'gmail'},
-  {'name': 'Google Drive', 'key': 'drive'},
-  {'name': 'YouTube', 'key': 'youtube'}
-] %}
-{% from 'components/elements/card.html' import card %}
-{% from 'components/elements/badge.html' import badge %}
-<div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-  {% for s in services %}
-    {% call card(title=s.name) %}
-      <div class="flex items-center justify-between" x-data="{ submit(){ $refs.form && $refs.form.submit() } }" @confirm-drive-disconnect.window="submit()">
-        <div>
-          {{ badge(integrations.get(s.key).status_label if integrations.get(s.key) else 'Disconnected', status=(integrations.get(s.key).status if integrations.get(s.key) else 'disconnected')) }}
-        </div>
-        <div>
-          {% if integrations.get(s.key) and integrations.get(s.key).connected %}
-            {% if s.key == 'drive' %}
-              <form x-ref="form" method="post" action="/integrations/drive/disconnect">
-                <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-                <button type="button" @click="$dispatch('open-drive-disconnect')" class="inline-flex items-center justify-center rounded-md bg-slate-800 border border-slate-700 px-3 py-2 text-sm text-slate-200">Disconnect</button>
-              </form>
-            {% else %}
-              <button disabled class="inline-flex items-center justify-center rounded-md bg-slate-800/50 border border-slate-800 px-3 py-2 text-sm text-slate-500">Connected</button>
-            {% endif %}
-          {% else %}
-            {% if s.key == 'drive' %}
-              <a href="/auth/google/start" class="inline-flex items-center justify-center rounded-md bg-sky-600 hover:bg-sky-500 text-white px-3 py-2 text-sm">Connect</a>
-            {% else %}
-              <button disabled class="inline-flex items-center justify-center rounded-md bg-slate-700/60 border border-slate-700 px-3 py-2 text-sm text-slate-400">Coming soon</button>
-            {% endif %}
-          {% endif %}
-        </div>
-      </div>
-    {% endcall %}
-  {% endfor %}
+{% from 'components/elements/integration_card.html' import integration_card %}
+
+<div class="space-y-8" id="integrations-grid-inner">
+  <section class="space-y-3">
+    <div>
+      <h2 class="text-sm font-semibold text-white">Enabled apps</h2>
+      <p class="text-sm text-slate-400">The apps and connectors you’ve enabled appear here. ChatGPT can use them in your conversations, based on the permissions you’ve granted.</p>
+    </div>
+    <div class="space-y-3">
+      {% for key, s in services_meta.items() %}
+        {% set data = integrations.get(key) %}
+        {% if data and data.connected %}
+          {% set card = {
+            'key': s.key,
+            'name': s.name,
+            'subtitle': s.capability,
+            'description': s.description
+          } %}
+          {{ integration_card(card, data, csrf_token) }}
+        {% endif %}
+      {% endfor %}
+      {% if not (integrations.drive.connected or integrations.gmail.connected or integrations.youtube.connected) %}
+        <div class="text-sm text-slate-400">No apps enabled yet.</div>
+      {% endif %}
+    </div>
+  </section>
+
+  <section class="space-y-3">
+    <div>
+      <h2 class="text-sm font-semibold text-white">Browse apps</h2>
+      <p class="text-sm text-slate-400">Connect apps so you can talk to them with visual and interactive experiences in Quill. <a href="#" class="text-sky-400 hover:underline">Learn more</a>.</p>
+    </div>
+    <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+      {% for key, s in services_meta.items() %}
+        {% set data = integrations.get(key) %}
+        {% if not (data and data.connected) %}
+          <a href="/dashboard/integrations/{{ s.key }}" class="rounded-md border border-slate-800 bg-slate-900/60 p-4 hover:bg-slate-900/70 transition-colors flex items-center gap-3">
+            <div class="h-10 w-10 rounded-md bg-slate-900 border border-slate-800 flex items-center justify-center">
+              {% if s.key == 'drive' %}
+                <svg viewBox="0 0 256 256" class="h-5 w-5" aria-hidden="true">
+                  <path fill="#0F9D58" d="M44 192l36-62h72l-36 62z"/>
+                  <path fill="#4285F4" d="M80 130L44 192 0 118l36-62z"/>
+                  <path fill="#F4B400" d="M116 68h72l68 118h-72z"/>
+                </svg>
+              {% elif s.key == 'gmail' %}
+                <svg viewBox="0 0 256 256" class="h-5 w-5" aria-hidden="true">
+                  <path fill="#EA4335" d="M32 200V80l96 64 96-64v120h-40V120l-56 38-56-38v80z"/>
+                  <path fill="#34A853" d="M32 80l24-16 72 48-24 16z"/>
+                  <path fill="#FBBC05" d="M224 80l-24-16-72 48 24 16z"/>
+                  <path fill="#4285F4" d="M32 200h40v-80L32 80zM184 120v80h40V80z"/>
+                </svg>
+              {% elif s.key == 'youtube' %}
+                <svg viewBox="0 0 256 256" class="h-5 w-5" aria-hidden="true">
+                  <rect x="16" y="64" width="224" height="128" rx="24" fill="#FF0000"/>
+                  <path d="M112 96l48 32-48 32z" fill="#fff"/>
+                </svg>
+              {% else %}
+                <svg viewBox="0 0 24 24" class="h-5 w-5 text-slate-300" fill="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="10"/></svg>
+              {% endif %}
+            </div>
+            <div class="min-w-0">
+              <div class="text-white font-medium truncate">{{ s.name }}</div>
+              <div class="text-xs text-slate-400 truncate">{{ s.capability }}</div>
+            </div>
+          </a>
+        {% endif %}
+      {% endfor %}
+    </div>
+  </section>
 </div>

@@ -21,9 +21,9 @@ from .database import (
     get_job,
     list_jobs,
     get_job_stats,
-    get_user_count,
     update_job_status,
     get_google_tokens,
+    get_user_by_id,
 )
 from .notifications import notify_job
 from .auth import create_user_api_key
@@ -42,7 +42,7 @@ from .utils import enqueue_job_with_guard
 
 logger = get_logger(__name__)
 
-router = APIRouter(dependencies=[Depends(get_current_user)])
+router = APIRouter()
 
 
 def _parse_job_progress_model(progress_str: str) -> JobProgress:
@@ -52,10 +52,20 @@ def _parse_job_progress_model(progress_str: str) -> JobProgress:
 
 @router.get("/auth/github/status", tags=["Authentication"])
 async def github_link_status(user: dict = Depends(get_current_user)):
+    db = ensure_db()
+    linked = bool(user.get("github_id"))
+    github_id = user.get("github_id")
+    email = user.get("email")
+    if not linked:
+        stored = await get_user_by_id(db, user["user_id"])  # type: ignore
+        if stored:
+            github_id = github_id or stored.get("github_id")
+            email = email or stored.get("email")
+            linked = bool(stored.get("github_id"))
     return {
-        "linked": True,
-        "github_id": user.get("github_id"),
-        "email": user.get("email"),
+        "linked": linked,
+        "github_id": github_id,
+        "email": email,
     }
 
 
@@ -108,9 +118,10 @@ async def google_auth_callback(code: str, state: str, request: Request, user: di
 
     try:
         await exchange_google_code(db, user["user_id"], code, redirect_uri)
-        response = RedirectResponse(url="/", status_code=status.HTTP_302_FOUND)
-        response.delete_cookie(key=COOKIE_GOOGLE_OAUTH_STATE, path="/", samesite="lax")
-        response.delete_cookie(key="google_redirect_uri", path="/", samesite="lax")
+        is_secure = settings.environment == "production" or request.url.scheme == "https"
+        response = RedirectResponse(url="/dashboard", status_code=status.HTTP_302_FOUND)
+        response.delete_cookie(key=COOKIE_GOOGLE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
+        response.delete_cookie(key="google_redirect_uri", path="/", samesite="lax", httponly=True, secure=is_secure)
         return response
     except Exception as e:
         logger.error(f"Google callback failed: {e}", exc_info=True)
@@ -129,12 +140,18 @@ async def google_link_status(user: dict = Depends(get_current_user)):
 @router.get("/auth/providers/status", tags=["Authentication"])
 async def providers_status(user: dict = Depends(get_current_user)):
     db = ensure_db()
-    github_linked = True
+    # Determine GitHub linkage from user or DB
+    github_linked = bool(user.get("github_id"))
+    if not github_linked:
+        stored = await get_user_by_id(db, user["user_id"])  # type: ignore
+        github_linked = bool(stored and stored.get("github_id"))
     tokens = await get_google_tokens(db, user["user_id"])  # type: ignore
     google_linked = bool(tokens)
     return {
         "github_linked": github_linked,
         "google_linked": google_linked,
+        "github_expiry": None,
+        "github_scopes": None,
         "google_expiry": tokens.get("expiry") if tokens else None,
         "google_scopes": tokens.get("scopes") if tokens else None,
     }
@@ -142,11 +159,23 @@ async def providers_status(user: dict = Depends(get_current_user)):
 
 @router.get("/auth/me", response_model=UserResponse, tags=["Authentication"])
 async def get_current_user_info(user: dict = Depends(get_current_user)):
+    created_at_val = user.get("created_at")
+    created_at_dt = None
+    if isinstance(created_at_val, datetime):
+        created_at_dt = created_at_val if created_at_val.tzinfo else created_at_val.replace(tzinfo=timezone.utc)
+    elif isinstance(created_at_val, str):
+        try:
+            dt = datetime.fromisoformat(created_at_val)
+            created_at_dt = dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+        except Exception:
+            created_at_dt = None
+    if created_at_dt is None:
+        created_at_dt = datetime.now(timezone.utc)
     return UserResponse(
         user_id=user["user_id"],
         github_id=user.get("github_id"),
         email=user.get("email"),
-        created_at=datetime.now(timezone.utc),
+        created_at=created_at_dt,
     )
 
 
@@ -275,16 +304,15 @@ async def cancel_job(job_id: str, user: dict = Depends(get_current_user)):
     return {"ok": True, "job_id": job_id}
 
 
-@router.get("/api/v1/stats", response_model=StatsResponse, tags=["Admin"])
+@router.get("/api/v1/stats", response_model=StatsResponse, tags=["Stats"])
 async def get_stats(user: dict = Depends(get_current_user)):
     db = ensure_db()
     job_stats = await get_job_stats(db, user["user_id"]) 
-    total_users = await get_user_count(db)
     return StatsResponse(
         total_jobs=job_stats.get("total", 0),
         completed_jobs=job_stats.get("completed", 0),
         failed_jobs=job_stats.get("failed", 0),
         pending_jobs=job_stats.get("pending", 0),
         processing_jobs=job_stats.get("processing", 0),
-        total_users=total_users,
+        total_users=None,
     )

@@ -89,7 +89,7 @@ class JobProgress(BaseModel):
     deleted: int = Field(default=0, ge=0)
     download_failed: int = Field(default=0, ge=0)
     upload_failed: int = Field(default=0, ge=0)
-    recent_logs: List[str] = Field(default_factory=list)
+    recent_logs: List[str] = Field(default_factory=list, max_items=50, exclude=True)
 
 
 class JobStatus(BaseModel):
@@ -161,5 +161,5 @@ class StatsResponse(BaseModel):
     failed_jobs: int
     pending_jobs: int
     processing_jobs: int
-    total_users: int
+    total_users: Optional[int] = None
 
