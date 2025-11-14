@@ -514,16 +514,11 @@ async def process_ingest_youtube_job(
             langs = [s.strip() for s in langs_raw.split(",") if s.strip()]
         else:
             langs = langs_raw or ["en"]
-        model_size = settings.whisper_model_size
-        device = settings.asr_device
-
         # Fetch transcript with fallback
         result = await asyncio.to_thread(
             fetch_transcript_with_fallback,
             youtube_video_id,
             langs,
-            model_size,
-            device,
         )
 
         if not result.get("success"):
@@ -535,11 +530,8 @@ async def process_ingest_youtube_job(
                     job_id,
                     "transcribe",
                     {
-                        "engine": "faster_whisper",
-                        "model": model_size,
-                        "device": device,
+                        "engine": "captions",
                         "duration_s": result.get("duration_s"),
-                        "segments": result.get("segments"),
                     },
                 )
             except Exception:
@@ -554,10 +546,20 @@ async def process_ingest_youtube_job(
         text = (result.get("text") or "").strip()
         source = result.get("source") or "unknown"
         lang = result.get("lang") or "en"
+        duration_s = result.get("duration_s")
+
+        # Validate required fields
+        if duration_s is None:
+            error_msg = "Transcript fetch succeeded but duration_s is missing"
+            await update_job_status(db, job_id, "failed", error=error_msg)
+            try:
+                await notify_job(db, user_id=user_id, job_id=job_id, level="error", text=f"YouTube ingestion failed: {error_msg}")
+            except Exception:
+                pass
+            return
 
         # Record usage events
         bytes_downloaded = result.get("bytes_downloaded")
-        duration_s = result.get("duration_s")
         segments = result.get("segments")
         if bytes_downloaded:
             try:
@@ -571,11 +573,8 @@ async def process_ingest_youtube_job(
                 job_id,
                 "transcribe",
                 {
-                    "engine": "faster_whisper" if source == "whisper" else "captions",
-                    "model": model_size if source == "whisper" else None,
-                    "device": device if source == "whisper" else None,
+                    "engine": "captions",
                     "duration_s": duration_s,
-                    "segments": segments,
                 },
             )
         except Exception:
@@ -688,8 +687,8 @@ async def handle_queue_message(message: Dict[str, Any], db: Database):
             drive_folder = message.get("drive_folder")
             if not drive_folder or not drive_folder.strip():
                 app_logger.error(
-                    f"Invalid queue message: missing or empty drive_folder for job_id={job_id}, user_id={user_id}",
-                    extra={"job_id": job_id, "user_id": user_id, "drive_folder": drive_folder}
+                    f"Invalid queue message: missing or empty drive_folder for job_id={job_id}",
+                    extra={"job_id": job_id}
                 )
                 try:
                     await update_job_status(db, job_id, "failed", error="Missing or empty drive_folder")

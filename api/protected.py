@@ -46,6 +46,7 @@ from .deps import (
 )
 from .utils import enqueue_job_with_guard
 from core.url_utils import parse_youtube_video_id
+from .database import get_usage_summary, list_usage_events
 
 logger = get_logger(__name__)
 
@@ -456,3 +457,26 @@ async def get_stats(user: dict = Depends(get_current_user)):
         processing_jobs=job_stats.get("processing", 0),
         total_users=None,
     )
+
+
+@router.get("/api/v1/usage/summary", tags=["Usage"])
+async def get_usage_summary_endpoint(
+    window: int = 7,
+    user: dict = Depends(get_current_user)
+):
+    """Get usage summary for the current user."""
+    db = ensure_db()
+    summary = await get_usage_summary(db, user["user_id"], window_days=window)
+    return summary
+
+
+@router.get("/api/v1/usage/events", tags=["Usage"])
+async def get_usage_events_endpoint(
+    limit: int = 50,
+    offset: int = 0,
+    user: dict = Depends(get_current_user)
+):
+    """List usage events for the current user."""
+    db = ensure_db()
+    events = await list_usage_events(db, user["user_id"], limit=limit, offset=offset)
+    return {"events": events, "limit": limit, "offset": offset}

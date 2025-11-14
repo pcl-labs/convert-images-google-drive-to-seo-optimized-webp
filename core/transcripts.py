@@ -11,6 +11,26 @@ def _join_transcript_chunks(chunks: List[dict]) -> str:
     return fmt.format_transcript(chunks)
 
 
+def _get_duration_from_yt_dlp(video_id: str) -> Optional[float]:
+    """Fetch video duration (seconds) via yt-dlp info-only. Returns None on error."""
+    try:
+        from yt_dlp import YoutubeDL  # lazy import
+        ydl_opts = {
+            "quiet": True, 
+            "skip_download": True,
+            "ignoreerrors": True,  # Continue on download errors to still get metadata
+        }
+        with YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False, process=False)
+            if isinstance(info, dict):
+                duration = info.get("duration")
+                if duration is not None:
+                    return float(duration)
+    except Exception:
+        pass
+    return None
+
+
 def try_fetch_captions(video_id: str, langs: List[str]) -> Dict[str, Any]:
     try:
         api = YouTubeTranscriptApi()
@@ -21,17 +41,7 @@ def try_fetch_captions(video_id: str, langs: List[str]) -> Dict[str, Any]:
                 tr = tl.find_transcript([lang])
                 text = _join_transcript_chunks(tr.fetch())
                 if text and text.strip():
-                    # Try to fetch duration via yt-dlp info-only
-                    duration_s = None
-                    try:
-                        from yt_dlp import YoutubeDL  # lazy import
-                        ydl_opts = {"quiet": True, "skip_download": True}
-                        with YoutubeDL(ydl_opts) as ydl:
-                            info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
-                            if isinstance(info, dict):
-                                duration_s = info.get("duration")
-                    except Exception:
-                        duration_s = None
+                    duration_s = _get_duration_from_yt_dlp(video_id)
                     return {"success": True, "text": text, "source": "captions", "lang": tr.language_code, "duration_s": duration_s}
             except Exception:
                 continue
@@ -40,16 +50,7 @@ def try_fetch_captions(video_id: str, langs: List[str]) -> Dict[str, Any]:
             tr_any = tl.find_transcript(["es", "fr", "de"]).translate(langs[0].split(",")[0] if langs else "en")
             text = _join_transcript_chunks(tr_any.fetch())
             if text and text.strip():
-                duration_s = None
-                try:
-                    from yt_dlp import YoutubeDL  # lazy import
-                    ydl_opts = {"quiet": True, "skip_download": True}
-                    with YoutubeDL(ydl_opts) as ydl:
-                        info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
-                        if isinstance(info, dict):
-                            duration_s = info.get("duration")
-                except Exception:
-                    duration_s = None
+                duration_s = _get_duration_from_yt_dlp(video_id)
                 return {"success": True, "text": text, "source": "captions_translated", "lang": tr_any.language_code, "duration_s": duration_s}
         except Exception:
             pass
@@ -60,7 +61,7 @@ def try_fetch_captions(video_id: str, langs: List[str]) -> Dict[str, Any]:
         return {"success": False, "error": f"caption_error: {e}"}
 
 
-def fetch_transcript_with_fallback(video_id: str, langs: List[str], model_size: str, device: str) -> Dict[str, Any]:
+def fetch_transcript_with_fallback(video_id: str, langs: List[str]) -> Dict[str, Any]:
     """Captions-only transcript fetch. Returns error if captions unavailable."""
     cap = try_fetch_captions(video_id, langs)
     if cap.get("success") and cap.get("text"):
