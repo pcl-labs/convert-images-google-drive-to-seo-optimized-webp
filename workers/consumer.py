@@ -592,7 +592,10 @@ async def handle_queue_message(message: Dict[str, Any], db: Database):
                     f"Invalid queue message: missing or empty drive_folder for job_id={job_id}, user_id={user_id}",
                     extra={"job_id": job_id, "user_id": user_id, "drive_folder": drive_folder}
                 )
-                await update_job_status(db, job_id, "failed", error="Missing or empty drive_folder")
+                try:
+                    await update_job_status(db, job_id, "failed", error="Missing or empty drive_folder")
+                except Exception:
+                    pass
                 try:
                     await notify_job(db, user_id=user_id, job_id=job_id, level="error", text="Job failed: invalid drive_folder")
                 except Exception:

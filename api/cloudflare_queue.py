@@ -86,28 +86,33 @@ class QueueProducer:
 
         if "job_type" in message:
             if not (_is_str(message.get("job_id")) and _is_str(message.get("user_id")) and _is_str(message.get("job_type"))):
-                logger.error("Invalid job message: missing job_id/user_id/job_type", extra={"message": message})
+                logger.error("Invalid job message: missing job_id/user_id/job_type")
                 return False
             jt = str(message.get("job_type"))
             if jt == "ingest_youtube":
                 if not (_is_str(message.get("document_id")) and _is_str(message.get("youtube_video_id"))):
-                    logger.error("Invalid ingest_youtube message: require document_id and youtube_video_id", extra={"message": message})
+                    logger.error(f"Invalid ingest_youtube message: require document_id and youtube_video_id (job_type={jt})")
                     return False
             elif jt == "ingest_text":
                 if not _is_str(message.get("document_id")):
-                    logger.error("Invalid ingest_text message: require document_id", extra={"message": message})
+                    logger.error(f"Invalid ingest_text message: require document_id (job_type={jt})")
                     return False
             elif jt == "optimize_drive":
                 if not _is_str(message.get("drive_folder")):
-                    logger.error("Invalid optimize_drive message: require drive_folder", extra={"message": message})
+                    logger.error(f"Invalid optimize_drive message: require drive_folder (job_type={jt})")
+                    return False
+            elif jt == "generate_blog":
+                # generation requires an existing document
+                if not _is_str(message.get("document_id")):
+                    logger.error(f"Invalid generate_blog message: require document_id (job_type={jt})")
                     return False
             # other job_types can be added here with more rules
         elif "operation" in message:
             if not (_is_str(message.get("document_id")) and _is_str(message.get("operation"))):
-                logger.error("Invalid document operation message: require document_id and operation", extra={"message": message})
+                logger.error("Invalid document operation message: require document_id and operation")
                 return False
         else:
-            logger.error("Unknown message shape; rejecting generic send", extra={"message": message})
+            logger.error("Unknown message shape; rejecting generic send")
             return False
 
         try:
