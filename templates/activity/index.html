@@ -18,8 +18,8 @@
             {{ alert('success' if level=='success' else ('error' if level=='error' else 'info'), n.text) }}
           </div>
           <div class="flex items-center gap-2">
-            {{ button('Seen', variant='ghost', attrs='hx-post="/api/notifications/' ~ n.id ~ '/seen" hx-swap="none" hx-on:htmx:afterOnLoad="window.dispatchEvent(new CustomEvent(\'toast\',{detail:{type:\'info\',text:\'Marked seen\'}}))"', with_spinner=True) }}
-            {{ button('Dismiss', variant='ghost', attrs='hx-post="/api/notifications/' ~ n.id ~ '/dismiss" hx-swap="none" hx-on:htmx:afterOnLoad="window.dispatchEvent(new CustomEvent(\'toast\',{detail:{type:\'info\',text:\'Dismissed\'}}))"', with_spinner=True) }}
+            {{ button('Seen', variant='ghost', attrs='hx-post="/api/notifications/' ~ n.id ~ '/seen" hx-headers=\'{"X-CSRF-Token":"{{ csrf_token }}"}\' hx-swap="none" hx-on:htmx:afterOnLoad="window.dispatchEvent(new CustomEvent(\'toast\',{detail:{type:\'info\',text:\'Marked seen\'}}))"', with_spinner=True) }}
+            {{ button('Dismiss', variant='ghost', attrs='hx-post="/api/notifications/' ~ n.id ~ '/dismiss" hx-headers=\'{"X-CSRF-Token":"{{ csrf_token }}"}\' hx-swap="none" hx-on:htmx:afterOnLoad="window.dispatchEvent(new CustomEvent(\'toast\',{detail:{type:\'info\',text:\'Dismissed\'}}))"', with_spinner=True) }}
           </div>
         </div>
       {% endfor %}

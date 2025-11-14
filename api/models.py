@@ -89,6 +89,7 @@ class JobProgress(BaseModel):
     deleted: int = Field(default=0, ge=0)
     download_failed: int = Field(default=0, ge=0)
     upload_failed: int = Field(default=0, ge=0)
+    recent_logs: List[str] = Field(default_factory=list)
 
 
 class JobStatus(BaseModel):

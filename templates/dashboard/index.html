@@ -6,6 +6,20 @@
     <h1 class="text-xl font-semibold text-white">Dashboard</h1>
     <p class="text-sm text-slate-400">Overview and quick actions</p>
   </div>
+  <div class="flex items-center gap-3">
+    {% from 'components/elements/badge.html' import badge %}
+    {% if google_connected %}
+      <div class="flex items-center gap-2">
+        {{ badge('Google Drive Connected', status='completed') }}
+        <form method="post" action="/integrations/drive/disconnect">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+          <button type="submit" class="text-xs text-slate-300 hover:text-white underline">Disconnect</button>
+        </form>
+      </div>
+    {% else %}
+      <a href="/auth/google/start" class="text-xs text-sky-400 hover:text-sky-300 underline">Connect Google Drive</a>
+    {% endif %}
+  </div>
 
   <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
     <div class="bg-slate-800/50 border border-slate-700 rounded-xl p-4">

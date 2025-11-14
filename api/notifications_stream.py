@@ -2,8 +2,11 @@ from starlette.responses import StreamingResponse
 from typing import Optional, Dict, Any
 import json
 import asyncio
+import logging
 
 from .database import list_notifications, Database
+
+logger = logging.getLogger(__name__)
 
 
 def _sse_headers() -> Dict[str, str]:
@@ -25,7 +28,8 @@ def notifications_stream_response(request, db: Database, user: Dict[str, Any]) -
                 notifs = await list_notifications(db, user["user_id"], after_id=last_sent, limit=20)
                 if notifs:
                     for n in notifs:
-                        last_sent = n.get("id") or last_sent
+                        if "id" in n:
+                            last_sent = n["id"]
                         payload = json.dumps({
                             "type": "notification.created",
                             "data": {
@@ -41,6 +45,7 @@ def notifications_stream_response(request, db: Database, user: Dict[str, Any]) -
                     yield ": heartbeat\n\n"
                 await asyncio.sleep(5)
         except Exception:
+            logger.exception("notifications_stream event_generator failed")
             return
 
     return StreamingResponse(event_generator(), headers=_sse_headers())

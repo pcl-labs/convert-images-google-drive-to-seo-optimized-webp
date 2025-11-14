@@ -6,6 +6,9 @@ async def notify_job(db: Database, user_id: str, job_id: str, level: str, text: 
     """Create a notification for a job using a UUID id.
     Level: 'success' | 'error' | 'info'
     """
+    allowed = {"success", "error", "info"}
+    if level not in allowed:
+        raise ValueError(f"Invalid level '{level}'. Allowed: {sorted(allowed)}")
     notif_id = str(uuid.uuid4())
     await create_notification(
         db,

@@ -19,6 +19,7 @@ import uuid
 import logging
 import json
 import secrets
+import hmac
 
 from .models import OptimizeRequest, JobStatusEnum
 from .deps import ensure_services, ensure_db, parse_job_progress, get_current_user
@@ -39,11 +40,10 @@ from .database import (
 from .auth import create_user_api_key
 from workers.consumer import process_optimization_job
 from .config import settings
-from .utils import normalize_ui_status
 from .notifications import notify_job
 from .notifications_stream import notifications_stream_response
 from .constants import COOKIE_OAUTH_STATE, COOKIE_GOOGLE_OAUTH_STATE
-from .utils import normalize_ui_status
+from .utils import normalize_ui_status, enqueue_job_with_guard
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +75,11 @@ async def api_list_notifications(request: Request, user: dict = Depends(get_curr
 
 @router.post("/api/notifications/{notification_id}/seen")
 async def api_mark_seen(notification_id: str, request: Request, user: dict = Depends(get_current_user)):
+    # CSRF protection via header token for HTMX
+    cookie_token = request.cookies.get("csrf_token")
+    header_token = request.headers.get("X-CSRF-Token")
+    if not cookie_token or not header_token or cookie_token != header_token:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
     db = ensure_db()
     await mark_notification_seen(db, user["user_id"], notification_id)
     return {"ok": True}
@@ -82,6 +87,11 @@ async def api_mark_seen(notification_id: str, request: Request, user: dict = Dep
 
 @router.post("/api/notifications/{notification_id}/dismiss")
 async def api_dismiss(notification_id: str, request: Request, user: dict = Depends(get_current_user)):
+    # CSRF protection via header token for HTMX
+    cookie_token = request.cookies.get("csrf_token")
+    header_token = request.headers.get("X-CSRF-Token")
+    if not cookie_token or not header_token or cookie_token != header_token:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
     db = ensure_db()
     await dismiss_notification(db, user["user_id"], notification_id)
     return {"ok": True}
@@ -146,6 +156,9 @@ async def dashboard(request: Request, user: dict = Depends(get_current_user), pa
     jobs_list, total = await list_jobs(db, user["user_id"], page=page, page_size=10, status=None)
     stats = await get_job_stats(db, user["user_id"])  # { total, completed, failed, pending, processing }
     csrf = _get_csrf_token(request)
+    # Google connection status for dashboard badge
+    tokens = await get_google_tokens(db, user["user_id"])  # type: ignore
+    google_connected = bool(tokens)
 
     # Transform jobs for dashboard table
     def to_view(j):
@@ -169,6 +182,7 @@ async def dashboard(request: Request, user: dict = Depends(get_current_user), pa
         },
         "csrf_token": csrf,
         "page_title": "Dashboard",
+        "google_connected": google_connected,
     }
     resp = templates.TemplateResponse("dashboard/index.html", context)
     if not request.cookies.get("csrf_token"):
@@ -204,21 +218,30 @@ async def create_job_html(
 
     # Persist job with concrete extensions list (not None)
     await create_job(db, job_id, user["user_id"], folder_input, extensions_list)
-    enqueued = False
-    enqueue_exception: Optional[Exception] = None
-    # Only attempt to enqueue when a queue backend is configured
-    if getattr(queue, "queue", None) is not None:
+    
+    # Unified enqueue logic with environment-aware guard
+    enqueued, enqueue_exception, should_fail = await enqueue_job_with_guard(
+        queue, job_id, user["user_id"], req_model, allow_inline_fallback=True
+    )
+    
+    if should_fail:
+        # Production: queue required, fail if unavailable
+        detail = "Queue unavailable or enqueue failed; background processing is required in production."
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=detail)
+    
+    # Development: allow inline fallback when queue missing or enqueue failed
+    if not enqueued:
         try:
-            enqueued = await queue.send_job(job_id, user["user_id"], req_model)
-        except Exception as e:
-            # Do not assume not enqueued; avoid immediate inline execution
-            enqueue_exception = e
-            logger.error(f"Failed to enqueue job {job_id}: {e}", exc_info=True)
-
-    # If no queue configured or enqueue definitively returned False (without exception), run inline via BackgroundTasks
-    should_run_inline = (getattr(queue, "queue", None) is None) or (not enqueued and enqueue_exception is None)
-    if should_run_inline:
-        try:
+            logger.info(
+                f"Using BackgroundTasks fallback for job {job_id}",
+                extra={
+                    "job_id": job_id,
+                    "user_id": user["user_id"],
+                    "event": "job.fallback_background_tasks",
+                    "environment": settings.environment,
+                    "fallback_type": "BackgroundTasks"
+                }
+            )
             background_tasks.add_task(
                 process_optimization_job,
                 db=db,
@@ -232,13 +255,18 @@ async def create_job_html(
                 max_retries=req_model.max_retries,
             )
         except Exception as e:
-            logger.error(f"Failed to schedule inline job {job_id}: {e}", exc_info=True)
+            logger.error(
+                f"Failed to schedule inline job {job_id}: {e}",
+                exc_info=True,
+                extra={
+                    "job_id": job_id,
+                    "user_id": user["user_id"],
+                    "event": "job.fallback_failed",
+                    "fallback_type": "BackgroundTasks",
+                    "error": str(e)
+                }
+            )
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to schedule job")
-
-    # If enqueue raised an exception and we chose not to run inline to avoid duplicates,
-    # surface the failure so the user isn't shown success with no processing.
-    if enqueue_exception is not None and not should_run_inline:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Failed to enqueue job; please retry shortly")
 
     jobs_list, total = await list_jobs(db, user["user_id"], page=1, page_size=10, status=None)
 
@@ -264,6 +292,7 @@ async def job_detail_partial(job_id: str, request: Request, user: dict = Depends
     from .main import get_job_status
     data = await get_job_status(job_id, user)  # reuse existing handler logic
     progress = parse_job_progress(data.progress.model_dump_json() if hasattr(data.progress, "model_dump_json") else "{}")
+    csrf = _get_csrf_token(request)
     context = {
         "request": request,
         "job": {
@@ -277,13 +306,19 @@ async def job_detail_partial(job_id: str, request: Request, user: dict = Depends
             "created_at": data.created_at,
             "events": [],
         },
+        "csrf_token": csrf,
     }
-    return templates.TemplateResponse("jobs/detail.html", context)
+    resp = templates.TemplateResponse("jobs/detail.html", context)
+    if not request.cookies.get("csrf_token"):
+        is_secure = settings.environment == "production" or request.url.scheme == "https"
+        resp.set_cookie("csrf_token", csrf, httponly=True, samesite="lax", secure=is_secure)
+    return resp
 
 
 @router.get("/jobs", response_class=HTMLResponse)
 async def jobs_page(request: Request, user: dict = Depends(get_current_user), page: int = 1, status: Optional[str] = None):
     db = ensure_db()
+    csrf = _get_csrf_token(request)
     status_filter = None
     if status:
         try:
@@ -311,8 +346,13 @@ async def jobs_page(request: Request, user: dict = Depends(get_current_user), pa
         "page": page,
         "page_title": "Jobs",
         "current_status": (status_filter.value if status_filter else None),
+        "csrf_token": csrf,
     }
-    return templates.TemplateResponse("jobs/index.html", context)
+    resp = templates.TemplateResponse("jobs/index.html", context)
+    if not request.cookies.get("csrf_token"):
+        is_secure = settings.environment == "production" or request.url.scheme == "https"
+        resp.set_cookie("csrf_token", csrf, httponly=True, samesite="lax", secure=is_secure)
+    return resp
 
 
 @router.get("/integrations", response_class=HTMLResponse)
@@ -337,7 +377,7 @@ async def integrations_page(request: Request, user: dict = Depends(get_current_u
 @router.post("/integrations/drive/disconnect")
 async def integrations_drive_disconnect(request: Request, csrf_token: str = Form(...), user: dict = Depends(get_current_user)):
     cookie_token = request.cookies.get("csrf_token")
-    if not cookie_token or cookie_token != csrf_token:
+    if cookie_token is None or csrf_token is None or not hmac.compare_digest(str(cookie_token), str(csrf_token)):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
     db = ensure_db()
     await delete_google_tokens(db, user["user_id"])  # type: ignore
@@ -347,18 +387,39 @@ async def integrations_drive_disconnect(request: Request, csrf_token: str = Form
 @router.post("/jobs/{job_id}/retry")
 async def retry_job(job_id: str, request: Request, user: dict = Depends(get_current_user)):
     db, queue = ensure_services()
+    # CSRF protection via header token for HTMX
+    cookie_token = request.cookies.get("csrf_token")
+    header_token = request.headers.get("X-CSRF-Token")
+    if not cookie_token or not header_token or cookie_token != header_token:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
     job = await get_job(db, job_id, user["user_id"])  # type: ignore
     if not job:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
     # Reset status to pending and clear error
     await update_job_status(db, job_id, "pending")
-    try:
-        req_model = OptimizeRequest(drive_folder=job.get("drive_folder"), extensions=job.get("extensions") or [])
-        if getattr(queue, "queue", None) is not None:
-            await queue.send_job(job_id, user["user_id"], req_model)
-    except Exception:
-        # Swallow queue errors for UI; background may be unavailable
-        pass
+    
+    # Unified enqueue logic with environment-aware guard
+    req_model = OptimizeRequest(drive_folder=job.get("drive_folder"), extensions=job.get("extensions") or [])
+    enqueued, enqueue_exception, should_fail = await enqueue_job_with_guard(
+        queue, job_id, user["user_id"], req_model, allow_inline_fallback=False
+    )
+    
+    if should_fail:
+        # Production: queue required, fail if unavailable
+        # Return HTMX-friendly error response
+        return Response(
+            content="Queue unavailable or enqueue failed; background processing is required in production.",
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            media_type="text/plain"
+        )
+    
+    # In development, if queue failed, log warning but still return success
+    # (retry endpoint doesn't have BackgroundTasks fallback)
+    if not enqueued:
+        logger.warning(
+            f"Job {job_id} retry: queue unavailable. Job will remain in pending state."
+        )
+    
     # Notify
     try:
         await notify_job(db, user_id=user["user_id"], job_id=job_id, level="info", text=f"Job {job_id} retried")
@@ -369,10 +430,25 @@ async def retry_job(job_id: str, request: Request, user: dict = Depends(get_curr
 
 @router.delete("/jobs/{job_id}")
 async def cancel_job_html(job_id: str, request: Request, user: dict = Depends(get_current_user)):
+    from .models import JobStatusEnum
     db = ensure_db()
+    # CSRF protection via header token for HTMX
+    cookie_token = request.cookies.get("csrf_token")
+    header_token = request.headers.get("X-CSRF-Token")
+    if not cookie_token or not header_token or cookie_token != header_token:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
     job = await get_job(db, job_id, user["user_id"])  # type: ignore
     if not job:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+    # Check if job can be cancelled (same logic as API endpoint)
+    current_status = JobStatusEnum(job["status"])
+    if current_status in [JobStatusEnum.COMPLETED, JobStatusEnum.FAILED, JobStatusEnum.CANCELLED]:
+        # Return HTMX-friendly error response
+        return Response(
+            content=f"Cannot cancel job with status: {current_status.value}",
+            status_code=status.HTTP_400_BAD_REQUEST,
+            media_type="text/plain"
+        )
     await update_job_status(db, job_id, "cancelled")
     # Notify
     try:
@@ -409,21 +485,6 @@ async def settings_page(request: Request, user: dict = Depends(get_current_user)
     return resp
 
 
-@router.post("/settings/api-key", response_class=HTMLResponse)
-async def generate_api_key(request: Request, csrf_token: str = Form(...), user: dict = Depends(get_current_user)):
-    cookie_token = request.cookies.get("csrf_token")
-    if not cookie_token or cookie_token != csrf_token:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
-    db = ensure_db()
-    key = await create_user_api_key(db, user["user_id"])  # type: ignore
-    html = f"""
-    <div class=\"bg-slate-900/60 border border-slate-800 rounded-md p-3\">
-      <div class=\"text-slate-300 text-sm\">New API Key</div>
-      <div class=\"mt-1 font-mono text-white break-all\">{key}</div>
-      <div class=\"text-xs text-slate-500 mt-2\">Copy and store it securely. You won't be able to see it again.</div>
-    </div>
-    """
-    return HTMLResponse(content=html)
 
 
 @router.get("/account", response_class=HTMLResponse)
