@@ -560,12 +560,28 @@ async def handle_queue_message(message: Dict[str, Any], db: Database):
             video_id = message.get("youtube_video_id")
             if not document_id or not video_id:
                 app_logger.error("YouTube ingestion message missing document_id or youtube_video_id")
+                try:
+                    await update_job_status(db, job_id, "failed", error="Missing document_id or youtube_video_id")
+                    try:
+                        await notify_job(db, user_id=user_id, job_id=job_id, level="error", text="Job failed: invalid YouTube ingestion payload")
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
                 return
             await process_ingest_youtube_job(db, job_id, user_id, document_id, video_id)
         elif job_type == "ingest_text":
             document_id = message.get("document_id")
             if not document_id:
                 app_logger.error("Text ingestion message missing document_id")
+                try:
+                    await update_job_status(db, job_id, "failed", error="Missing document_id")
+                    try:
+                        await notify_job(db, user_id=user_id, job_id=job_id, level="error", text="Job failed: invalid text ingestion payload")
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
                 return
             await process_ingest_text_job(db, job_id, user_id, document_id)
         else:
@@ -576,6 +592,11 @@ async def handle_queue_message(message: Dict[str, Any], db: Database):
                     f"Invalid queue message: missing or empty drive_folder for job_id={job_id}, user_id={user_id}",
                     extra={"job_id": job_id, "user_id": user_id, "drive_folder": drive_folder}
                 )
+                await update_job_status(db, job_id, "failed", error="Missing or empty drive_folder")
+                try:
+                    await notify_job(db, user_id=user_id, job_id=job_id, level="error", text="Job failed: invalid drive_folder")
+                except Exception:
+                    pass
                 return
             await process_optimization_job(
                 db=db,

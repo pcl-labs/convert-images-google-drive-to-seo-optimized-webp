@@ -1,9 +1,11 @@
+MAX_TEXT_LENGTH = 20000  # configurable upper bound for text ingestion
 from fastapi import APIRouter, Request, Depends, HTTPException, status
 from fastapi.responses import RedirectResponse
 from typing import Optional
 import uuid
 import secrets
 from datetime import datetime, timezone
+import re
 
 from .config import settings
 from .models import (
@@ -368,8 +370,7 @@ async def ingest_youtube(req: IngestYouTubeRequest, user: dict = Depends(get_cur
     db = ensure_db()
     queue = ensure_services()[1]
     # naive video id extraction
-    url = (req.url or "").strip()
-    import re
+    url = (str(req.url) or "").strip()
     m = re.search(r"(?:v=|youtu\.be/|/shorts/)([A-Za-z0-9_-]{6,})", url)
     if not m:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid YouTube URL")
@@ -404,6 +405,8 @@ async def ingest_text(req: IngestTextRequest, user: dict = Depends(get_current_u
     text = (req.text or "").strip()
     if not text:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Text is required")
+    if len(text) > MAX_TEXT_LENGTH:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Text must be at most {MAX_TEXT_LENGTH} characters")
     job_id = str(uuid.uuid4())
     document_id = str(uuid.uuid4())
     await create_document(db, document_id, user["user_id"], source_type="text", source_ref=None, raw_text=text, metadata={"title": req.title} if req.title else {})
