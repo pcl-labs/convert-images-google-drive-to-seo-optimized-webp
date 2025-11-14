@@ -560,7 +560,6 @@ async def process_ingest_youtube_job(
 
         # Record usage events
         bytes_downloaded = result.get("bytes_downloaded")
-        segments = result.get("segments")
         if bytes_downloaded:
             try:
                 await record_usage_event(db, user_id, job_id, "download", {"bytes_downloaded": int(bytes_downloaded), "duration_s": duration_s})

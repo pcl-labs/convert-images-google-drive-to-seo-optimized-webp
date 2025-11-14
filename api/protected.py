@@ -478,10 +478,10 @@ async def get_usage_summary_endpoint(
         return summary 
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         # Log internal error, do not leak details
         logger.exception("usage_summary_error")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to load usage summary") 
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to load usage summary") from None 
 
 
 @router.get("/api/v1/usage/events", tags=["Usage"]) 
@@ -509,4 +509,4 @@ async def get_usage_events_endpoint(
         raise
     except Exception:
         logger.exception("usage_events_error")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to load usage events")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to load usage events") from None
