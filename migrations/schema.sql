@@ -133,3 +133,17 @@ CREATE TABLE IF NOT EXISTS documents (
 
 CREATE INDEX IF NOT EXISTS idx_documents_user ON documents(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_documents_source ON documents(source_type, source_ref);
+
+-- Phase 2: Usage metering
+CREATE TABLE IF NOT EXISTS usage_events (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    job_id TEXT NOT NULL,
+    event_type TEXT NOT NULL, -- download|transcribe|persist
+    metrics TEXT, -- JSON
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_usage_events_user_created ON usage_events(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_usage_events_job ON usage_events(job_id, created_at DESC);

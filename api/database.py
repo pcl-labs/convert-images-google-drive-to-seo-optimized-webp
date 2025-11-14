@@ -819,6 +819,27 @@ async def dismiss_notification(db: Database, user_id: str, notification_id: str)
     )
 
 
+# Usage metering
+async def record_usage_event(
+    db: Database,
+    user_id: str,
+    job_id: str,
+    event_type: str,
+    metrics: Dict[str, Any] | None = None,
+) -> None:
+    """Record a usage event with metrics JSON."""
+    await db.execute(
+        "INSERT INTO usage_events (id, user_id, job_id, event_type, metrics, created_at) VALUES (?, ?, ?, ?, ?, datetime('now'))",
+        (
+            f"{job_id}:{event_type}:{datetime.utcnow().isoformat()}",
+            user_id,
+            job_id,
+            event_type,
+            json.dumps(metrics or {}),
+        ),
+    )
+
+
 def map_job_status_to_notification(job: Dict[str, Any]) -> Dict[str, Any] | None:
     """Simple projector: map a job row to a notification payload (level, text)."""
     st = job.get("status", "queued")
