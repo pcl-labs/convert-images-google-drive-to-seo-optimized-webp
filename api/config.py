@@ -67,6 +67,14 @@ class Settings(BaseSettings):
     
     # CORS - accept string or list, will be converted to list
     cors_origins: Union[str, list[str]] = Field(default="http://localhost:8000")
+
+    # Phase 2: Transcripts/ASR
+    enable_ytdlp_audio: bool = Field(default=True)
+    asr_engine: str = Field(default="faster_whisper")  # faster_whisper|whisper|provider
+    whisper_model_size: str = Field(default="small.en")
+    asr_device: str = Field(default="cpu")  # cpu|cuda|auto
+    asr_max_duration_min: int = Field(default=60)
+    transcript_langs: Union[str, list[str]] = Field(default="en,en-US,en-GB")
     
     @field_validator("encryption_key")
     @classmethod
@@ -86,6 +94,37 @@ class Settings(BaseSettings):
     def require_encryption_key_in_production(self):
         if (self.environment or "").lower() == "production" and not self.encryption_key:
             raise ValueError("ENCRYPTION_KEY is required in production (provide a base64 URL-safe 32-byte key)")
+        return self
+
+    @field_validator("asr_engine")
+    @classmethod
+    def validate_asr_engine(cls, v: str) -> str:
+        allowed = {"faster_whisper", "whisper", "provider"}
+        if v not in allowed:
+            raise ValueError(f"asr_engine must be one of {sorted(allowed)}")
+        return v
+
+    @field_validator("asr_device")
+    @classmethod
+    def validate_asr_device(cls, v: str) -> str:
+        allowed = {"cpu", "cuda", "auto"}
+        if v not in allowed:
+            raise ValueError(f"asr_device must be one of {sorted(allowed)}")
+        return v
+
+    @model_validator(mode="after")
+    def parse_transcript_langs(self):
+        """Parse comma-separated transcript_langs string into a list."""
+        if isinstance(self.transcript_langs, str):
+            if "," in self.transcript_langs:
+                self.transcript_langs = [lang.strip() for lang in self.transcript_langs.split(",") if lang.strip()]
+            else:
+                self.transcript_langs = [self.transcript_langs.strip()] if self.transcript_langs.strip() else ["en"]
+        elif isinstance(self.transcript_langs, list):
+            if not self.transcript_langs:
+                self.transcript_langs = ["en"]
+        else:
+            self.transcript_langs = ["en"]
         return self
 
     @model_validator(mode="after")
