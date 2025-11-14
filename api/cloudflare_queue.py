@@ -50,6 +50,81 @@ class QueueProducer:
         except Exception as e:
             logger.error(f"Failed to send job {job_id} to queue: {e}", exc_info=True)
             return False
+
+    async def send_generic(self, message: Dict[str, Any]) -> bool:
+        """Send a validated message to the queue.
+
+        Accepted common shapes (validated at runtime):
+        1) Job messages (required fields):
+           - job_id: str
+           - user_id: str
+           - job_type: str (e.g., 'optimize_drive', 'ingest_text', 'ingest_youtube', 'generate_blog')
+           Optional fields depend on job_type, for example:
+           - document_id: str (for ingestion/generation)
+           - drive_folder: str (for optimize_drive)
+           - youtube_video_id: str (for ingest_youtube)
+
+        2) Document operation messages (required fields):
+           - document_id: str
+           - operation: str (e.g., 'update', 'delete')
+
+        Validation rules:
+        - If 'job_type' is present, 'job_id' and 'user_id' are required (non-empty strings).
+        - For job_type 'ingest_youtube', require 'document_id' and 'youtube_video_id'.
+        - For job_type 'ingest_text', require 'document_id'.
+        - For job_type 'optimize_drive', require 'drive_folder'.
+        - If 'operation' is present (document message), require 'document_id'.
+        - Unknown shapes are rejected to prevent downstream failures.
+        """
+        if not self.queue:
+            logger.warning("Queue not configured, message will not be processed")
+            return False
+
+        # Basic runtime validation
+        def _is_str(v):
+            return isinstance(v, str) and bool(v.strip())
+
+        if "job_type" in message:
+            if not (_is_str(message.get("job_id")) and _is_str(message.get("user_id")) and _is_str(message.get("job_type"))):
+                logger.error("Invalid job message: missing job_id/user_id/job_type")
+                return False
+            jt = str(message.get("job_type"))
+            if jt == "ingest_youtube":
+                if not (_is_str(message.get("document_id")) and _is_str(message.get("youtube_video_id"))):
+                    logger.error(f"Invalid ingest_youtube message: require document_id and youtube_video_id (job_type={jt})")
+                    return False
+            elif jt == "ingest_text":
+                if not _is_str(message.get("document_id")):
+                    logger.error(f"Invalid ingest_text message: require document_id (job_type={jt})")
+                    return False
+            elif jt == "optimize_drive":
+                if not _is_str(message.get("drive_folder")):
+                    logger.error(f"Invalid optimize_drive message: require drive_folder (job_type={jt})")
+                    return False
+            elif jt == "generate_blog":
+                # generation requires an existing document
+                if not _is_str(message.get("document_id")):
+                    logger.error(f"Invalid generate_blog message: require document_id (job_type={jt})")
+                    return False
+            # other job_types can be added here with more rules
+        elif "operation" in message:
+            if not (_is_str(message.get("document_id")) and _is_str(message.get("operation"))):
+                logger.error("Invalid document operation message: require document_id and operation")
+                return False
+        else:
+            logger.error("Unknown message shape; rejecting generic send")
+            return False
+
+        try:
+            await self.queue.send(message)
+            logger.info(
+                "Sent generic message to queue",
+                extra={"message_keys": list(message.keys())}
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Failed to send generic message to queue: {e}", exc_info=True)
+            return False
     
     async def send_to_dlq(self, job_id: str, error: str, original_message: Dict[str, Any]) -> bool:
         """Send a failed job to the dead letter queue."""

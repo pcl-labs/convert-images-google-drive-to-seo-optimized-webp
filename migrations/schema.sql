@@ -117,3 +117,19 @@ CREATE TABLE IF NOT EXISTS google_tokens (
 
 CREATE INDEX IF NOT EXISTS idx_google_tokens_user_id ON google_tokens(user_id);
 
+-- Phase 1: Content normalization and unified job types
+-- Create documents table
+CREATE TABLE IF NOT EXISTS documents (
+    document_id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    source_type TEXT NOT NULL,
+    source_ref TEXT,
+    raw_text TEXT,
+    metadata TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_documents_user ON documents(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_documents_source ON documents(source_type, source_ref);

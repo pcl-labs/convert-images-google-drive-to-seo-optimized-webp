@@ -1,3 +1,4 @@
+MAX_TEXT_LENGTH = 20000  # configurable upper bound for text ingestion
 from fastapi import APIRouter, Request, Depends, HTTPException, status
 from fastapi.responses import RedirectResponse
 from typing import Optional
@@ -15,15 +16,20 @@ from .models import (
     APIKeyResponse,
     StatsResponse,
     JobStatusEnum,
+    JobType,
+    IngestYouTubeRequest,
+    IngestTextRequest,
 )
 from .database import (
     create_job,
+    create_job_extended,
     get_job,
     list_jobs,
     get_job_stats,
     update_job_status,
     get_google_tokens,
     get_user_by_id,
+    create_document,
 )
 from .notifications import notify_job
 from .auth import create_user_api_key
@@ -39,6 +45,7 @@ from .deps import (
     parse_job_progress,
 )
 from .utils import enqueue_job_with_guard
+from core.url_utils import parse_youtube_video_id
 
 logger = get_logger(__name__)
 
@@ -231,14 +238,42 @@ async def optimize_images(request: OptimizeRequest, user: dict = Depends(get_cur
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Google not linked or folder not accessible")
 
     job_id = str(uuid.uuid4())
+    document_id = str(uuid.uuid4())
     try:
-        # Persist the canonical folder_id so downstream consumers receive a validated ID
-        job_data = await create_job(db, job_id, user["user_id"], folder_id, request.extensions)
-        
-        # Unified enqueue logic with environment-aware guard
-        enqueued, enqueue_exception, should_fail = await enqueue_job_with_guard(
-            queue, job_id, user["user_id"], request, allow_inline_fallback=False
+        # Create a document representing this Drive source
+        await create_document(
+            db,
+            document_id=document_id,
+            user_id=user["user_id"],
+            source_type="drive",
+            source_ref=folder_id,
+            raw_text=None,
+            metadata={"kind": "drive_folder"},
         )
+        # Create extended job
+        job_data = await create_job_extended(
+            db,
+            job_id=job_id,
+            user_id=user["user_id"],
+            job_type=JobType.OPTIMIZE_DRIVE.value,
+            document_id=document_id,
+            drive_folder=folder_id,
+            extensions=request.extensions,
+        )
+        # Enqueue generic payload with job_type/document_id
+        enqueue_payload = {
+            "job_id": job_id,
+            "user_id": user["user_id"],
+            "job_type": JobType.OPTIMIZE_DRIVE.value,
+            "document_id": document_id,
+            "drive_folder": folder_id,
+            "extensions": request.extensions,
+            "overwrite": request.overwrite,
+            "skip_existing": request.skip_existing,
+            "cleanup_originals": request.cleanup_originals,
+            "max_retries": request.max_retries,
+        }
+        enqueued, enqueue_exception, should_fail = await enqueue_job_with_guard(queue, job_id, user["user_id"], enqueue_payload, allow_inline_fallback=False)
         
         if should_fail:
             # Production: queue required, fail if unavailable
@@ -267,8 +302,9 @@ async def optimize_images(request: OptimizeRequest, user: dict = Depends(get_cur
             status=JobStatusEnum.PENDING,
             progress=progress,
             created_at=_parse_db_datetime(job_data.get("created_at")),
-            # Use canonical persisted folder id for consistency with storage
             drive_folder=(job_data.get("drive_folder") or folder_id),
+            job_type=JobType.OPTIMIZE_DRIVE.value,
+            document_id=document_id,
         )
     except HTTPException:
         # Re-raise HTTP exceptions (like our 502 from should_fail)
@@ -294,6 +330,9 @@ async def get_job_status(job_id: str, user: dict = Depends(get_current_user)):
         completed_at=_parse_db_datetime(job.get("completed_at")) if job.get("completed_at") else None,
         error=job.get("error"),
         drive_folder=job.get("drive_folder"),
+        job_type=job.get("job_type"),
+        document_id=job.get("document_id"),
+        output=(job.get("output") if isinstance(job.get("output"), dict) else None),
     )
 
 
@@ -318,9 +357,73 @@ async def list_user_jobs(page: int = 1, page_size: int = 20, status_filter: Opti
                 completed_at=_parse_db_datetime(job.get("completed_at")) if job.get("completed_at") else None,
                 error=job.get("error"),
                 drive_folder=job.get("drive_folder"),
+                job_type=job.get("job_type"),
+                document_id=job.get("document_id"),
+                output=(job.get("output") if isinstance(job.get("output"), dict) else None),
             )
         )
     return JobListResponse(jobs=job_statuses, total=total, page=page, page_size=page_size, has_more=(page * page_size) < total)
+
+
+@router.post("/ingest/youtube", response_model=JobStatus, tags=["Ingestion"])
+async def ingest_youtube(req: IngestYouTubeRequest, user: dict = Depends(get_current_user)):
+    db = ensure_db()
+    queue = ensure_services()[1]
+    # extract video id using shared helper
+    url = (str(req.url) if req.url is not None else "").strip()
+    video_id = parse_youtube_video_id(url)
+    if not video_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid YouTube URL")
+    job_id = str(uuid.uuid4())
+    document_id = str(uuid.uuid4())
+    # create document
+    await create_document(db, document_id, user["user_id"], source_type="youtube", source_ref=video_id, raw_text=None, metadata={"url": url})
+    # create job
+    job_row = await create_job_extended(db, job_id, user["user_id"], job_type=JobType.INGEST_YOUTUBE.value, document_id=document_id)
+    # enqueue
+    payload = {"job_id": job_id, "user_id": user["user_id"], "job_type": JobType.INGEST_YOUTUBE.value, "document_id": document_id, "youtube_video_id": video_id}
+    enqueued, enqueue_exception, should_fail = await enqueue_job_with_guard(queue, job_id, user["user_id"], payload, allow_inline_fallback=False)
+    if should_fail:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Queue unavailable or enqueue failed; background processing is required in production.")
+    progress = _parse_job_progress_model(progress_str=job_row.get("progress", "{}"))
+    return JobStatus(
+        job_id=job_id,
+        user_id=user["user_id"],
+        status=JobStatusEnum.PENDING,
+        progress=progress,
+        created_at=_parse_db_datetime(job_row.get("created_at")),
+        job_type=JobType.INGEST_YOUTUBE.value,
+        document_id=document_id,
+    )
+
+
+@router.post("/ingest/text", response_model=JobStatus, tags=["Ingestion"])
+async def ingest_text(req: IngestTextRequest, user: dict = Depends(get_current_user)):
+    db = ensure_db()
+    queue = ensure_services()[1]
+    text = (req.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Text is required")
+    if len(text) > MAX_TEXT_LENGTH:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Text must be at most {MAX_TEXT_LENGTH} characters")
+    job_id = str(uuid.uuid4())
+    document_id = str(uuid.uuid4())
+    await create_document(db, document_id, user["user_id"], source_type="text", source_ref=None, raw_text=text, metadata={"title": req.title} if req.title else {})
+    job_row = await create_job_extended(db, job_id, user["user_id"], job_type=JobType.INGEST_TEXT.value, document_id=document_id)
+    payload = {"job_id": job_id, "user_id": user["user_id"], "job_type": JobType.INGEST_TEXT.value, "document_id": document_id}
+    enqueued, enqueue_exception, should_fail = await enqueue_job_with_guard(queue, job_id, user["user_id"], payload, allow_inline_fallback=False)
+    if should_fail:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Queue unavailable or enqueue failed; background processing is required in production.")
+    progress = _parse_job_progress_model(progress_str=job_row.get("progress", "{}"))
+    return JobStatus(
+        job_id=job_id,
+        user_id=user["user_id"],
+        status=JobStatusEnum.PENDING,
+        progress=progress,
+        created_at=_parse_db_datetime(job_row.get("created_at")),
+        job_type=JobType.INGEST_TEXT.value,
+        document_id=document_id,
+    )
 
 
 @router.delete("/api/v1/jobs/{job_id}", tags=["Jobs"])

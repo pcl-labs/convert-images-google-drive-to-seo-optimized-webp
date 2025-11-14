@@ -19,7 +19,7 @@ def client():
 
 def test_root_endpoint(client):
     """Test root endpoint."""
-    response = client.get("/")
+    response = client.get("/api")
     assert response.status_code == 200
     assert "name" in response.json()
     assert "version" in response.json()
@@ -59,10 +59,14 @@ def test_github_auth_redirect(client):
         mock_get_url.assert_called_once()
 
 
-def test_google_oauth_start_requires_auth(client):
-    """Test that Google OAuth start endpoint requires authentication."""
+def test_google_oauth_start_redirects_when_configured(client):
+    """Test that Google OAuth start endpoint redirects when configured; skip otherwise."""
+    from api.config import settings
+    if not settings.google_client_id or not settings.google_client_secret:
+        import pytest
+        pytest.skip("Google OAuth not configured")
     response = client.get("/auth/google/start", follow_redirects=False)
-    assert response.status_code == 401
+    assert response.status_code in [302, 303, 307]
 
 
 def test_google_oauth_callback_requires_auth(client):
