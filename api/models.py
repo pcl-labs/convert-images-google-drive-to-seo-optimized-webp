@@ -3,6 +3,7 @@ Pydantic models for request/response validation.
 """
 
 from pydantic import BaseModel, Field, field_validator, model_validator, ConfigDict
+from pydantic import HttpUrl
 from typing import Optional, List, Dict, Any
 from enum import Enum
 from datetime import datetime, timezone
@@ -15,6 +16,15 @@ class JobStatusEnum(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+
+
+class JobType(str, Enum):
+    """Job type classification for pipelines and ingestion."""
+    OPTIMIZE_DRIVE = "optimize_drive"
+    INGEST_YOUTUBE = "ingest_youtube"
+    INGEST_TEXT = "ingest_text"
+    INGEST_DRIVE_FOLDER = "ingest_drive_folder"
+    GENERATE_BLOG = "generate_blog"
 
 
 class OptimizeRequest(BaseModel):
@@ -89,7 +99,7 @@ class JobProgress(BaseModel):
     deleted: int = Field(default=0, ge=0)
     download_failed: int = Field(default=0, ge=0)
     upload_failed: int = Field(default=0, ge=0)
-    recent_logs: List[str] = Field(default_factory=list, max_items=50, exclude=True)
+    recent_logs: List[str] = Field(default_factory=list, max_length=50, exclude=True)
 
 
 class JobStatus(BaseModel):
@@ -103,6 +113,9 @@ class JobStatus(BaseModel):
     completed_at: Optional[datetime] = None
     error: Optional[str] = None
     drive_folder: Optional[str] = None
+    job_type: Optional[str] = None
+    document_id: Optional[str] = None
+    output: Optional[Dict[str, Any]] = None
     
     model_config = ConfigDict(use_enum_values=True)
 
@@ -162,4 +175,32 @@ class StatsResponse(BaseModel):
     pending_jobs: int
     processing_jobs: int
     total_users: Optional[int] = None
+
+
+class Document(BaseModel):
+    document_id: str
+    user_id: str
+    source_type: str
+    source_ref: Optional[str] = None
+    raw_text: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
+class IngestYouTubeRequest(BaseModel):
+    url: HttpUrl
+
+    @field_validator("url")
+    @classmethod
+    def validate_youtube_host(cls, v: HttpUrl) -> HttpUrl:
+        host = (v.host or "").lower()
+        if not (host.endswith("youtube.com") or host == "youtu.be"):
+            raise ValueError("URL must be a YouTube URL (youtube.com or youtu.be)")
+        return v
+
+
+class IngestTextRequest(BaseModel):
+    text: str
+    title: Optional[str] = None
 

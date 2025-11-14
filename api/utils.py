@@ -51,7 +51,16 @@ async def enqueue_job_with_guard(
     
     if queue_configured:
         try:
-            enqueued = await queue.send_job(job_id, user_id, request)
+            # Support either OptimizeRequest or generic dict payloads
+            if isinstance(request, dict):
+                payload = {**request}
+                if 'job_id' not in payload:
+                    payload['job_id'] = job_id
+                if 'user_id' not in payload:
+                    payload['user_id'] = user_id
+                enqueued = await queue.send_generic(payload)
+            else:
+                enqueued = await queue.send_job(job_id, user_id, request)
             if enqueued:
                 logger.info(
                     f"Job {job_id} enqueued successfully",

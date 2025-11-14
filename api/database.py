@@ -59,6 +59,8 @@ class Database:
                 try:
                     conn.row_factory = sqlite3.Row
                     conn.executescript(sql)
+                    # Idempotently ensure new Phase 1 schema changes without breaking repeated runs
+                    self._ensure_phase1_schema(conn)
                     conn.commit()
                 finally:
                     conn.close()
@@ -72,6 +74,46 @@ class Database:
         conn = sqlite3.connect(self._sqlite_path, timeout=30, isolation_level=None)
         conn.row_factory = sqlite3.Row
         return conn
+
+    def _ensure_phase1_schema(self, conn: sqlite3.Connection) -> None:
+        """Ensure Phase 1 schema: documents table and jobs new columns if missing.
+        Safe to run multiple times.
+        """
+        try:
+            cur = conn.cursor()
+            # Ensure documents table
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS documents (
+                    document_id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    source_type TEXT NOT NULL,
+                    source_ref TEXT,
+                    raw_text TEXT,
+                    metadata TEXT,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                )
+                """
+            )
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_documents_user ON documents(user_id, created_at DESC)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_documents_source ON documents(source_type, source_ref)")
+
+            # Ensure jobs columns exist
+            cur.execute("PRAGMA table_info('jobs')")
+            cols = {row[1] for row in cur.fetchall()}  # name at index 1
+            if 'job_type' not in cols:
+                cur.execute("ALTER TABLE jobs ADD COLUMN job_type TEXT NOT NULL DEFAULT 'optimize_drive'")
+            if 'document_id' not in cols:
+                cur.execute("ALTER TABLE jobs ADD COLUMN document_id TEXT")
+            if 'output' not in cols:
+                cur.execute("ALTER TABLE jobs ADD COLUMN output TEXT")
+            # Helpful indexes (CREATE INDEX IF NOT EXISTS is idempotent)
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_jobs_job_type ON jobs(job_type)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_jobs_document_id ON jobs(document_id)")
+        except Exception as e:
+            # Log but do not fail startup; features may be degraded until migration applied
+            logger.warning(f"Phase 1 schema ensure failed: {e}")
     
     async def execute(self, query: str, params: tuple = ()) -> Any:
         """Execute a query and return the first row (as dict-like)."""
@@ -208,16 +250,59 @@ async def create_user(db: Database, user_id: str, github_id: Optional[str] = Non
             updated_at = datetime('now')
         RETURNING *
     """
-    try:
-        result = await db.execute(query, (user_id, github_id, email))
-        if not result:
-            # If RETURNING doesn't work, fetch the user manually
-            logger.warning(f"RETURNING clause didn't return result, fetching user manually: {user_id}")
-            return await get_user_by_id(db, user_id) or {}
-        return dict(result) if result else {}
-    except Exception as e:
-        logger.error(f"create_user failed: {e}", exc_info=True)
-        raise
+    result = await db.execute(query, (user_id, github_id, email))
+    if not result:
+        # If RETURNING doesn't work, fetch the user manually
+        logger.warning(f"RETURNING clause didn't return result, fetching user manually: {user_id}")
+        return await get_user_by_id(db, user_id) or {}
+    return dict(result) if result else {}
+
+
+async def create_job_extended(
+    db: Database,
+    job_id: str,
+    user_id: str,
+    job_type: str,
+    document_id: Optional[str] = None,
+    output: Optional[Dict[str, Any]] = None,
+    drive_folder: Optional[str] = None,
+    extensions: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Create a new job with extended fields. Keeps compatibility with existing jobs table.
+    Stores output as JSON text when provided.
+    """
+    progress = json.dumps({
+        "stage": "initializing",
+        "downloaded": 0,
+        "optimized": 0,
+        "skipped": 0,
+        "uploaded": 0,
+        "deleted": 0,
+        "download_failed": 0,
+        "upload_failed": 0,
+        "recent_logs": []
+    })
+    extensions_json = json.dumps(extensions or [])
+    output_json = json.dumps(output) if output is not None else None
+    query = (
+        "INSERT INTO jobs (job_id, user_id, status, progress, drive_folder, extensions, job_type, document_id, output) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *"
+    )
+    result = await db.execute(
+        query,
+        (
+            job_id,
+            user_id,
+            JobStatusEnum.PENDING.value,
+            progress,
+            drive_folder,
+            extensions_json,
+            job_type,
+            document_id,
+            output_json,
+        ),
+    )
+    return dict(result) if result else {}
 
 
 async def get_user_by_id(db: Database, user_id: str) -> Optional[Dict[str, Any]]:
@@ -484,6 +569,11 @@ async def update_job_status(
     await db.execute(query, tuple(params))
 
 
+async def set_job_output(db: Database, job_id: str, output: Dict[str, Any]) -> None:
+    """Set final job output JSON."""
+    await db.execute("UPDATE jobs SET output = ? WHERE job_id = ?", (json.dumps(output), job_id))
+
+
 async def list_jobs(
     db: Database,
     user_id: str,
@@ -552,6 +642,61 @@ async def get_job_stats(db: Database, user_id: Optional[str] = None) -> Dict[str
         "pending": 0,
         "processing": 0
     }
+
+# Documents operations
+async def create_document(
+    db: Database,
+    document_id: str,
+    user_id: str,
+    source_type: str,
+    source_ref: Optional[str] = None,
+    raw_text: Optional[str] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Create a document row."""
+    query = (
+        "INSERT INTO documents (document_id, user_id, source_type, source_ref, raw_text, metadata) "
+        "VALUES (?, ?, ?, ?, ?, ?) RETURNING *"
+    )
+    result = await db.execute(
+        query,
+        (
+            document_id,
+            user_id,
+            source_type,
+            source_ref,
+            raw_text,
+            json.dumps(metadata or {}),
+        ),
+    )
+    return dict(result) if result else {}
+
+
+async def get_document(db: Database, document_id: str, user_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    if user_id:
+        row = await db.execute("SELECT * FROM documents WHERE document_id = ? AND user_id = ?", (document_id, user_id))
+    else:
+        row = await db.execute("SELECT * FROM documents WHERE document_id = ?", (document_id,))
+    return dict(row) if row else None
+
+
+async def update_document(
+    db: Database,
+    document_id: str,
+    updates: Dict[str, Any],
+) -> None:
+    allowed = {"source_type", "source_ref", "raw_text", "metadata"}
+    fields = []
+    params: list[Any] = []
+    for k, v in updates.items():
+        if k in allowed:
+            fields.append(f"{k} = ?")
+            params.append(json.dumps(v) if k == "metadata" and v is not None else v)
+    if not fields:
+        return
+    fields.append("updated_at = datetime('now')")
+    params.append(document_id)
+    await db.execute(f"UPDATE documents SET {', '.join(fields)} WHERE document_id = ?", tuple(params))
 
 
 async def get_user_count(db: Database) -> int:
