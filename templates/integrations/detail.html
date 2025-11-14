@@ -42,10 +42,12 @@
         {% from 'components/elements/button.html' import button %}
         {% if integration and integration.connected %}
           {% if service.key == 'drive' %}
-            <form method="post" action="/dashboard/integrations/drive/disconnect">
-              <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-              {{ button('Disconnect', variant='destructive', attrs='type="submit"') }}
-            </form>
+            <div x-data="{ submit(){ $refs.form && $refs.form.submit() } }" @confirm-drive-disconnect.window="submit()">
+              <form x-ref="form" method="post" action="/dashboard/integrations/drive/disconnect">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+                {{ button('Disconnect', variant='destructive', attrs='type="button" @click="$dispatch(\'open-drive-disconnect\')"') }}
+              </form>
+            </div>
           {% else %}
             {{ button('Connected', variant='secondary', attrs='disabled', extra_classes='opacity-60 cursor-not-allowed') }}
           {% endif %}

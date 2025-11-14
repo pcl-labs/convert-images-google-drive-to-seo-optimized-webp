@@ -170,7 +170,23 @@ async def get_current_user_info(user: dict = Depends(get_current_user)):
         except Exception:
             created_at_dt = None
     if created_at_dt is None:
-        created_at_dt = datetime.now(timezone.utc)
+        # Fetch canonical value from DB if not present/parsable in request state
+        try:
+            db = ensure_db()
+            stored = await get_user_by_id(db, user["user_id"])  # type: ignore
+            stored_created = stored.get("created_at") if stored else None
+            if isinstance(stored_created, datetime):
+                created_at_dt = stored_created if stored_created.tzinfo else stored_created.replace(tzinfo=timezone.utc)
+            elif isinstance(stored_created, str) and stored_created:
+                try:
+                    dt2 = datetime.fromisoformat(stored_created)
+                    created_at_dt = dt2 if dt2.tzinfo else dt2.replace(tzinfo=timezone.utc)
+                except Exception:
+                    created_at_dt = None
+        except Exception:
+            created_at_dt = None
+        if created_at_dt is None:
+            created_at_dt = datetime.now(timezone.utc)
     return UserResponse(
         user_id=user["user_id"],
         github_id=user.get("github_id"),
@@ -203,7 +219,8 @@ async def optimize_images(request: OptimizeRequest, user: dict = Depends(get_cur
 
     job_id = str(uuid.uuid4())
     try:
-        job_data = await create_job(db, job_id, user["user_id"], request.drive_folder, request.extensions)
+        # Persist the canonical folder_id so downstream consumers receive a validated ID
+        job_data = await create_job(db, job_id, user["user_id"], folder_id, request.extensions)
         
         # Unified enqueue logic with environment-aware guard
         enqueued, enqueue_exception, should_fail = await enqueue_job_with_guard(
@@ -218,9 +235,15 @@ async def optimize_images(request: OptimizeRequest, user: dict = Depends(get_cur
         # In development, if queue failed, we still return success but log warning
         # (API endpoint doesn't have BackgroundTasks fallback, so job will remain pending)
         if not enqueued:
+            # Log the enqueue exception if available for better diagnostics
             logger.warning(
-                f"Job {job_id} created but not enqueued (queue unavailable). "
-                f"Job will remain in pending state."
+                f"Job {job_id} created but not enqueued. Job will remain in pending state.",
+                extra={
+                    "job_id": job_id,
+                    "event": "job.enqueue_failed",
+                    "reason": "queue unavailable or enqueue failed",
+                    "enqueue_exception": (str(enqueue_exception) if enqueue_exception else None),
+                },
             )
         
         logger.info(f"Created job {job_id} for user {user['user_id']}")

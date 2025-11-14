@@ -71,8 +71,8 @@ async def github_auth_start(request: Request):
     try:
         auth_url, state = _get_github_oauth_redirect(request)
         return _build_github_oauth_response(request, auth_url, state)
-    except Exception as e:
-        logger.error(f"GitHub auth initiation failed: {e}")
+    except Exception:
+        logger.exception("GitHub auth initiation failed")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="GitHub OAuth not configured")
 
 
@@ -92,8 +92,8 @@ async def github_auth_start_post(request: Request, csrf_token: str = Form(...)):
     try:
         auth_url, state = _get_github_oauth_redirect(request)
         return _build_github_oauth_response(request, auth_url, state)
-    except Exception as e:
-        logger.error(f"GitHub auth initiation (POST) failed: {e}")
+    except Exception:
+        logger.exception("GitHub auth initiation (POST) failed")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="GitHub OAuth not configured")
 
 
@@ -130,9 +130,9 @@ async def github_callback(code: str, state: str, request: Request):
             response = JSONResponse(content={"access_token": jwt_token, "token_type": "bearer", "user": user_response})
             response.delete_cookie(key=COOKIE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
             return response
-    except Exception as e:
-        logger.error(f"GitHub callback failed: {e}", exc_info=True)
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"Authentication failed: {str(e)}")
+    except Exception:
+        logger.exception("GitHub callback failed")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication failed")
 
 
 @router.get("/auth/logout", tags=["Authentication"]) 

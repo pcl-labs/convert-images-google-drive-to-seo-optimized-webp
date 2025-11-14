@@ -507,11 +507,32 @@ async def retry_job(job_id: str, request: Request, user: dict = Depends(get_curr
     job = await get_job(db, job_id, user["user_id"])  # type: ignore
     if not job:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
-    # Reset status to pending and clear error
-    await update_job_status(db, job_id, "pending")
+    # Reset status to pending, clear error, and optionally reset progress
+    try:
+        await update_job_status(
+            db,
+            job_id,
+            "pending",
+            progress={"stage": "queued", "downloaded": 0, "optimized": 0, "skipped": 0, "uploaded": 0, "deleted": 0, "download_failed": 0, "upload_failed": 0, "recent_logs": []},
+            error="",
+        )
+    except Exception:
+        # If progress reset fails for any reason, at least clear status/error
+        await update_job_status(db, job_id, "pending", error="")
     
     # Unified enqueue logic with environment-aware guard
-    req_model = OptimizeRequest(drive_folder=job.get("drive_folder"), extensions=job.get("extensions") or [])
+    extensions_raw = job.get("extensions")
+    extensions_list = []
+    try:
+        if isinstance(extensions_raw, str):
+            parsed = json.loads(extensions_raw)
+            if isinstance(parsed, list):
+                extensions_list = parsed
+        elif isinstance(extensions_raw, list):
+            extensions_list = extensions_raw
+    except Exception:
+        extensions_list = []
+    req_model = OptimizeRequest(drive_folder=job.get("drive_folder"), extensions=extensions_list)
     enqueued, enqueue_exception, should_fail = await enqueue_job_with_guard(
         queue, job_id, user["user_id"], req_model, allow_inline_fallback=False
     )
@@ -529,7 +550,12 @@ async def retry_job(job_id: str, request: Request, user: dict = Depends(get_curr
     # (retry endpoint doesn't have BackgroundTasks fallback)
     if not enqueued:
         logger.warning(
-            f"Job {job_id} retry: queue unavailable. Job will remain in pending state."
+            f"Job {job_id} retry: queue unavailable. Job will remain in pending state.",
+            extra={
+                "job_id": job_id,
+                "event": "job.retry_enqueue_failed",
+                "enqueue_exception": (str(enqueue_exception) if enqueue_exception else None),
+            },
         )
     
     # Notify
