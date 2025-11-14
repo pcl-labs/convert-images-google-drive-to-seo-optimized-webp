@@ -123,9 +123,9 @@ async def google_auth_callback(code: str, state: str, request: Request, user: di
         response.delete_cookie(key=COOKIE_GOOGLE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
         response.delete_cookie(key="google_redirect_uri", path="/", samesite="lax", httponly=True, secure=is_secure)
         return response
-    except Exception as e:
-        logger.error(f"Google callback failed: {e}", exc_info=True)
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"Google authentication failed: {str(e)}")
+    except Exception:
+        logger.error("Google callback failed", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Google authentication failed") from None
 
 
 @router.get("/auth/google/status", tags=["Authentication"])
@@ -214,8 +214,9 @@ async def optimize_images(request: OptimizeRequest, user: dict = Depends(get_cur
     try:
         service = await build_drive_service_for_user(db, user["user_id"])  # type: ignore
         folder_id = extract_folder_id_from_input(request.drive_folder, service=service)
-    except Exception as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Google not linked or folder not accessible: {str(e)}")
+    except Exception:
+        logger.error("Failed to prepare Drive service or extract folder id", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Google not linked or folder not accessible")
 
     job_id = str(uuid.uuid4())
     try:
@@ -254,7 +255,8 @@ async def optimize_images(request: OptimizeRequest, user: dict = Depends(get_cur
             status=JobStatusEnum.PENDING,
             progress=progress,
             created_at=datetime.fromisoformat(job_data["created_at"]) if job_data.get("created_at") else datetime.now(timezone.utc),
-            drive_folder=request.drive_folder,
+            # Use canonical persisted folder id for consistency with storage
+            drive_folder=(job_data.get("drive_folder") or folder_id),
         )
     except HTTPException:
         # Re-raise HTTP exceptions (like our 502 from should_fail)
