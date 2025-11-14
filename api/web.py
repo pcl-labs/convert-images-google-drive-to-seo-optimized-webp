@@ -57,6 +57,42 @@ templates = Jinja2Templates(directory=TEMPLATES_DIR)
 # Register Jinja filter once (after templates is initialized)
 templates.env.filters["status_label"] = _status_label
 
+# Centralized service metadata used across integrations views
+SERVICES_META = {
+    "gmail": {
+        "key": "gmail",
+        "name": "Gmail",
+        "capability": "Alerts, approvals",
+        "description": "Send status alerts and approvals directly from Gmail.",
+        "category": "Email",
+        "developer": "Google",
+        "website": "https://mail.google.com/",
+        "privacy": "https://policies.google.com/privacy",
+        "created_at": None,
+    },
+    "drive": {
+        "key": "drive",
+        "name": "Google Drive",
+        "capability": "File uploads",
+        "description": "Sync folders and enqueue conversions without exporting files.",
+        "category": "Storage",
+        "developer": "Google",
+        "website": "https://drive.google.com/",
+        "privacy": "https://policies.google.com/privacy",
+        "created_at": None,
+    },
+    "youtube": {
+        "key": "youtube",
+        "name": "YouTube",
+        "capability": "Media",
+        "description": "Convert thumbnails or channel assets via queued jobs.",
+        "category": "Media",
+        "developer": "Google",
+        "website": "https://youtube.com/",
+        "privacy": "https://policies.google.com/privacy",
+        "created_at": None,
+    },
+}
 
 def _get_csrf_token(request: Request) -> str:
     token = request.cookies.get("csrf_token")
@@ -403,41 +439,7 @@ async def integrations_page(request: Request, user: dict = Depends(get_current_u
         "drive": {"connected": google_connected, "status": ("completed" if google_connected else "disconnected"), "status_label": ("Connected" if google_connected else "Disconnected")},
         "youtube": {"connected": False, "status": "disconnected", "status_label": "Disconnected"},
     }
-    services_meta = {
-        "gmail": {
-            "key": "gmail",
-            "name": "Gmail",
-            "capability": "Alerts, approvals",
-            "description": "Send status alerts and approvals directly from Gmail.",
-            "category": "Email",
-            "developer": "Google",
-            "website": "https://mail.google.com/",
-            "privacy": "https://policies.google.com/privacy",
-            "created_at": None,
-        },
-        "drive": {
-            "key": "drive",
-            "name": "Google Drive",
-            "capability": "File uploads",
-            "description": "Sync folders and enqueue conversions without exporting files.",
-            "category": "Storage",
-            "developer": "Google",
-            "website": "https://drive.google.com/",
-            "privacy": "https://policies.google.com/privacy",
-            "created_at": None,
-        },
-        "youtube": {
-            "key": "youtube",
-            "name": "YouTube",
-            "capability": "Media",
-            "description": "Convert thumbnails or channel assets via queued jobs.",
-            "category": "Media",
-            "developer": "Google",
-            "website": "https://youtube.com/",
-            "privacy": "https://policies.google.com/privacy",
-            "created_at": None,
-        },
-    }
+    services_meta = SERVICES_META
     csrf = _get_csrf_token(request)
     context = {"request": request, "user": user, "integrations": integrations, "services_meta": services_meta, "page_title": "Integrations", "csrf_token": csrf}
     resp = templates.TemplateResponse("integrations/index.html", context)
@@ -455,6 +457,43 @@ async def integrations_drive_disconnect(request: Request, csrf_token: str = Form
     db = ensure_db()
     await delete_google_tokens(db, user["user_id"])  # type: ignore
     return RedirectResponse(url="/dashboard/integrations", status_code=status.HTTP_302_FOUND)
+
+
+@router.get("/dashboard/integrations/partials/grid", response_class=HTMLResponse)
+async def integrations_grid_partial(request: Request, user: dict = Depends(get_current_user)):
+    db = ensure_db()
+    tokens = await get_google_tokens(db, user["user_id"])  # type: ignore
+    google_connected = bool(tokens)
+    integrations = {
+        "gmail": {"connected": False, "status": "disconnected", "status_label": "Disconnected"},
+        "drive": {"connected": google_connected, "status": ("completed" if google_connected else "disconnected"), "status_label": ("Connected" if google_connected else "Disconnected")},
+        "youtube": {"connected": False, "status": "disconnected", "status_label": "Disconnected"},
+    }
+    services_meta = SERVICES_META
+    csrf = _get_csrf_token(request)
+    return templates.TemplateResponse("integrations/partials/grid.html", {"request": request, "integrations": integrations, "services_meta": services_meta, "csrf_token": csrf})
+
+
+@router.get("/dashboard/integrations/{service}", response_class=HTMLResponse)
+async def integration_detail(service: str, request: Request, user: dict = Depends(get_current_user)):
+    # Validate service early to avoid unnecessary DB calls and object construction
+    allowed_services = {"gmail", "drive", "youtube"}
+    if service not in allowed_services:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    db = ensure_db()
+    tokens = await get_google_tokens(db, user["user_id"])  # type: ignore
+    google_connected = bool(tokens)
+    integrations = {
+        "gmail": {"connected": False, "status": "disconnected", "status_label": "Disconnected"},
+        "drive": {"connected": google_connected, "status": ("completed" if google_connected else "disconnected"), "status_label": ("Connected" if google_connected else "Disconnected")},
+        "youtube": {"connected": False, "status": "disconnected", "status_label": "Disconnected"},
+    }
+    services_meta = SERVICES_META
+    csrf = _get_csrf_token(request)
+    return templates.TemplateResponse(
+        "integrations/detail.html",
+        {"request": request, "user": user, "service": services_meta[service], "integration": integrations.get(service), "csrf_token": csrf}
+    )
 
 
 @router.post("/dashboard/jobs/{job_id}/retry")
@@ -588,94 +627,3 @@ async def account_page(request: Request, user: dict = Depends(get_current_user))
         is_secure = settings.environment == "production" or request.url.scheme == "https"
         resp.set_cookie("csrf_token", csrf, httponly=True, samesite="lax", secure=is_secure)
     return resp
-
-
-@router.get("/dashboard/integrations/partials/grid", response_class=HTMLResponse)
-async def integrations_grid_partial(request: Request, user: dict = Depends(get_current_user)):
-    db = ensure_db()
-    tokens = await get_google_tokens(db, user["user_id"])  # type: ignore
-    google_connected = bool(tokens)
-    integrations = {
-        "gmail": {"connected": False, "status": "disconnected", "status_label": "Disconnected"},
-        "drive": {"connected": google_connected, "status": ("completed" if google_connected else "disconnected"), "status_label": ("Connected" if google_connected else "Disconnected")},
-        "youtube": {"connected": False, "status": "disconnected", "status_label": "Disconnected"},
-    }
-    services_meta = {
-        "gmail": {
-            "key": "gmail",
-            "name": "Gmail",
-            "capability": "Alerts, approvals",
-            "description": "Send status alerts and approvals directly from Gmail.",
-            "category": "Email",
-            "developer": "Google",
-            "website": "https://mail.google.com/",
-            "privacy": "https://policies.google.com/privacy",
-            "created_at": None,
-        },
-        "drive": {
-            "key": "drive",
-            "name": "Google Drive",
-            "capability": "File uploads",
-            "description": "Sync folders and enqueue conversions without exporting files.",
-            "category": "Storage",
-            "developer": "Google",
-            "website": "https://drive.google.com/",
-            "privacy": "https://policies.google.com/privacy",
-            "created_at": None,
-        },
-        "youtube": {
-            "key": "youtube",
-            "name": "YouTube",
-            "capability": "Media",
-            "description": "Convert thumbnails or channel assets via queued jobs.",
-            "category": "Media",
-            "developer": "Google",
-            "website": "https://youtube.com/",
-            "privacy": "https://policies.google.com/privacy",
-            "created_at": None,
-        },
-    }
-    csrf = _get_csrf_token(request)
-    return templates.TemplateResponse("integrations/partials/grid.html", {"request": request, "integrations": integrations, "services_meta": services_meta, "csrf_token": csrf})
-
-
-@router.get("/dashboard/integrations/{service}", response_class=HTMLResponse)
-async def integration_detail(service: str, request: Request, user: dict = Depends(get_current_user)):
-    db = ensure_db()
-    tokens = await get_google_tokens(db, user["user_id"])  # type: ignore
-    google_connected = bool(tokens)
-    integrations = {
-        "gmail": {"connected": False, "status": "disconnected", "status_label": "Disconnected"},
-        "drive": {"connected": google_connected, "status": ("completed" if google_connected else "disconnected"), "status_label": ("Connected" if google_connected else "Disconnected")},
-        "youtube": {"connected": False, "status": "disconnected", "status_label": "Disconnected"},
-    }
-    services_meta = {
-        "gmail": {
-            "key": "gmail", "name": "Gmail", "capability": "Alerts, approvals",
-            "description": "Send status alerts and approvals directly from Gmail.",
-            "category": "Email", "developer": "Google",
-            "website": "https://mail.google.com/", "privacy": "https://policies.google.com/privacy",
-            "created_at": None,
-        },
-        "drive": {
-            "key": "drive", "name": "Google Drive", "capability": "File uploads",
-            "description": "Sync folders and enqueue conversions without exporting files.",
-            "category": "Storage", "developer": "Google",
-            "website": "https://drive.google.com/", "privacy": "https://policies.google.com/privacy",
-            "created_at": None,
-        },
-        "youtube": {
-            "key": "youtube", "name": "YouTube", "capability": "Media",
-            "description": "Convert thumbnails or channel assets via queued jobs.",
-            "category": "Media", "developer": "Google",
-            "website": "https://youtube.com/", "privacy": "https://policies.google.com/privacy",
-            "created_at": None,
-        },
-    }
-    if service not in services_meta:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
-    csrf = _get_csrf_token(request)
-    return templates.TemplateResponse(
-        "integrations/detail.html",
-        {"request": request, "user": user, "service": services_meta[service], "integration": integrations.get(service), "csrf_token": csrf}
-    )
