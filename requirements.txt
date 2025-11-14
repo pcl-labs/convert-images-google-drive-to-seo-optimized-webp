@@ -14,5 +14,4 @@ httpx
 pydantic-settings
 pytest 
 youtube-transcript-api
-faster-whisper
 yt-dlp

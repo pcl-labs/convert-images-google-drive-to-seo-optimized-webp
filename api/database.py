@@ -5,7 +5,7 @@ Database utilities for Cloudflare D1 with a local SQLite fallback for developmen
 import json
 import hashlib
 from typing import Optional, List, Dict, Any
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
 import os
 import asyncio
@@ -831,7 +831,7 @@ async def record_usage_event(
     await db.execute(
         "INSERT INTO usage_events (id, user_id, job_id, event_type, metrics, created_at) VALUES (?, ?, ?, ?, ?, datetime('now'))",
         (
-            f"{job_id}:{event_type}:{datetime.utcnow().isoformat()}",
+            f"{job_id}:{event_type}:{datetime.now(timezone.utc).isoformat()}",
             user_id,
             job_id,
             event_type,
