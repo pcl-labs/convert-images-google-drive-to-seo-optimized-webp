@@ -220,9 +220,17 @@ async def dashboard(request: Request, page: int = 1, user: dict = Depends(get_cu
     # Transform jobs for dashboard table
     def to_view(j):
         status = j.get("status", "queued")
+        jt = (j.get("job_type") or "optimize_drive")
+        kind_map = {
+            "optimize_drive": "Drive",
+            "ingest_drive_folder": "Drive",
+            "ingest_youtube": "YouTube",
+            "ingest_text": "Text",
+            "generate_blog": "Blog",
+        }
         return {
             "id": j.get("job_id"),
-            "kind": "Drive",
+            "kind": kind_map.get(jt, jt.replace("_", " ").title()),
             "status": status,
             "status_label": _status_label(status),
             "created_at": j.get("created_at"),
@@ -402,9 +410,17 @@ async def jobs_page(request: Request, user: dict = Depends(get_current_user), pa
 
     def to_view(j):
         st = j.get("status", "queued")
+        jt = (j.get("job_type") or "optimize_drive")
+        kind_map = {
+            "optimize_drive": "Drive",
+            "ingest_drive_folder": "Drive",
+            "ingest_youtube": "YouTube",
+            "ingest_text": "Text",
+            "generate_blog": "Blog",
+        }
         return {
             "id": j.get("job_id"),
-            "kind": "Drive",
+            "kind": kind_map.get(jt, jt.replace("_", " ").title()),
             "status": st,
             "status_label": _status_label(st),
             "created_at": j.get("created_at"),

@@ -495,6 +495,54 @@ async def process_optimization_job(
         raise
 
 
+async def process_ingest_youtube_job(
+    db: Database,
+    job_id: str,
+    user_id: str,
+    document_id: str,
+    youtube_video_id: str,
+):
+    """Phase 1 stub: mark ingestion as completed. Phase 2 will transcribe and update document."""
+    try:
+        await update_job_status(db, job_id, "processing", progress=make_progress("ingesting_youtube"))
+        # Here in Phase 2: fetch transcript, update documents.raw_text/metadata
+        await update_job_status(db, job_id, "completed", progress=make_progress("completed"))
+        try:
+            await notify_job(db, user_id=user_id, job_id=job_id, level="success", text=f"Ingested YouTube {youtube_video_id}")
+        except Exception:
+            pass
+    except Exception as e:
+        await update_job_status(db, job_id, "failed", error=str(e))
+        try:
+            await notify_job(db, user_id=user_id, job_id=job_id, level="error", text=f"YouTube ingestion failed")
+        except Exception:
+            pass
+        raise
+
+
+async def process_ingest_text_job(
+    db: Database,
+    job_id: str,
+    user_id: str,
+    document_id: str,
+):
+    """Phase 1 stub: text is already stored in document; mark job completed."""
+    try:
+        await update_job_status(db, job_id, "processing", progress=make_progress("ingesting_text"))
+        await update_job_status(db, job_id, "completed", progress=make_progress("completed"))
+        try:
+            await notify_job(db, user_id=user_id, job_id=job_id, level="success", text=f"Text ingested")
+        except Exception:
+            pass
+    except Exception as e:
+        await update_job_status(db, job_id, "failed", error=str(e))
+        try:
+            await notify_job(db, user_id=user_id, job_id=job_id, level="error", text=f"Text ingestion failed")
+        except Exception:
+            pass
+        raise
+
+
 async def handle_queue_message(message: Dict[str, Any], db: Database):
     """Handle a message from the queue."""
     job_id = message.get("job_id")
@@ -504,30 +552,44 @@ async def handle_queue_message(message: Dict[str, Any], db: Database):
         app_logger.error("Invalid queue message: missing job_id or user_id")
         return
     
-    drive_folder = message.get("drive_folder")
-    if not drive_folder or not drive_folder.strip():
-        app_logger.error(
-            f"Invalid queue message: missing or empty drive_folder for job_id={job_id}, user_id={user_id}",
-            extra={"job_id": job_id, "user_id": user_id, "drive_folder": drive_folder}
-        )
-        return
-    
-    app_logger.info(f"Processing queue message for job {job_id}")
-    
+    job_type = message.get("job_type")
+    app_logger.info(f"Processing queue message for job {job_id} type={job_type}")
     try:
-        await process_optimization_job(
-            db=db,
-            job_id=job_id,
-            user_id=user_id,
-            drive_folder=drive_folder,
-            extensions=message.get("extensions", []),
-            overwrite=message.get("overwrite", False),
-            skip_existing=message.get("skip_existing", True),
-            cleanup_originals=message.get("cleanup_originals", False),
-            max_retries=message.get("max_retries", 3)
-        )
+        if job_type == "ingest_youtube":
+            document_id = message.get("document_id")
+            video_id = message.get("youtube_video_id")
+            if not document_id or not video_id:
+                app_logger.error("YouTube ingestion message missing document_id or youtube_video_id")
+                return
+            await process_ingest_youtube_job(db, job_id, user_id, document_id, video_id)
+        elif job_type == "ingest_text":
+            document_id = message.get("document_id")
+            if not document_id:
+                app_logger.error("Text ingestion message missing document_id")
+                return
+            await process_ingest_text_job(db, job_id, user_id, document_id)
+        else:
+            # Default to optimization path for backward compatibility
+            drive_folder = message.get("drive_folder")
+            if not drive_folder or not drive_folder.strip():
+                app_logger.error(
+                    f"Invalid queue message: missing or empty drive_folder for job_id={job_id}, user_id={user_id}",
+                    extra={"job_id": job_id, "user_id": user_id, "drive_folder": drive_folder}
+                )
+                return
+            await process_optimization_job(
+                db=db,
+                job_id=job_id,
+                user_id=user_id,
+                drive_folder=drive_folder,
+                extensions=message.get("extensions", []),
+                overwrite=message.get("overwrite", False),
+                skip_existing=message.get("skip_existing", True),
+                cleanup_originals=message.get("cleanup_originals", False),
+                max_retries=message.get("max_retries", 3)
+            )
     except Exception as e:
         app_logger.error(f"Failed to process job {job_id}: {e}", exc_info=True)
-        # The job status is already updated to failed in process_optimization_job
+        # The job status is already updated to failed in respective processors
         raise
 
