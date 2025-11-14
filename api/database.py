@@ -767,6 +767,75 @@ async def emit_event(db: Database, evt_id: str, type_: str, aggregate_type: str,
     )
 
 
+async def list_usage_events(
+    db: Database,
+    user_id: str,
+    limit: int = 50,
+    offset: int = 0,
+) -> List[Dict[str, Any]]:
+    """List recent usage events for a user (most recent first)."""
+    rows = await db.execute_all(
+        "SELECT * FROM usage_events WHERE user_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?",
+        (user_id, limit, offset),
+    )
+    return [dict(r) for r in rows] if rows else []
+
+
+async def get_usage_summary(
+    db: Database,
+    user_id: str,
+    window_days: int = 7,
+) -> Dict[str, Any]:
+    """Aggregate a simple summary for a user's usage over the given window (days)."""
+    # Aggregate bytes_downloaded, duration_s, events count
+    # metrics stored as JSON; extract fields with JSON functions where possible, else sum in Python
+    rows = await db.execute_all(
+        """
+        SELECT metrics, event_type
+        FROM usage_events
+        WHERE user_id = ? AND created_at >= datetime('now', ?)
+        """,
+        (user_id, f"-{int(window_days)} days"),
+    )
+    total_events = 0
+    total_bytes = 0
+    total_duration = 0.0
+    for r in (rows or []):
+        total_events += 1
+        try:
+            metrics_raw = None
+            # Support sqlite3.Row, dict, or tuple ordering (metrics, event_type)
+            if isinstance(r, dict):
+                metrics_raw = r.get("metrics")
+            elif hasattr(r, "keys"):
+                # sqlite3.Row
+                metrics_raw = r["metrics"]
+            elif isinstance(r, (list, tuple)):
+                metrics_raw = r[0]
+            # Parse JSON if needed
+            m = metrics_raw
+            if isinstance(m, str):
+                try:
+                    m = json.loads(m)
+                except Exception:
+                    m = None
+            if isinstance(m, dict):
+                b = m.get("bytes_downloaded")
+                if isinstance(b, int):
+                    total_bytes += b
+                d = m.get("duration_s")
+                if isinstance(d, (int, float)):
+                    total_duration += float(d)
+        except Exception:
+            continue
+    return {
+        "window_days": int(window_days),
+        "events": total_events,
+        "bytes_downloaded": total_bytes,
+        "audio_duration_s": int(total_duration),
+        "minutes_processed": round(total_duration / 60.0, 2),
+    }
+
 async def create_notification(db: Database, notif_id: str, user_id: str, level: str, text: str, title: str | None = None, context: dict | None = None, event_id: str | None = None) -> None:
     await db.execute(
         "INSERT OR REPLACE INTO notifications (id, user_id, event_id, level, title, text, context, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))",
