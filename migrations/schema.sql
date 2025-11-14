@@ -127,7 +127,8 @@ CREATE TABLE IF NOT EXISTS documents (
     raw_text TEXT,
     metadata TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_documents_user ON documents(user_id, created_at DESC);

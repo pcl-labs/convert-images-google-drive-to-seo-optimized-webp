@@ -3,6 +3,7 @@ Pydantic models for request/response validation.
 """
 
 from pydantic import BaseModel, Field, field_validator, model_validator, ConfigDict
+from pydantic import HttpUrl
 from typing import Optional, List, Dict, Any
 from enum import Enum
 from datetime import datetime, timezone
@@ -98,7 +99,7 @@ class JobProgress(BaseModel):
     deleted: int = Field(default=0, ge=0)
     download_failed: int = Field(default=0, ge=0)
     upload_failed: int = Field(default=0, ge=0)
-    recent_logs: List[str] = Field(default_factory=list, max_items=50, exclude=True)
+    recent_logs: List[str] = Field(default_factory=list, max_length=50, exclude=True)
 
 
 class JobStatus(BaseModel):
@@ -188,7 +189,15 @@ class Document(BaseModel):
 
 
 class IngestYouTubeRequest(BaseModel):
-    url: str
+    url: HttpUrl
+
+    @field_validator("url")
+    @classmethod
+    def validate_youtube_host(cls, v: HttpUrl) -> HttpUrl:
+        host = (v.host or "").lower()
+        if not (host.endswith("youtube.com") or host == "youtu.be"):
+            raise ValueError("URL must be a YouTube URL (youtube.com or youtu.be)")
+        return v
 
 
 class IngestTextRequest(BaseModel):
