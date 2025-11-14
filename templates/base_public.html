@@ -16,6 +16,7 @@
           trap(){},
           openModal(){
             this.prevEl = document.activeElement;
+            this.open = true;
             if(document.body){ document.body.style.overflow = 'hidden'; }
           },
           closeModal(){

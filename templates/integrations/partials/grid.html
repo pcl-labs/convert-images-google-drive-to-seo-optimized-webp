@@ -7,9 +7,11 @@
       <p class="text-sm text-slate-400">The apps and connectors you’ve enabled appear here. ChatGPT can use them in your conversations, based on the permissions you’ve granted.</p>
     </div>
     <div class="space-y-3">
+      {% set ns = namespace(any_connected=false) %}
       {% for key, s in services_meta.items() %}
         {% set data = integrations.get(key) %}
         {% if data and data.connected %}
+          {% set ns.any_connected = true %}
           {% set card = {
             'key': s.key,
             'name': s.name,
@@ -19,7 +21,7 @@
           {{ integration_card(card, data, csrf_token) }}
         {% endif %}
       {% endfor %}
-      {% if not (integrations.drive.connected or integrations.gmail.connected or integrations.youtube.connected) %}
+      {% if not ns.any_connected %}
         <div class="text-sm text-slate-400">No apps enabled yet.</div>
       {% endif %}
     </div>

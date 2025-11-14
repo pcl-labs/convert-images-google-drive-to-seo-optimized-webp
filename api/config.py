@@ -81,7 +81,13 @@ class Settings(BaseSettings):
         if len(raw) != 32:
             raise ValueError("ENCRYPTION_KEY must decode to exactly 32 bytes (use Fernet.generate_key())")
         return v
-    
+
+    @model_validator(mode="after")
+    def require_encryption_key_in_production(self):
+        if (self.environment or "").lower() == "production" and not self.encryption_key:
+            raise ValueError("ENCRYPTION_KEY is required in production (provide a base64 URL-safe 32-byte key)")
+        return self
+
     @model_validator(mode="after")
     def parse_cors_origins(self):
         """Parse comma-separated CORS origins string into a list."""
