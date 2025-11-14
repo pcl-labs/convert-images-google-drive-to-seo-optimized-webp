@@ -98,9 +98,15 @@ The API will be available at `http://localhost:8000`
 
 **Job Endpoints (require authentication):**
 - `POST /api/v1/optimize` - Start an optimization job
+- `POST /ingest/text` - Ingest text content
+- `POST /ingest/youtube` - Ingest YouTube video transcript
 - `GET /api/v1/jobs/{job_id}` - Get job status
 - `GET /api/v1/jobs` - List recent jobs
 - `DELETE /api/v1/jobs/{job_id}` - Cancel a job
+
+**Usage Endpoints (require authentication):**
+- `GET /api/v1/usage/summary?window=7` - Get usage summary (events, duration, bytes downloaded)
+- `GET /api/v1/usage/events?limit=50&offset=0` - List usage events
 
 **Admin Endpoints (require authentication):**
 - `GET /api/v1/stats` - Get API statistics
@@ -238,6 +244,7 @@ pytest tests/test_local.py -v
 ## Requirements
 
 - Python 3.12+
+- **FFmpeg** (required for YouTube audio extraction) - Install via `brew install ffmpeg` (macOS) or your system package manager
 - Google Drive API access
 - Internet connection for Drive API calls
 
@@ -251,6 +258,14 @@ Set in `.env` or your shell as needed:
 - `ENVIRONMENT` (optional, default: "development") - Environment name (development/production)
 - `RATE_LIMIT_PER_MINUTE` (optional, default: 60) - Per-minute rate limit
 - `RATE_LIMIT_PER_HOUR` (optional, default: 1000) - Per-hour rate limit
+
+**Phase 2: Transcripts/ASR** (optional):
+- `ENABLE_YTDLP_AUDIO` (default: true) - Enable yt-dlp audio extraction
+- `ASR_ENGINE` (default: "faster_whisper") - ASR engine: faster_whisper|whisper|provider
+- `WHISPER_MODEL_SIZE` (default: "small.en") - Whisper model size
+- `ASR_DEVICE` (default: "cpu") - Device: cpu|cuda|auto
+- `ASR_MAX_DURATION_MIN` (default: 60) - Maximum duration in minutes
+- `TRANSCRIPT_LANGS` (default: "en,en-US,en-GB") - Comma-separated language codes
 
 ## Dependencies
 

@@ -31,7 +31,9 @@ from core.drive_utils import (
     is_valid_drive_file_id,
 )
 from core.image_processor import process_image
-from api.database import Database, update_job_status
+from api.database import Database, update_job_status, update_document, set_job_output, record_usage_event
+from api.config import settings
+from core.transcripts import fetch_transcript_with_fallback
 from api.notifications import notify_job
 from api.app_logging import setup_logging, get_logger
 from core.filename_utils import FILENAME_ID_SEPARATOR, sanitize_folder_name, parse_download_name, make_output_dir_name
@@ -502,10 +504,105 @@ async def process_ingest_youtube_job(
     document_id: str,
     youtube_video_id: str,
 ):
-    """Phase 1 stub: mark ingestion as completed. Phase 2 will transcribe and update document."""
+    """Phase 2: fetch transcript (captions or ASR), update document, record usage, complete job."""
     try:
         await update_job_status(db, job_id, "processing", progress=make_progress("ingesting_youtube"))
-        # Here in Phase 2: fetch transcript, update documents.raw_text/metadata
+
+        # Prepare config
+        langs_raw = settings.transcript_langs
+        if isinstance(langs_raw, str):
+            langs = [s.strip() for s in langs_raw.split(",") if s.strip()]
+        else:
+            langs = langs_raw or ["en"]
+        # Fetch transcript with fallback
+        result = await asyncio.to_thread(
+            fetch_transcript_with_fallback,
+            youtube_video_id,
+            langs,
+        )
+
+        if not result.get("success"):
+            # Record usage if any metrics present
+            try:
+                await record_usage_event(
+                    db,
+                    user_id,
+                    job_id,
+                    "transcribe",
+                    {
+                        "engine": "captions",
+                        "duration_s": result.get("duration_s"),
+                    },
+                )
+            except Exception:
+                pass
+            await update_job_status(db, job_id, "failed", error=str(result.get("error") or "transcript_failed"))
+            try:
+                await notify_job(db, user_id=user_id, job_id=job_id, level="error", text="YouTube ingestion failed: transcript unavailable")
+            except Exception:
+                pass
+            return
+
+        text = (result.get("text") or "").strip()
+        source = result.get("source") or "unknown"
+        lang = result.get("lang") or "en"
+        duration_s = result.get("duration_s")
+
+        # Validate required fields
+        if duration_s is None:
+            error_msg = "Transcript fetch succeeded but duration_s is missing"
+            await update_job_status(db, job_id, "failed", error=error_msg)
+            try:
+                await notify_job(db, user_id=user_id, job_id=job_id, level="error", text=f"YouTube ingestion failed: {error_msg}")
+            except Exception:
+                pass
+            return
+
+        # Record usage events
+        bytes_downloaded = result.get("bytes_downloaded")
+        if bytes_downloaded:
+            try:
+                await record_usage_event(db, user_id, job_id, "download", {"bytes_downloaded": int(bytes_downloaded), "duration_s": duration_s})
+            except Exception:
+                pass
+        try:
+            await record_usage_event(
+                db,
+                user_id,
+                job_id,
+                "transcribe",
+                {
+                    "engine": "captions",
+                    "duration_s": duration_s,
+                },
+            )
+        except Exception:
+            pass
+
+        # Update document with transcript
+        await update_document(
+            db,
+            document_id,
+            {
+                "raw_text": text,
+                "metadata": {
+                    "source": "youtube",
+                    "video_id": youtube_video_id,
+                    "transcript_source": source,
+                    "lang": lang,
+                    "chars": len(text),
+                },
+            },
+        )
+
+        # Set job output summary
+        out = {
+            "document_id": document_id,
+            "youtube_video_id": youtube_video_id,
+            "transcript": {"source": source, "lang": lang, "chars": len(text)},
+        }
+        await set_job_output(db, job_id, out)
+
         await update_job_status(db, job_id, "completed", progress=make_progress("completed"))
         try:
             await notify_job(db, user_id=user_id, job_id=job_id, level="success", text=f"Ingested YouTube {youtube_video_id}")
@@ -589,8 +686,8 @@ async def handle_queue_message(message: Dict[str, Any], db: Database):
             drive_folder = message.get("drive_folder")
             if not drive_folder or not drive_folder.strip():
                 app_logger.error(
-                    f"Invalid queue message: missing or empty drive_folder for job_id={job_id}, user_id={user_id}",
-                    extra={"job_id": job_id, "user_id": user_id, "drive_folder": drive_folder}
+                    f"Invalid queue message: missing or empty drive_folder for job_id={job_id}",
+                    extra={"job_id": job_id}
                 )
                 try:
                     await update_job_status(db, job_id, "failed", error="Missing or empty drive_folder")

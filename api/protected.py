@@ -46,6 +46,8 @@ from .deps import (
 )
 from .utils import enqueue_job_with_guard
 from core.url_utils import parse_youtube_video_id
+from .database import get_usage_summary, list_usage_events, count_usage_events
+from fastapi import Query
 
 logger = get_logger(__name__)
 
@@ -456,3 +458,55 @@ async def get_stats(user: dict = Depends(get_current_user)):
         processing_jobs=job_stats.get("processing", 0),
         total_users=None,
     )
+
+
+@router.get("/api/v1/usage/summary", tags=["Usage"]) 
+async def get_usage_summary_endpoint( 
+    window: int = Query(7, description="Aggregation window in days (1-365)"), 
+    user: dict = Depends(get_current_user), 
+): 
+    """Get usage summary for the current user.""" 
+    # Validate input bounds before doing any DB work
+    if not isinstance(window, int):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="window must be an integer")
+    if window < 1 or window > 365:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="window must be between 1 and 365 days")
+
+    try:
+        db = ensure_db() 
+        summary = await get_usage_summary(db, user["user_id"], window_days=int(window)) 
+        return summary 
+    except HTTPException:
+        raise
+    except Exception:
+        # Log internal error, do not leak details
+        logger.exception("usage_summary_error")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to load usage summary") from None 
+
+
+@router.get("/api/v1/usage/events", tags=["Usage"]) 
+async def get_usage_events_endpoint( 
+    limit: int = Query(50, description="Max events to return (1-100)"), 
+    offset: int = Query(0, description="Offset for pagination (>=0)"), 
+    user: dict = Depends(get_current_user), 
+): 
+    """List usage events for the current user.""" 
+    # Validate inputs
+    if not isinstance(limit, int) or not isinstance(offset, int):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="limit and offset must be integers")
+    if limit < 1 or limit > 100:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="limit must be between 1 and 100")
+    if offset < 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="offset must be >= 0")
+
+    try:
+        db = ensure_db() 
+        total = await count_usage_events(db, user["user_id"]) 
+        events = await list_usage_events(db, user["user_id"], limit=limit, offset=offset) 
+        has_more = (offset + len(events)) < (total or 0)
+        return {"events": events, "limit": limit, "offset": offset, "total": total, "has_more": has_more} 
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("usage_events_error")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to load usage events") from None
