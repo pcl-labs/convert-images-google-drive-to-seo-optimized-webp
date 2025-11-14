@@ -1,0 +1,11 @@
+{
+  "name": "fastapi-htmx-dashboard",
+  "private": true,
+  "scripts": {
+    "dev:css": "tailwindcss -i ./assets/css/input.css -o ./static/css/app.css --watch",
+    "build:css": "tailwindcss -i ./assets/css/input.css -o ./static/css/app.css --minify"
+  },
+  "devDependencies": {
+    "tailwindcss": "^3.4.4"
+  }
+}

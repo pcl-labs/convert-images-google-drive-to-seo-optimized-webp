@@ -1,22 +1,25 @@
-<div id="jobs-list">
-  <table role="grid">
-    <thead>
+<div id="recent-jobs-table" class="p-0 overflow-x-auto">
+  {% from 'components/data/table.html' import table with context %}
+  {% from 'components/elements/badge.html' import badge %}
+  {% call table(headers=["Job ID","Type","Status","Created","Actions"]) %}
+    {% for job in jobs %}
       <tr>
-        <th>Job ID</th>
-        <th>Status</th>
-        <th>Created</th>
-        <th>Error</th>
+        <td class="px-3 py-2 md:px-4 md:py-3 whitespace-nowrap">{{ job.id }}</td>
+        <td class="px-3 py-2 md:px-4 md:py-3">{{ job.kind }}</td>
+        <td class="px-3 py-2 md:px-4 md:py-3">{{ badge(job.status_label, status=job.status) }}</td>
+        <td class="px-3 py-2 md:px-4 md:py-3">{{ job.created_at }}</td>
+        <td class="px-3 py-2 md:px-4 md:py-3">
+          <div class="flex items-center gap-2">
+            <a href="/jobs/{{ job.id }}" class="text-sky-400 hover:text-sky-300">View</a>
+            <button hx-post="/jobs/{{ job.id }}/retry" class="text-slate-300 hover:text-white">Retry</button>
+            <button hx-delete="/jobs/{{ job.id }}" class="text-rose-400 hover:text-rose-300">Cancel</button>
+          </div>
+        </td>
       </tr>
-    </thead>
-    <tbody>
-      {% for j in jobs %}
+    {% else %}
       <tr>
-        <td><a href="/jobs/{{ j.job_id }}">{{ j.job_id }}</a></td>
-        <td>{{ j.status }}</td>
-        <td>{{ j.created_at }}</td>
-        <td>{{ j.error or '' }}</td>
+        <td colspan="5" class="px-4 py-6 text-center text-slate-400">No jobs found</td>
       </tr>
-      {% endfor %}
-    </tbody>
-  </table>
+    {% endfor %}
+  {% endcall %}
 </div>

@@ -3,6 +3,7 @@ Production-ready FastAPI web application for Google Drive Image Optimizer.
 """
 
 from fastapi import FastAPI, Request, Depends, HTTPException, status, Form
+from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse, RedirectResponse
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -24,6 +25,7 @@ from .models import (
     StatsResponse,
     JobStatusEnum
 )
+
 from .database import (
     Database,
     create_job,
@@ -32,8 +34,10 @@ from .database import (
     get_job_stats,
     get_user_count,
     get_user_by_id,
-    update_job_status
+    update_job_status,
+    ensure_notifications_schema,
 )
+from .notifications import notify_job
 from .auth import (
     authenticate_github,
     create_user_api_key,
@@ -88,6 +92,12 @@ async def lifespan(app: FastAPI):
     app_logger.info("Database initialized")
     # Expose to shared deps
     set_db_instance(db_instance)
+    # Ensure notifications schema exists
+    try:
+        await ensure_notifications_schema(db_instance)
+        app_logger.info("Notifications schema ensured")
+    except Exception as e:
+        app_logger.warning(f"Failed ensuring notifications schema: {e}")
     
     # Initialize queue producer
     queue_producer = QueueProducer(queue=settings.queue, dlq=settings.dlq)
@@ -157,6 +167,9 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+# Serve static assets (Tailwind CSS output, etc.)
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
 # Mount HTML web routes
 from .web import router as web_router
 app.include_router(web_router)
@@ -171,7 +184,9 @@ app.add_middleware(RateLimitMiddleware)
 # Shared helper to build GitHub OAuth redirect response and set state cookie
 def _build_github_oauth_response(request: Request, auth_url: str, state: str) -> RedirectResponse:
     is_secure = settings.environment == "production" or request.url.scheme == "https"
-    response = RedirectResponse(url=auth_url)
+    # Use 303 (See Other) to convert POST to GET when redirecting to GitHub
+    # GitHub's OAuth authorize endpoint only accepts GET requests
+    response = RedirectResponse(url=auth_url, status_code=status.HTTP_303_SEE_OTHER)
     response.set_cookie(
         key=COOKIE_OAUTH_STATE,
         value=state,
@@ -259,23 +274,17 @@ async def github_auth_start_post(request: Request, csrf_token: str = Form(...)):
         )
 
 @app.get("/auth/logout", tags=["Authentication"])
-async def logout(request: Request):
-    """Sign out the current user by clearing the access token cookie."""
+async def logout_get(request: Request):
+    """Sign out the current user by clearing the access token cookie (GET endpoint for convenience)."""
     response = RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
     
-    # Clear the access token cookie
-    response.delete_cookie(
-        key="access_token",
-        path="/",
-        samesite="lax"
-    )
-    
-    # Also clear CSRF token for good measure
-    response.delete_cookie(
-        key="csrf_token",
-        path="/",
-        samesite="lax"
-    )
+    # Clear all authentication-related cookies
+    response.delete_cookie("access_token", path="/", samesite="lax")
+    response.delete_cookie(COOKIE_OAUTH_STATE, path="/", samesite="lax")
+    response.delete_cookie(COOKIE_GOOGLE_OAUTH_STATE, path="/", samesite="lax")
+    response.delete_cookie("google_redirect_uri", path="/", samesite="lax")
+    # Clear CSRF token on logout for security
+    response.delete_cookie("csrf_token", path="/", samesite="lax")
     
     return response
 
@@ -312,8 +321,8 @@ async def github_callback(code: str, state: str, request: Request):
             # Calculate max_age from JWT expiration
             max_age_seconds = settings.jwt_expiration_hours * 3600
             
-            # Redirect to dashboard after successful login
-            response = RedirectResponse(url="/dashboard", status_code=status.HTTP_302_FOUND)
+            # Redirect to app root after successful login
+            response = RedirectResponse(url="/", status_code=status.HTTP_302_FOUND)
             
             # Set secure HTTP-only cookie
             # Don't set domain at all - let browser use default (works for both localhost and 127.0.0.1)
@@ -438,8 +447,8 @@ async def google_auth_callback(code: str, state: str, request: Request, user: di
 
     try:
         await exchange_google_code(db, user["user_id"], code, redirect_uri)
-        # Redirect to dashboard after successful linking
-        response = RedirectResponse(url="/dashboard", status_code=status.HTTP_302_FOUND)
+        # Redirect to app root after successful linking
+        response = RedirectResponse(url="/", status_code=status.HTTP_302_FOUND)
         response.delete_cookie(key=COOKIE_GOOGLE_OAUTH_STATE, path="/", samesite="lax")
         response.delete_cookie(key="google_redirect_uri", path="/", samesite="lax")
         return response
@@ -535,7 +544,7 @@ def parse_job_progress_model(progress_str: str) -> JobProgress:
 
 
 # Public endpoints
-@app.get("/", tags=["Public"])
+@app.get("/api", tags=["Public"])
 async def root():
     """Root endpoint with API information."""
     return {
@@ -736,9 +745,15 @@ async def cancel_job(
     
     await update_job_status(db, job_id, "cancelled")
     
+    # Emit notification for cancellation
+    try:
+        await notify_job(db, user_id=user["user_id"], job_id=job_id, level="error", text=f"Job {job_id} cancelled")
+    except Exception:
+        pass
+    
     app_logger.info(f"Cancelled job {job_id} for user {user['user_id']}")
     
-    return {"message": "Job cancelled successfully", "job_id": job_id}
+    return {"ok": True, "job_id": job_id}
 
 
 # Admin/Stats endpoints

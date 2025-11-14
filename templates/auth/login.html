@@ -1,13 +1,30 @@
 {% extends "base.html" %}
+{% set page_title = 'Login' %}
 {% block content %}
-  <section>
-    <hgroup>
-      <h1>Sign in</h1>
-      <p>Use your GitHub account to continue.</p>
-    </hgroup>
-    <form method="post" action="/auth/github/start">
+<div class="min-h-[calc(100vh-3.5rem)] flex items-center justify-center p-6">
+  <div class="w-full max-w-md bg-slate-900/60 border border-slate-800 rounded-xl p-6">
+    <div class="flex items-center justify-center gap-2 mb-4">
+      <div class="h-8 w-8 rounded-md bg-sky-600"></div>
+      <div class="text-white font-semibold">App</div>
+    </div>
+    <h1 class="text-lg font-semibold text-white text-center">Sign in</h1>
+    <p class="text-slate-400 text-sm text-center mt-1">Use your GitHub account to continue.</p>
+
+    {% from 'components/elements/alert.html' import alert %}
+    {% if error %}
+      <div class="mt-4">{{ alert('error', error) }}</div>
+    {% endif %}
+
+    <form method="post" action="/auth/github/start" class="mt-6">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-      <button type="submit">Continue with GitHub</button>
+      <button type="submit" class="w-full inline-flex items-center justify-center rounded-md bg-slate-100 text-slate-900 hover:bg-white px-3 py-2 text-sm font-medium">
+        <svg class="h-4 w-4 mr-2" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <path d="M12 .5C5.73.5.98 5.24.98 11.5c0 4.85 3.15 8.96 7.51 10.41.55.1.75-.24.75-.53 0-.26-.01-1.12-.02-2.04-3.06.66-3.71-1.3-3.71-1.3-.5-1.26-1.22-1.6-1.22-1.6-1-.68.08-.67.08-.67 1.1.08 1.68 1.13 1.68 1.13.98 1.67 2.57 1.19 3.2.91.1-.71.38-1.19.69-1.46-2.44-.28-5.01-1.22-5.01-5.44 0-1.2.43-2.18 1.13-2.95-.11-.28-.49-1.41.11-2.94 0 0 .92-.29 3.01 1.13.87-.24 1.8-.36 2.72-.36s1.85.12 2.72.36c2.09-1.42 3.01-1.13 3.01-1.13.6 1.53.22 2.66.11 2.94.7.77 1.13 1.75 1.13 2.95 0 4.23-2.58 5.15-5.03 5.42.39.33.73.98.73 1.98 0 1.43-.01 2.58-.01 2.93 0 .29.2.64.75.53 4.36-1.45 7.51-5.56 7.51-10.41C23.02 5.24 18.27.5 12 .5z"/>
+        </svg>
+        Continue with GitHub
+      </button>
     </form>
-  </section>
+  </div>
+  {% include 'components/overlays/toast.html' %}
+</div>
 {% endblock %}

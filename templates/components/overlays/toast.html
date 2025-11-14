@@ -1,0 +1,12 @@
+<div x-data="{ toasts: [] }" x-on:toast.window="toasts.push($event.detail); setTimeout(()=>toasts.shift(), 4000)" class="fixed bottom-4 right-4 z-50 space-y-2" role="status" aria-live="polite">
+  <template x-for="t in toasts" :key="t.id">
+    <div class="px-3 py-2 rounded-md text-sm"
+      :class="{
+        'bg-emerald-500/10 text-emerald-300 ring-1 ring-emerald-500/30': t.kind==='success',
+        'bg-rose-500/10 text-rose-300 ring-1 ring-rose-500/30': t.kind==='error',
+        'bg-sky-500/10 text-sky-300 ring-1 ring-sky-500/30': !t.kind
+      }">
+      <span x-text="t.message"></span>
+    </div>
+  </template>
+</div>

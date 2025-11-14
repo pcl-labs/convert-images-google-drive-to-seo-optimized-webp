@@ -1,0 +1,36 @@
+{% set services = [
+  {'name': 'Gmail', 'key': 'gmail'},
+  {'name': 'Google Drive', 'key': 'drive'},
+  {'name': 'YouTube', 'key': 'youtube'}
+] %}
+{% from 'components/elements/card.html' import card %}
+{% from 'components/elements/badge.html' import badge %}
+<div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+  {% for s in services %}
+    {% call card(title=s.name) %}
+      <div class="flex items-center justify-between" x-data="{ submit(){ $refs.form && $refs.form.submit() } }" @confirm-drive-disconnect.window="submit()">
+        <div>
+          {{ badge(integrations.get(s.key).status_label if integrations.get(s.key) else 'Disconnected', status=(integrations.get(s.key).status if integrations.get(s.key) else 'disconnected')) }}
+        </div>
+        <div>
+          {% if integrations.get(s.key) and integrations.get(s.key).connected %}
+            {% if s.key == 'drive' %}
+              <form x-ref="form" method="post" action="/integrations/drive/disconnect">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+                <button type="button" @click="$dispatch('open-drive-disconnect')" class="inline-flex items-center justify-center rounded-md bg-slate-800 border border-slate-700 px-3 py-2 text-sm text-slate-200">Disconnect</button>
+              </form>
+            {% else %}
+              <button disabled class="inline-flex items-center justify-center rounded-md bg-slate-800/50 border border-slate-800 px-3 py-2 text-sm text-slate-500">Connected</button>
+            {% endif %}
+          {% else %}
+            {% if s.key == 'drive' %}
+              <a href="/auth/google/start" class="inline-flex items-center justify-center rounded-md bg-sky-600 hover:bg-sky-500 text-white px-3 py-2 text-sm">Connect</a>
+            {% else %}
+              <button disabled class="inline-flex items-center justify-center rounded-md bg-slate-700/60 border border-slate-700 px-3 py-2 text-sm text-slate-400">Coming soon</button>
+            {% endif %}
+          {% endif %}
+        </div>
+      </div>
+    {% endcall %}
+  {% endfor %}
+</div>

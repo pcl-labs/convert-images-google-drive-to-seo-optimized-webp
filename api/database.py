@@ -345,6 +345,12 @@ async def update_google_tokens_expiry(
     query = "UPDATE google_tokens SET access_token = ?, expiry = ?, updated_at = datetime('now') WHERE user_id = ?"
     await db.execute(query, (access_token, expiry, user_id))
 
+
+async def delete_google_tokens(db: Database, user_id: str) -> None:
+    """Delete stored Google OAuth tokens for a user (disconnect)."""
+    query = "DELETE FROM google_tokens WHERE user_id = ?"
+    await db.execute(query, (user_id,))
+
 # Job operations
 async def create_job(
     db: Database,
@@ -490,4 +496,124 @@ async def get_user_count(db: Database) -> int:
     query = "SELECT COUNT(*) as total FROM users"
     result = await db.execute(query, ())
     return dict(result).get("total", 0) if result else 0
+
+
+# Notifications & Events schema and operations
+async def ensure_notifications_schema(db: Database) -> None:
+    """Create events, notifications, and deliveries tables if they do not exist."""
+    # D1 prepare may not support multiple statements; run individually
+    stmts = [
+        (
+            """
+            CREATE TABLE IF NOT EXISTS events (
+                id TEXT PRIMARY KEY,
+                type TEXT NOT NULL,
+                aggregate_type TEXT NOT NULL,
+                aggregate_id TEXT NOT NULL,
+                payload TEXT,
+                occurred_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            """,
+            (),
+        ),
+        (
+            """
+            CREATE TABLE IF NOT EXISTS notifications (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                event_id TEXT,
+                level TEXT NOT NULL,
+                title TEXT,
+                text TEXT NOT NULL,
+                context TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                expires_at TEXT
+            )
+            """,
+            (),
+        ),
+        (
+            """
+            CREATE TABLE IF NOT EXISTS notification_deliveries (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                notification_id TEXT NOT NULL,
+                delivered_at TEXT NOT NULL DEFAULT (datetime('now')),
+                seen_at TEXT,
+                dismissed_at TEXT
+            )
+            """,
+            (),
+        ),
+        ("CREATE INDEX IF NOT EXISTS idx_notifications_user_created ON notifications(user_id, created_at DESC)", ()),
+        ("CREATE INDEX IF NOT EXISTS idx_deliveries_user ON notification_deliveries(user_id, notification_id)", ()),
+    ]
+    for sql, params in stmts:
+        try:
+            await db.execute(sql, params)
+        except Exception as e:
+            logger.warning(f"ensure_notifications_schema statement failed: {e}")
+
+
+async def emit_event(db: Database, evt_id: str, type_: str, aggregate_type: str, aggregate_id: str, payload: dict | None) -> None:
+    await db.execute(
+        "INSERT OR IGNORE INTO events (id, type, aggregate_type, aggregate_id, payload, occurred_at) VALUES (?, ?, ?, ?, ?, datetime('now'))",
+        (evt_id, type_, aggregate_type, aggregate_id, json.dumps(payload or {})),
+    )
+
+
+async def create_notification(db: Database, notif_id: str, user_id: str, level: str, text: str, title: str | None = None, context: dict | None = None, event_id: str | None = None) -> None:
+    await db.execute(
+        "INSERT OR REPLACE INTO notifications (id, user_id, event_id, level, title, text, context, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))",
+        (notif_id, user_id, event_id, level, title or None, text, json.dumps(context or {})),
+    )
+    # Also ensure a delivery row exists for the user
+    await db.execute(
+        "INSERT OR IGNORE INTO notification_deliveries (id, user_id, notification_id, delivered_at) VALUES (?, ?, ?, datetime('now'))",
+        (f"{notif_id}:{user_id}", user_id, notif_id),
+    )
+
+
+async def list_notifications(db: Database, user_id: str, after_id: str | None = None, limit: int = 20) -> List[Dict[str, Any]]:
+    where = "WHERE user_id = ?"
+    params: List[Any] = [user_id]
+    if after_id:
+        # Return items newer than after_id's created_at
+        row = await db.execute("SELECT created_at FROM notifications WHERE id = ?", (after_id,))
+        if row:
+            where += " AND created_at > ?"
+            params.append(dict(row).get("created_at"))
+    query = f"SELECT * FROM notifications {where} ORDER BY created_at DESC LIMIT ?"
+    params.append(limit)
+    rows = await db.execute_all(query, tuple(params))
+    return [dict(r) for r in rows] if rows else []
+
+
+async def mark_notification_seen(db: Database, user_id: str, notification_id: str) -> None:
+    await db.execute(
+        "UPDATE notification_deliveries SET seen_at = datetime('now') WHERE user_id = ? AND notification_id = ?",
+        (user_id, notification_id),
+    )
+
+
+async def dismiss_notification(db: Database, user_id: str, notification_id: str) -> None:
+    await db.execute(
+        "UPDATE notification_deliveries SET dismissed_at = datetime('now') WHERE user_id = ? AND notification_id = ?",
+        (user_id, notification_id),
+    )
+
+
+def map_job_status_to_notification(job: Dict[str, Any]) -> Dict[str, Any] | None:
+    """Simple projector: map a job row to a notification payload (level, text)."""
+    st = job.get("status", "queued")
+    job_id = job.get("job_id")
+    if not job_id:
+        return None
+    # Terminal states only to reduce noise
+    if st == "completed":
+        return {"level": "success", "text": f"Job {job_id} completed"}
+    if st in ("failed", "cancelled"):
+        return {"level": "error", "text": f"Job {job_id} {st}"}
+    # Suppress non-terminal info-level updates by default
+    return None
 

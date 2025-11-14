@@ -4,27 +4,52 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{{ title or 'App' }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='css/app.css') }}">
+    <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
     <script src="https://unpkg.com/htmx.org@1.9.12"></script>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
-  </head>
-  <body>
-    <nav class="container-fluid">
-      <ul>
-        <li><strong>{{ app_name or 'App' }}</strong></li>
-      </ul>
-      <ul>
-        {% if user %}
-          <li><a href="/dashboard">Dashboard</a></li>
-          <li><a href="/settings">Settings</a></li>
-        {% else %}
-          <li><a href="/login">Login</a></li>
-        {% endif %}
-      </ul>
-    </nav>
+    <script>
+      window.__modalOpen = false;
+      window.addEventListener('open-drive-disconnect', function(){ window.__modalOpen = true; });
+      window.addEventListener('confirm-drive-disconnect', function(){ window.__modalOpen = false; });
+      window.addEventListener('close-drive-disconnect', function(){ window.__modalOpen = false; });
+      document.body.addEventListener('htmx:error', function(){
+        window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', text: 'Request failed' } }));
+      });
 
-    <main class="container">
-      <div id="flash-area">{% block flash %}{% endblock %}</div>
-      {% block content %}{% endblock %}
-    </main>
+      // Notifications via SSE (replace polling)
+      document.addEventListener('DOMContentLoaded', () => {
+        try {
+          window.__notifiedIds = new Set();
+          const es = new EventSource('/api/stream');
+          es.onmessage = (evt) => {
+            try {
+              const msg = JSON.parse(evt.data || '{}');
+              if (msg && msg.type === 'notification.created' && msg.data) {
+                const n = msg.data;
+                const key = `${n.id}:${n.level}:${n.text}`;
+                if (window.__notifiedIds.has(key)) return;
+                window.__notifiedIds.add(key);
+                const type = n.level === 'error' ? 'error' : (n.level === 'success' ? 'success' : 'info');
+                window.dispatchEvent(new CustomEvent('toast', { detail: { type, text: n.text } }));
+              }
+            } catch (_e) {}
+          };
+          es.onerror = () => { /* EventSource will retry automatically */ };
+          window.__es = es;
+        } catch (_e) { /* ignore */ }
+      });
+    </script>
+  </head>
+  <body class="dark">
+    <div class="min-h-screen bg-slate-950">
+      {% include 'components/layout/sidebar.html' %}
+      <div class="lg:pl-64 pt-14 lg:pt-0">
+        <main>
+          <div id="flash-area">{% block flash %}{% endblock %}</div>
+          {% block content %}{% endblock %}
+        </main>
+      </div>
+      {% include 'components/overlays/toast.html' %}
+    </div>
   </body>
 </html>
