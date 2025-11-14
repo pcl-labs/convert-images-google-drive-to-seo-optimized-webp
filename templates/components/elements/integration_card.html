@@ -1,0 +1,56 @@
+{% macro integration_card(s, data, csrf_token) %}
+  <div class="rounded-md border border-slate-800 bg-slate-900/60 px-4 py-4 transition-colors hover:bg-slate-900/70">
+    <div class="flex items-start justify-between gap-4">
+      <div class="flex items-start gap-3 min-w-0">
+        <div class="h-11 w-11 rounded-md bg-slate-900 border border-slate-800 shrink-0 flex items-center justify-center">
+          {% if s.key == 'drive' %}
+            <svg viewBox="0 0 256 256" class="h-6 w-6" aria-hidden="true">
+              <path fill="#0F9D58" d="M44 192l36-62h72l-36 62z"/>
+              <path fill="#4285F4" d="M80 130L44 192 0 118l36-62z"/>
+              <path fill="#F4B400" d="M116 68h72l68 118h-72z"/>
+            </svg>
+          {% elif s.key == 'gmail' %}
+            <svg viewBox="0 0 256 256" class="h-6 w-6" aria-hidden="true">
+              <path fill="#EA4335" d="M32 200V80l96 64 96-64v120h-40V120l-56 38-56-38v80z"/>
+              <path fill="#34A853" d="M32 80l24-16 72 48-24 16z"/>
+              <path fill="#FBBC05" d="M224 80l-24-16-72 48 24 16z"/>
+              <path fill="#4285F4" d="M32 200h40v-80L32 80zM184 120v80h40V80z"/>
+            </svg>
+          {% elif s.key == 'youtube' %}
+            <svg viewBox="0 0 256 256" class="h-6 w-6" aria-hidden="true">
+              <rect x="16" y="64" width="224" height="128" rx="24" fill="#FF0000"/>
+              <path d="M112 96l48 32-48 32z" fill="#fff"/>
+            </svg>
+          {% else %}
+            <svg viewBox="0 0 24 24" class="h-6 w-6 text-slate-300" fill="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="10"/></svg>
+          {% endif %}
+        </div>
+        <a href="/dashboard/integrations/{{ s.key }}" class="min-w-0 group">
+          <div class="text-white font-semibold truncate group-hover:underline">{{ s.name }}</div>
+          <div class="text-sm text-slate-400 leading-relaxed line-clamp-2">{{ s.subtitle or s.description }}</div>
+        </a>
+      </div>
+      <div class="flex items-center gap-2 shrink-0">
+        {% from 'components/elements/button.html' import button %}
+        {% if data and data.connected %}
+          {% if s.key == 'drive' %}
+            <div x-data="{ submit(){ $refs.form && $refs.form.submit() } }" @open-drive-disconnect.window="submit()">
+              <form x-ref="form" method="post" action="/dashboard/integrations/drive/disconnect">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+                {{ button('Disconnect', variant='destructive', attrs='type="button" @click="$dispatch(\'open-drive-disconnect\')"') }}
+              </form>
+            </div>
+          {% else %}
+            {{ button('Connected', variant='secondary', attrs='disabled', extra_classes='opacity-60 cursor-not-allowed') }}
+          {% endif %}
+        {% else %}
+          {% if s.key == 'drive' %}
+            <a href="/auth/google/start" class="inline-flex items-center justify-center rounded-md px-3 py-2 text-sm font-medium bg-sky-600 hover:bg-sky-500 text-white">Connect</a>
+          {% else %}
+            {{ button('In roadmap', variant='secondary', attrs='disabled', extra_classes='opacity-60 cursor-not-allowed') }}
+          {% endif %}
+        {% endif %}
+      </div>
+    </div>
+  </div>
+{% endmacro %}

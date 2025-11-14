@@ -1,0 +1,17 @@
+{% macro button(label, variant="primary", attrs="", with_spinner=False, spinner_id=None, extra_classes="" ) %}
+  {% set styles = {
+    'primary': 'bg-sky-600 hover:bg-sky-500 text-white',
+    'secondary': 'bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700',
+    'destructive': 'bg-rose-600 hover:bg-rose-500 text-white',
+    'ghost': 'bg-transparent hover:bg-slate-900 text-slate-200 border border-transparent'
+  } %}
+  <button class="inline-flex items-center justify-center rounded-md px-3 py-2 text-sm font-medium {{ styles.get(variant, styles['primary']) }} {{ extra_classes }}" {{ attrs|safe }}>
+    <span>{{ label }}</span>
+    {% if with_spinner %}
+      <svg {% if spinner_id %}id="{{ spinner_id }}"{% endif %} class="htmx-indicator ml-2 animate-spin h-4 w-4 text-current" style="display:none" viewBox="0 0 24 24">
+        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none"></circle>
+        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
+      </svg>
+    {% endif %}
+  </button>
+{% endmacro %}

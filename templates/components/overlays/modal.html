@@ -1,0 +1,32 @@
+{% macro modal(id, title="Confirm", confirm_text="Confirm", cancel_text="Cancel") %}
+<div
+  x-data="modalState('{{ id }}')"
+  @open-{{ id }}.window="open=true; openModal()"
+  @keydown.escape.window="closeModal()"
+  @keydown.window="trap($event)"
+>
+  <div x-show="open" x-transition.opacity class="fixed inset-0 z-40 bg-black/60" x-cloak @click="closeModal()"></div>
+  <div x-show="open" x-transition class="fixed inset-0 z-50 flex items-center justify-center p-4" x-cloak>
+    <div 
+      class="w-full max-w-md rounded-xl bg-slate-950 border border-slate-800 shadow-xl outline-none"
+      role="dialog" aria-modal="true"
+      :aria-labelledby="titleId"
+      tabindex="-1"
+    >
+      <div class="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
+        <h3 :id="titleId" class="text-white font-semibold">{{ title }}</h3>
+        <button aria-label="Close modal" @click="closeModal()" class="text-slate-400 hover:text-slate-200">
+          <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <div class="p-4 text-slate-200">
+        {{ caller() }}
+      </div>
+      <div class="px-4 py-3 border-t border-slate-800 flex items-center justify-end gap-2">
+        <button @click="closeModal()" class="px-3 py-2 text-sm rounded-md bg-slate-800 border border-slate-700 text-slate-200">{{ cancel_text }}</button>
+        <button data-autofocus @click="$dispatch('confirm-{{ id }}')" class="px-3 py-2 text-sm rounded-md bg-sky-600 hover:bg-sky-500 text-white">{{ confirm_text }}</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endmacro %}

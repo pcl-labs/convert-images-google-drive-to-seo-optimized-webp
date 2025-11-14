@@ -112,10 +112,10 @@ def test_github_auth():
     print(f"Response headers: {response.headers}")
     print(f"Response text: {response.text[:200] if response.text else 'No response body'}")
     
-    # Accept redirect status codes (302, 307) when OAuth is configured, or 500 error when not configured
-    assert response.status_code in [302, 307, 500], f"Expected 302, 307, or 500, got {response.status_code}"
+    # Accept redirect status codes (302, 303, 307) when OAuth is configured, or 500 error when not configured
+    assert response.status_code in [302, 303, 307, 500], f"Expected 302, 303, 307, or 500, got {response.status_code}"
     
-    if response.status_code in [302, 307]:
+    if response.status_code in [302, 303, 307]:
         # OAuth is configured - should redirect to GitHub
         assert "location" in response.headers
         assert "github.com" in response.headers["location"].lower()

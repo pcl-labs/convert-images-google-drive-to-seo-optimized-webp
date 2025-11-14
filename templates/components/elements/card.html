@@ -1,0 +1,13 @@
+{% macro card(title=None, actions=None) %}
+  <div class="bg-slate-900/60 border border-slate-800 rounded-xl overflow-hidden">
+    {% if title or actions %}
+    <div class="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
+      <div class="font-semibold text-white">{{ title }}</div>
+      <div class="flex items-center gap-2">{{ actions }}</div>
+    </div>
+    {% endif %}
+    <div class="p-4">
+      {{ caller() }}
+    </div>
+  </div>
+{% endmacro %}

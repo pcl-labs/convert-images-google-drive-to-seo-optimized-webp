@@ -5,7 +5,7 @@
       <h1>Dashboard</h1>
       <p>Paste a Google Drive folder URL to start optimization.</p>
     </hgroup>
-    <form hx-post="/jobs" hx-target="#jobs-list" hx-swap="outerHTML">
+    <form hx-post="/dashboard/jobs" hx-target="#jobs-list" hx-swap="outerHTML">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
       <label>
         Drive URL
