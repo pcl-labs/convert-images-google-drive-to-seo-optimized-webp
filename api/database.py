@@ -839,15 +839,28 @@ async def get_usage_summary(
 
 async def count_usage_events(db: Database, user_id: str) -> int:
     """Return total number of usage events for a user."""
-    row = await db.execute_one(
+    # Use db.execute (single-row) and adapt to various return shapes
+    row = await db.execute(
         "SELECT COUNT(1) AS cnt FROM usage_events WHERE user_id = ?",
         (user_id,),
     )
     try:
         if row is None:
             return 0
+        # Some drivers may return a list/iterable for single-row queries
+        if isinstance(row, (list, tuple)) and row and not hasattr(row, "keys") and not isinstance(row, dict):
+            first = row[0]
+            # If the first element is a mapping/row, use it directly
+            if isinstance(first, dict):
+                return int(first.get("cnt", 0))
+            if hasattr(first, "keys"):
+                return int(first["cnt"])  # sqlite3.Row-like
+            # If it's a scalar or tuple, treat as positional
+            return int(first if not isinstance(first, (list, tuple)) else first[0])
+        # Mapping-like (dict)
         if isinstance(row, dict):
             return int(row.get("cnt", 0))
+        # sqlite3.Row-like
         if hasattr(row, "keys"):
             return int(row["cnt"])  # sqlite3.Row
         # tuple/list fallback

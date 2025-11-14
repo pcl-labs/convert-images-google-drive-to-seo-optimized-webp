@@ -125,7 +125,7 @@ Migrations (D1 is fine for now):
   * `document_id`
   * `user_id`
   * `source_type` (`"youtube" | "drive" | "text" | "upload"`)
-  * `source_ref` (youtube video id, drive folder id, file id, etc.)
+  * `source_ref` (YouTube video id, drive folder id, file id, etc.)
   * `raw_text` (text from paste or transcript)
   * `metadata` (json: title, language, duration, etc.)
   * `created_at`, `updated_at`
@@ -494,3 +494,64 @@ This section can be used directly in the Phase 1 PR description.
 
 - Aggregated usage view (daily/monthly rollups) and quota checks.
 - Optional external ASR provider integration behind feature flag.
+
+---
+
+## Phase 2.5 — Step-Oriented API/Tools (agent-friendly)
+
+- Rationale
+  - Make steps composable and testable; enable AI agents to call granular tools.
+  - Keep a convenience pipeline endpoint that orchestrates the same steps.
+
+- Proposed step endpoints (all POST)
+  - /api/v1/steps/transcript.fetch
+    - input: video_id, langs[]
+    - output: {text, lang, duration_s, source}
+    - metering: event_type=transcribe, engine=captions, duration_s
+  - /api/v1/steps/outline.generate
+    - input: text|doc_id, options
+    - output: {outline: [...]}
+    - metering: tokens_in/out, model
+  - /api/v1/steps/chapters.organize
+    - input: text|doc_id
+    - output: {chapters: [{title, summary, start_s?}]}
+    - metering: tokens_in/out, model
+  - /api/v1/steps/blog.compose
+    - input: outline|chapters, tone/length
+    - output: {markdown|html, meta}
+    - metering: tokens_in/out, model
+  - /api/v1/steps/document.persist
+    - input: doc_id, fields
+    - output: {doc_id, version}
+    - metering: persist
+
+- Design guardrails
+  - Idempotency keys for all POSTs.
+  - Consistent job envelope for async steps: {job_id}; GET /api/v1/jobs/{job_id}.
+  - PII-safe, structured logging; no raw text in logs.
+  - Strict validation; bounded Query/Body; masked 5xx errors.
+
+---
+
+## Phase 3 — Generate Blog pipeline
+
+- Scope
+  - Orchestrate: outline → chapters → SEO → compose.
+  - Persist to jobs.output (JSON) initially.
+  - Add a convenience POST /api/v1/pipelines/generate_blog that invokes the above steps.
+
+- LLM integration and metering
+  - Provider config flags (API key, model, timeouts).
+  - Record usage events with tokens_in, tokens_out, model, latency_ms.
+
+- Endpoints
+  - POST /api/v1/steps/* as above; plus pipeline orchestrator endpoint.
+  - GET /api/v1/jobs/{job_id} to fetch status/results.
+
+- Tests
+  - Unit tests for each step (mock LLM).
+  - Pipeline integration test (mock LLM), usage metering assertions.
+
+- Ops
+  - Retries/backoff for model calls; step timeouts.
+  - Observability: structured logs with job_id, step, duration_ms.
