@@ -67,6 +67,14 @@ class Settings(BaseSettings):
     
     # CORS - accept string or list, will be converted to list
     cors_origins: Union[str, list[str]] = Field(default="http://localhost:8000")
+
+    # Phase 2: Transcripts/ASR
+    enable_ytdlp_audio: bool = Field(default=True)
+    asr_engine: str = Field(default="faster_whisper")  # faster_whisper|whisper|provider
+    whisper_model_size: str = Field(default="small.en")
+    asr_device: str = Field(default="cpu")  # cpu|cuda|auto
+    asr_max_duration_min: int = Field(default=60)
+    transcript_langs: Union[str, list[str]] = Field(default="en,en-US,en-GB")
     
     @field_validator("encryption_key")
     @classmethod
