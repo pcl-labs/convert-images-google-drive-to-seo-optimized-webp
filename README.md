@@ -305,6 +305,12 @@ This project is open source and available under the MIT License.
 
 Contributions are welcome! Please feel free to submit a Pull Request.
 
+### Coding Rules and DRY Principles
+
+Please review our coding standards before contributing:
+
+- See docs/coding-rules.md for validation, schema integrity, queue message rules, worker failure handling, testing practices, security/logging, and DRY guidance (e.g., centralizing constants like KIND_MAP and shared helpers like parse_youtube_video_id).
+
 ## Support
 
 For issues and questions, please open an issue on GitHub. 
