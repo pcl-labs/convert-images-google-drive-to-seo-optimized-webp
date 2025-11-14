@@ -8,14 +8,16 @@ import pytest
 import requests
 import json
 import time
+import os
 
 BASE_URL = "http://localhost:8000"
+TIMEOUT_SECONDS = float(os.getenv("TEST_HTTP_TIMEOUT", "5"))
 
 
 def _check_server_available():
     """Check if server is available, skip test if not."""
     try:
-        response = requests.get(f"{BASE_URL}/health", timeout=2)
+        response = requests.get(f"{BASE_URL}/health", timeout=TIMEOUT_SECONDS)
         return True
     except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
         pytest.skip("Server not available. Start with: python run_api.py")
@@ -29,7 +31,7 @@ def check_server():
 
 def test_health():
     """Test health endpoint."""
-    response = requests.get(f"{BASE_URL}/health")
+    response = requests.get(f"{BASE_URL}/health", timeout=TIMEOUT_SECONDS)
     assert response.status_code == 200
     print(f"Response status code: {response.status_code}")
     try:
@@ -47,7 +49,7 @@ def test_health():
 
 def test_root():
     """Test root endpoint."""
-    response = requests.get(f"{BASE_URL}/api")
+    response = requests.get(f"{BASE_URL}/api", timeout=TIMEOUT_SECONDS)
     assert response.status_code == 200
     print(f"Response status code: {response.status_code}")
     try:
@@ -66,7 +68,7 @@ def test_root():
 
 def test_docs():
     """Test docs endpoint."""
-    response = requests.get(f"{BASE_URL}/docs")
+    response = requests.get(f"{BASE_URL}/docs", timeout=TIMEOUT_SECONDS)
     assert response.status_code == 200
 
 
@@ -76,7 +78,8 @@ def test_optimize_requires_auth():
         f"{BASE_URL}/api/v1/optimize",
         json={
             "drive_folder": "test-folder-id"
-        }
+        },
+        timeout=TIMEOUT_SECONDS
     )
     assert response.status_code == 401
     try:
@@ -92,7 +95,7 @@ def test_optimize_requires_auth():
 
 def test_jobs_requires_auth():
     """Test that jobs endpoint requires authentication."""
-    response = requests.get(f"{BASE_URL}/api/v1/jobs")
+    response = requests.get(f"{BASE_URL}/api/v1/jobs", timeout=TIMEOUT_SECONDS)
     assert response.status_code == 401
     try:
         data = response.json()
@@ -107,7 +110,7 @@ def test_jobs_requires_auth():
 
 def test_github_auth():
     """Test GitHub auth endpoint."""
-    response = requests.get(f"{BASE_URL}/auth/github/start", allow_redirects=False)
+    response = requests.get(f"{BASE_URL}/auth/github/start", allow_redirects=False, timeout=TIMEOUT_SECONDS)
     print(f"Response status code: {response.status_code}")
     print(f"Response headers: {response.headers}")
     print(f"Response text: {response.text[:200] if response.text else 'No response body'}")
@@ -147,7 +150,7 @@ def test_github_status_requires_auth():
 
 def test_google_oauth_start_requires_auth():
     """Test that Google OAuth start endpoint redirects or errors."""
-    response = requests.get(f"{BASE_URL}/auth/google/start", allow_redirects=False)
+    response = requests.get(f"{BASE_URL}/auth/google/start", allow_redirects=False, timeout=TIMEOUT_SECONDS)
     # Endpoint redirects to Google OAuth (307) when configured, or returns 500 when not configured
     assert response.status_code in [307, 500]
     if response.status_code == 500:
@@ -165,7 +168,7 @@ def test_google_oauth_start_requires_auth():
 
 def test_google_oauth_status_requires_auth():
     """Test that Google OAuth status endpoint requires authentication."""
-    response = requests.get(f"{BASE_URL}/auth/google/status")
+    response = requests.get(f"{BASE_URL}/auth/google/status", timeout=TIMEOUT_SECONDS)
     assert response.status_code == 401
     try:
         data = response.json()
@@ -180,7 +183,7 @@ def test_google_oauth_status_requires_auth():
 
 def test_providers_status_requires_auth():
     """Test that providers status endpoint requires authentication."""
-    response = requests.get(f"{BASE_URL}/auth/providers/status")
+    response = requests.get(f"{BASE_URL}/auth/providers/status", timeout=TIMEOUT_SECONDS)
     assert response.status_code == 401
     try:
         data = response.json()
