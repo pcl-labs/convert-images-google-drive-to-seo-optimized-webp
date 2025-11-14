@@ -96,6 +96,37 @@ class Settings(BaseSettings):
             raise ValueError("ENCRYPTION_KEY is required in production (provide a base64 URL-safe 32-byte key)")
         return self
 
+    @field_validator("asr_engine")
+    @classmethod
+    def validate_asr_engine(cls, v: str) -> str:
+        allowed = {"faster_whisper", "whisper", "provider"}
+        if v not in allowed:
+            raise ValueError(f"asr_engine must be one of {sorted(allowed)}")
+        return v
+
+    @field_validator("asr_device")
+    @classmethod
+    def validate_asr_device(cls, v: str) -> str:
+        allowed = {"cpu", "cuda", "auto"}
+        if v not in allowed:
+            raise ValueError(f"asr_device must be one of {sorted(allowed)}")
+        return v
+
+    @model_validator(mode="after")
+    def parse_transcript_langs(self):
+        """Parse comma-separated transcript_langs string into a list."""
+        if isinstance(self.transcript_langs, str):
+            if "," in self.transcript_langs:
+                self.transcript_langs = [lang.strip() for lang in self.transcript_langs.split(",") if lang.strip()]
+            else:
+                self.transcript_langs = [self.transcript_langs.strip()] if self.transcript_langs.strip() else ["en"]
+        elif isinstance(self.transcript_langs, list):
+            if not self.transcript_langs:
+                self.transcript_langs = ["en"]
+        else:
+            self.transcript_langs = ["en"]
+        return self
+
     @model_validator(mode="after")
     def parse_cors_origins(self):
         """Parse comma-separated CORS origins string into a list."""

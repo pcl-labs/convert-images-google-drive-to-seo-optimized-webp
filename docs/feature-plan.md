@@ -446,3 +446,51 @@ Given that you’ve already done a bunch of tightening:
   - Job responses now include `job_type` and `document_id`; tests assert these fields for ingestion/optimize endpoints.
 
 This section can be used directly in the Phase 1 PR description.
+
+---
+
+## Phase 2 — Current status (in progress)
+
+- Implemented transcript pipeline scaffolding:
+  - youtube-transcript-api captions first, fallback to yt-dlp audio + faster-whisper (CPU, `small.en`).
+  - Helpers: `core/transcripts.py`, `core/audio_fetch.py` (temp dirs, timeout, error handling, cleanup).
+  - Config flags in `api/config.py` with validation and parsing:
+    - `ENABLE_YTDLP_AUDIO`, `ASR_ENGINE`, `WHISPER_MODEL_SIZE`, `ASR_DEVICE`, `ASR_MAX_DURATION_MIN`, `TRANSCRIPT_LANGS`.
+  - Usage metering: `usage_events` table + `record_usage_event(...)` helper.
+  - Worker integration: `process_ingest_youtube_job` now fetches transcript, updates `documents.raw_text/metadata`, records usage, and sets job output.
+
+### Learnings and guardrails
+
+- PII-safe logging in queue/worker (do not log whole messages).
+- Temp files and dirs must be cleaned; use context managers and explicit cleanup for moved files.
+- Config values should be validated (enums) and parsed (comma-separated lists) at load time.
+- Add CHECK/FK constraints to metering tables to avoid invalid data and orphans.
+- Provide local test knobs (e.g., `TEST_YOUTUBE_VIDEO_ID`, `TEST_HTTP_TIMEOUT`).
+
+## Phase 2 — Remaining work to complete
+
+- Tests
+  - Unit tests for `core/transcripts.py` and `core/audio_fetch.py` (mock yt-dlp and faster-whisper).
+  - Worker integration test for `ingest_youtube` no-captions path (ensures document update and usage events).
+
+- API and UI for usage
+  - Minimal endpoints to fetch per-user usage: `/api/v1/usage/summary`, `/api/v1/usage/events`.
+  - Dashboard card to show minutes processed and MB downloaded for the current period.
+
+- Pipeline progression (generate_blog)
+  - Define minimal outline/chapters/seo steps and persist results (`jobs.output` initially; later `pipeline_runs`/`pipeline_steps`).
+  - Record usage events per step (tokens in/out) once model calls are added.
+
+- Operational controls
+  - Add `ASR_MAX_DURATION_MIN` enforcement in worker before transcription.
+  - Feature flag to disable ASR entirely (captions-only mode) for constrained envs.
+  - Retries/backoff lanes for network-bound steps (yt-dlp, captions fetch).
+
+- Docs
+  - README note on FFmpeg prerequisite for local dev.
+  - Link usage endpoints and environment flags.
+
+### Nice-to-have (later in Phase 2 or early Phase 3)
+
+- Aggregated usage view (daily/monthly rollups) and quota checks.
+- Optional external ASR provider integration behind feature flag.
