@@ -50,6 +50,18 @@ def _parse_job_progress_model(progress_str: str) -> JobProgress:
     return JobProgress(**data)
 
 
+def _parse_db_datetime(value):
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if isinstance(value, str) and value:
+        try:
+            dt = datetime.fromisoformat(value)
+            return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+        except Exception:
+            pass
+    return datetime.now(timezone.utc)
+
+
 @router.get("/auth/github/status", tags=["Authentication"])
 async def github_link_status(user: dict = Depends(get_current_user)):
     db = ensure_db()
@@ -254,7 +266,7 @@ async def optimize_images(request: OptimizeRequest, user: dict = Depends(get_cur
             user_id=user["user_id"],
             status=JobStatusEnum.PENDING,
             progress=progress,
-            created_at=datetime.fromisoformat(job_data["created_at"]) if job_data.get("created_at") else datetime.now(timezone.utc),
+            created_at=_parse_db_datetime(job_data.get("created_at")),
             # Use canonical persisted folder id for consistency with storage
             drive_folder=(job_data.get("drive_folder") or folder_id),
         )
@@ -278,8 +290,8 @@ async def get_job_status(job_id: str, user: dict = Depends(get_current_user)):
         user_id=job["user_id"],
         status=JobStatusEnum(job["status"]),
         progress=progress,
-        created_at=datetime.fromisoformat(job["created_at"]),
-        completed_at=datetime.fromisoformat(job["completed_at"]) if job.get("completed_at") else None,
+        created_at=_parse_db_datetime(job.get("created_at")),
+        completed_at=_parse_db_datetime(job.get("completed_at")) if job.get("completed_at") else None,
         error=job.get("error"),
         drive_folder=job.get("drive_folder"),
     )
@@ -302,8 +314,8 @@ async def list_user_jobs(page: int = 1, page_size: int = 20, status_filter: Opti
                 user_id=job["user_id"],
                 status=JobStatusEnum(job["status"]),
                 progress=progress,
-                created_at=datetime.fromisoformat(job["created_at"]),
-                completed_at=datetime.fromisoformat(job["completed_at"]) if job.get("completed_at") else None,
+                created_at=_parse_db_datetime(job.get("created_at")),
+                completed_at=_parse_db_datetime(job.get("completed_at")) if job.get("completed_at") else None,
                 error=job.get("error"),
                 drive_folder=job.get("drive_folder"),
             )
