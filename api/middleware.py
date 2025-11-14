@@ -13,8 +13,11 @@ import logging
 import threading
 
 from .config import settings
+from .auth import verify_jwt_token
 from .exceptions import RateLimitError
 from .app_logging import set_request_id
+from .deps import ensure_db
+from .database import get_user_by_id
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +33,48 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
         response.headers["X-Request-ID"] = request_id
         return response
+
+
+class AuthCookieMiddleware(BaseHTTPMiddleware):
+    """Populate request.state.user from JWT in access_token cookie for DRY auth."""
+
+    async def dispatch(self, request: Request, call_next: Callable):
+        token = request.cookies.get("access_token")
+        if token:
+            try:
+                payload = verify_jwt_token(token)
+                user_id = payload.get("user_id")
+                email = payload.get("email")
+                github_id = payload.get("github_id")
+                if user_id and not email:
+                    try:
+                        db = ensure_db()
+                        stored = await get_user_by_id(db, user_id)  # type: ignore
+                        if stored:
+                            email = stored.get("email", email)
+                            github_id = github_id or stored.get("github_id")
+                    except Exception as exc:
+                        logger.debug("AuthCookieMiddleware: failed to fetch user profile: %s", exc)
+                request.state.user = {
+                    "user_id": user_id,
+                    "email": email,
+                    "github_id": github_id,
+                }
+                if user_id:
+                    request.state.user_id = user_id
+            except Exception:
+                # Invalid token: ensure no stale user state leaks into request
+                if hasattr(request.state, "user"):
+                    try:
+                        delattr(request.state, "user")
+                    except Exception:
+                        pass
+                if hasattr(request.state, "user_id"):
+                    try:
+                        delattr(request.state, "user_id")
+                    except Exception:
+                        pass
+        return await call_next(request)
 
 
 # Authentication is handled by router dependencies (Depends), not middleware.
@@ -153,4 +198,3 @@ class CORSMiddleware(BaseHTTPMiddleware):
             response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type"
             response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
         return response
-

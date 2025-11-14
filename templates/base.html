@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{{ title or 'App' }}</title>
     <link rel="stylesheet" href="{{ url_for('static', path='css/app.css') }}">
+    <style>[x-cloak]{display:none !important;}</style>
     <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
     <script src="https://unpkg.com/htmx.org@1.9.12"></script>
     <script>
@@ -12,12 +13,49 @@
       window.addEventListener('open-drive-disconnect', function(){ window.__modalOpen = true; });
       window.addEventListener('confirm-drive-disconnect', function(){ window.__modalOpen = false; });
       window.addEventListener('close-drive-disconnect', function(){ window.__modalOpen = false; });
-      document.body.addEventListener('htmx:error', function(){
-        window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', text: 'Request failed' } }));
-      });
 
-      // Notifications via SSE (replace polling)
+      window.modalState = function(id){
+        return {
+          open: false,
+          prevEl: null,
+          titleId: `modal-title-${id}`,
+          trap(e){
+            if(!this.open) return;
+            const focusables = this.$root.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
+            const els = Array.from(focusables).filter(el => !el.hasAttribute('disabled') && el.offsetParent !== null);
+            if(!els.length) return;
+            const first = els[0];
+            const last = els[els.length - 1];
+            if(e.key === 'Tab'){
+              if(e.shiftKey && document.activeElement === first){ e.preventDefault(); last.focus(); }
+              else if(!e.shiftKey && document.activeElement === last){ e.preventDefault(); first.focus(); }
+            }
+          },
+          openModal(){
+            this.prevEl = document.activeElement;
+            if(document.body){ document.body.style.overflow = 'hidden'; }
+            this.$nextTick(() => {
+              const focusTarget = this.$root.querySelector('[data-autofocus]') || this.$root.querySelector('[role="dialog"]') || this.$root;
+              focusTarget && focusTarget.focus && focusTarget.focus();
+            });
+          },
+          closeModal(){
+            if(document.body){ document.body.style.overflow = ''; }
+            this.open = false;
+            this.prevEl && this.prevEl.focus && this.prevEl.focus();
+          }
+        };
+      };
+
       document.addEventListener('DOMContentLoaded', () => {
+        const bodyEl = document.body;
+        if (bodyEl) {
+          bodyEl.addEventListener('htmx:error', function(){
+            window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', text: 'Request failed' } }));
+          });
+        }
+
+        // Notifications via SSE (replace polling)
         try {
           window.__notifiedIds = new Set();
           // simple fixed-size hash (FNV-1a 32-bit) for dedupe key
@@ -33,6 +71,10 @@
           const maxDelay = 30000; // cap at 30s
           function openES(){
             const es = new EventSource('/api/stream');
+            es.onopen = () => {
+              // reset backoff once the connection is successfully open
+              retryDelay = 1000;
+            };
             es.onmessage = (evt) => {
               try {
                 const msg = JSON.parse(evt.data || '{}');
@@ -59,8 +101,6 @@
               }, retryDelay);
             };
             window.__es = es;
-            // reset backoff once open
-            retryDelay = 1000;
           }
           openES();
           // Close on unload to avoid leaked connections

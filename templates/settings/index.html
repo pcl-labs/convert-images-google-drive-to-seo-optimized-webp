@@ -10,7 +10,7 @@
   <div class="bg-slate-900/60 border border-slate-800 rounded-xl">
     <div class="px-4 py-3 border-b border-slate-800 font-semibold text-white">API Keys</div>
     <div class="p-4 space-y-4">
-      <form hx-post="/settings/api-key" hx-target="#api-key-result" hx-swap="innerHTML">
+      <form hx-post="/dashboard/settings/api-key" hx-target="#api-key-result" hx-swap="innerHTML">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
         <button class="inline-flex items-center justify-center rounded-md bg-sky-600 hover:bg-sky-500 text-white px-3 py-2 text-sm">Generate API Key</button>
       </form>

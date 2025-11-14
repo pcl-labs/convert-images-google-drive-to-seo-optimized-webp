@@ -56,6 +56,10 @@ wrangler secret put GITHUB_CLIENT_SECRET
 # JWT secret (generate a strong random string)
 wrangler secret put JWT_SECRET_KEY
 
+# Encryption key for Fernet (32-byte base64 URL-safe). Generate with:
+# python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+wrangler secret put ENCRYPTION_KEY
+
 # Optional: Set redirect URI
 wrangler secret put GITHUB_REDIRECT_URI
 ```
@@ -94,6 +98,7 @@ The following environment variables can be set via `wrangler secret put`:
 - `GITHUB_CLIENT_ID` - GitHub OAuth Client ID (required)
 - `GITHUB_CLIENT_SECRET` - GitHub OAuth Client Secret (required)
 - `JWT_SECRET_KEY` - Secret key for JWT tokens (required)
+- `ENCRYPTION_KEY` - Base64 URL-safe 32-byte Fernet key for encrypting sensitive data at rest (required)
 - `GITHUB_REDIRECT_URI` - OAuth redirect URI (optional, defaults to callback URL)
 - `ENVIRONMENT` - Environment name (optional, defaults to "production")
 - `DEBUG` - Enable debug mode (optional, defaults to "false")
@@ -151,6 +156,7 @@ pytest --cov=. tests/
 - [ ] D1 database created and schema migrated
 - [ ] Queues created and configured
 - [ ] All secrets set via `wrangler secret put`
+  - [ ] ENCRYPTION_KEY set (Fernet key). Plan key rotation and data re-encryption outside of runtime.
 - [ ] GitHub OAuth app configured with correct callback URL
 - [ ] Health endpoint responding
 - [ ] Authentication flow working

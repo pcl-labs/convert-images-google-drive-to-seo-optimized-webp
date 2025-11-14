@@ -2,6 +2,7 @@ from typing import Optional, Tuple, Any
 from fastapi import Request, HTTPException, status
 from datetime import datetime
 import json
+import logging
 
 from .database import Database
 from .cloudflare_queue import QueueProducer
@@ -9,6 +10,7 @@ from .cloudflare_queue import QueueProducer
 # Internal state set by main.lifespan
 _db_instance: Optional[Database] = None
 _queue_producer: Optional[QueueProducer] = None
+logger = logging.getLogger(__name__)
 
 
 def set_db_instance(db: Database) -> None:
@@ -23,10 +25,15 @@ def set_queue_producer(q: QueueProducer) -> None:
 
 def ensure_db() -> Database:
     if _db_instance is None:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Database not initialized",
-        )
+        try:
+            set_db_instance(Database())
+            logger.warning("Database lazily initialized outside lifespan; consider calling set_db_instance during startup.")
+        except Exception as exc:
+            logger.error("Failed to lazily initialize database: %s", exc, exc_info=True)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Database not initialized",
+            )
     return _db_instance
 
 

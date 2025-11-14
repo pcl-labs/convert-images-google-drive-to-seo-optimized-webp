@@ -17,6 +17,7 @@ Filename Format Requirement:
 """
 
 import os
+import re
 from typing import Dict, Any, Optional
 import asyncio
 import functools
@@ -141,10 +142,40 @@ async def process_optimization_job(
     try:
         # Local recent logs buffer (keeps last 20)
         recent_logs: list[str] = []
-        MAX_RECENT = 20
+        MAX_RECENT = 50
+
+        # Basic sanitizer to reduce PII/secret leakage in progress logs
+        SENSITIVE_PATTERNS = [
+            # Bearer/API tokens
+            re.compile(r"(bearer\s+[A-Za-z0-9\-_.=:+/]{10,})", re.IGNORECASE),
+            re.compile(r"(api[_-]?key\s*[:=]\s*[A-Za-z0-9\-_.=:+/]{10,})", re.IGNORECASE),
+            re.compile(r"(token\s*[:=]\s*[A-Za-z0-9\-_.=:+/]{10,})", re.IGNORECASE),
+            # Emails
+            re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}") ,
+            # IPv4
+            re.compile(r"\b(?:(?:2[0-5]{2}|1?\d?\d)\.){3}(?:2[0-5]{2}|1?\d?\d)\b"),
+            # File paths (basic)
+            re.compile(r"(/[^\s]+)+"),
+            re.compile(r"([A-Za-z]:\\[^\s]+)"),
+            # URLs with potential creds
+            re.compile(r"https?://[^\s]+"),
+        ]
+
+        def sanitize_log_entry(msg: str) -> str:
+            try:
+                s = str(msg)
+                for pat in SENSITIVE_PATTERNS:
+                    s = pat.sub("[REDACTED]", s)
+                # trim overly long messages
+                if len(s) > 300:
+                    s = s[:297] + "..."
+                return s
+            except Exception:
+                return "[log]"
 
         def log_step(msg: str):
-            recent_logs.append(msg)
+            safe = sanitize_log_entry(msg)
+            recent_logs.append(safe)
             if len(recent_logs) > MAX_RECENT:
                 del recent_logs[0:len(recent_logs) - MAX_RECENT]
 
