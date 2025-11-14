@@ -50,6 +50,22 @@ class QueueProducer:
         except Exception as e:
             logger.error(f"Failed to send job {job_id} to queue: {e}", exc_info=True)
             return False
+
+    async def send_generic(self, message: Dict[str, Any]) -> bool:
+        """Send an arbitrary message to the queue (supports job_type/document_id, etc.)."""
+        if not self.queue:
+            logger.warning("Queue not configured, message will not be processed")
+            return False
+        try:
+            await self.queue.send(message)
+            logger.info(
+                "Sent generic message to queue",
+                extra={"message_keys": list(message.keys())}
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Failed to send generic message to queue: {e}", exc_info=True)
+            return False
     
     async def send_to_dlq(self, job_id: str, error: str, original_message: Dict[str, Any]) -> bool:
         """Send a failed job to the dead letter queue."""

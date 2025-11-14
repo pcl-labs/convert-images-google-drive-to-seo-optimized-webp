@@ -17,6 +17,15 @@ class JobStatusEnum(str, Enum):
     CANCELLED = "cancelled"
 
 
+class JobType(str, Enum):
+    """Job type classification for pipelines and ingestion."""
+    OPTIMIZE_DRIVE = "optimize_drive"
+    INGEST_YOUTUBE = "ingest_youtube"
+    INGEST_TEXT = "ingest_text"
+    INGEST_DRIVE_FOLDER = "ingest_drive_folder"
+    GENERATE_BLOG = "generate_blog"
+
+
 class OptimizeRequest(BaseModel):
     """Request model for image optimization."""
     
@@ -103,6 +112,9 @@ class JobStatus(BaseModel):
     completed_at: Optional[datetime] = None
     error: Optional[str] = None
     drive_folder: Optional[str] = None
+    job_type: Optional[str] = None
+    document_id: Optional[str] = None
+    output: Optional[Dict[str, Any]] = None
     
     model_config = ConfigDict(use_enum_values=True)
 
@@ -162,4 +174,24 @@ class StatsResponse(BaseModel):
     pending_jobs: int
     processing_jobs: int
     total_users: Optional[int] = None
+
+
+class Document(BaseModel):
+    document_id: str
+    user_id: str
+    source_type: str
+    source_ref: Optional[str] = None
+    raw_text: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
+class IngestYouTubeRequest(BaseModel):
+    url: str
+
+
+class IngestTextRequest(BaseModel):
+    text: str
+    title: Optional[str] = None
 
