@@ -20,23 +20,55 @@
       document.addEventListener('DOMContentLoaded', () => {
         try {
           window.__notifiedIds = new Set();
-          const es = new EventSource('/api/stream');
-          es.onmessage = (evt) => {
-            try {
-              const msg = JSON.parse(evt.data || '{}');
-              if (msg && msg.type === 'notification.created' && msg.data) {
-                const n = msg.data;
-                const key = `${n.id}:${n.level}:${n.text}`;
-                if (window.__notifiedIds.has(key)) return;
-                window.__notifiedIds.add(key);
-                const type = n.level === 'error' ? 'error' : (n.level === 'success' ? 'success' : 'info');
-                window.dispatchEvent(new CustomEvent('toast', { detail: { type, text: n.text } }));
+          // simple fixed-size hash (FNV-1a 32-bit) for dedupe key
+          function hashKey(str){
+            let h = 0x811c9dc5;
+            for (let i = 0; i < str.length; i++) {
+              h ^= str.charCodeAt(i);
+              h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
+            }
+            return ('00000000' + h.toString(16)).slice(-8);
+          }
+          let retryDelay = 1000; // start 1s
+          const maxDelay = 30000; // cap at 30s
+          function openES(){
+            const es = new EventSource('/api/stream');
+            es.onmessage = (evt) => {
+              try {
+                const msg = JSON.parse(evt.data || '{}');
+                if (msg && msg.type === 'notification.created' && msg.data) {
+                  const n = msg.data;
+                  const key = hashKey(`${n.id}:${n.level}:${n.text || ''}`);
+                  if (window.__notifiedIds.has(key)) return;
+                  window.__notifiedIds.add(key);
+                  const type = n.level === 'error' ? 'error' : (n.level === 'success' ? 'success' : 'info');
+                  window.dispatchEvent(new CustomEvent('toast', { detail: { type, text: n.text } }));
+                }
+              } catch (e) {
+                if (console && console.error) console.error('SSE onmessage error', e);
               }
-            } catch (_e) {}
-          };
-          es.onerror = () => { /* EventSource will retry automatically */ };
-          window.__es = es;
-        } catch (_e) { /* ignore */ }
+            };
+            es.onerror = (e) => {
+              if (console && console.error) console.error('SSE connection error', e);
+              try { es.close(); } catch(_) {}
+              window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', text: 'Live updates disconnected, retrying...' } }));
+              window.__es = null;
+              setTimeout(() => {
+                retryDelay = Math.min(maxDelay, retryDelay * 2);
+                openES();
+              }, retryDelay);
+            };
+            window.__es = es;
+            // reset backoff once open
+            retryDelay = 1000;
+          }
+          openES();
+          // Close on unload to avoid leaked connections
+          window.addEventListener('beforeunload', () => { try { window.__es && window.__es.close(); } catch(_) {} });
+          window.addEventListener('unload', () => { try { window.__es && window.__es.close(); } catch(_) {} });
+        } catch (e) {
+          if (console && console.error) console.error('SSE init error', e);
+        }
       });
     </script>
   </head>
