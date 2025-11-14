@@ -5,7 +5,6 @@ from typing import Optional
 import uuid
 import secrets
 from datetime import datetime, timezone
-import re
 
 from .config import settings
 from .models import (
@@ -46,6 +45,7 @@ from .deps import (
     parse_job_progress,
 )
 from .utils import enqueue_job_with_guard
+from core.url_utils import parse_youtube_video_id
 
 logger = get_logger(__name__)
 
@@ -369,12 +369,11 @@ async def list_user_jobs(page: int = 1, page_size: int = 20, status_filter: Opti
 async def ingest_youtube(req: IngestYouTubeRequest, user: dict = Depends(get_current_user)):
     db = ensure_db()
     queue = ensure_services()[1]
-    # naive video id extraction
-    url = (str(req.url) or "").strip()
-    m = re.search(r"(?:v=|youtu\.be/|/shorts/)([A-Za-z0-9_-]{6,})", url)
-    if not m:
+    # extract video id using shared helper
+    url = (str(req.url) if req.url is not None else "").strip()
+    video_id = parse_youtube_video_id(url)
+    if not video_id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid YouTube URL")
-    video_id = m.group(1)
     job_id = str(uuid.uuid4())
     document_id = str(uuid.uuid4())
     # create document
