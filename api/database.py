@@ -836,6 +836,25 @@ async def get_usage_summary(
         "minutes_processed": round(total_duration / 60.0, 2),
     }
 
+
+async def count_usage_events(db: Database, user_id: str) -> int:
+    """Return total number of usage events for a user."""
+    row = await db.execute_one(
+        "SELECT COUNT(1) AS cnt FROM usage_events WHERE user_id = ?",
+        (user_id,),
+    )
+    try:
+        if row is None:
+            return 0
+        if isinstance(row, dict):
+            return int(row.get("cnt", 0))
+        if hasattr(row, "keys"):
+            return int(row["cnt"])  # sqlite3.Row
+        # tuple/list fallback
+        return int(row[0])
+    except Exception:
+        return 0
+
 async def create_notification(db: Database, notif_id: str, user_id: str, level: str, text: str, title: str | None = None, context: dict | None = None, event_id: str | None = None) -> None:
     await db.execute(
         "INSERT OR REPLACE INTO notifications (id, user_id, event_id, level, title, text, context, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))",
