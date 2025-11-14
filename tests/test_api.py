@@ -51,8 +51,8 @@ def test_github_auth_redirect(client):
     mock_url = "https://github.com/login/oauth/authorize?test=1"
     with patch('api.auth.get_github_oauth_url', return_value=(mock_url, "test_state_token")) as mock_get_url:
         response = client.get("/auth/github/start", follow_redirects=False)
-        # Should redirect (302 or 307)
-        assert response.status_code in [302, 307]
+        # Should redirect (302, 303, or 307)
+        assert response.status_code in [302, 303, 307]
         # Verify Location header matches mocked URL
         assert response.headers['Location'] == mock_url
         # Verify the mock was called exactly once

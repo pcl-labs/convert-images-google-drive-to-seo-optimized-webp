@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block page_title %}Integrations{% endblock %}
+{% block content %}
+<div class="p-4 md:p-6 space-y-6">
+  <div class="space-y-1">
+    <h1 class="text-xl font-semibold text-white">Integrations</h1>
+    <p class="text-sm text-slate-400">Connect your accounts</p>
+  </div>
+
+  <div id="integrations-grid"
+       hx-get="/integrations/partials/grid"
+       hx-trigger="load, every 6s"
+       hx-swap="outerHTML">
+    {% include 'integrations/partials/grid.html' %}
+  </div>
+  {% from 'components/overlays/modal.html' import modal %}
+  {% call modal('drive-disconnect', title='Disconnect Google Drive', confirm_text='Disconnect', cancel_text='Cancel') %}
+    <p class="text-slate-300 text-sm">Are you sure you want to disconnect Google Drive? Jobs requiring Drive access will no longer work until you reconnect.</p>
+  {% endcall %}
+</div>
+{% endblock %}

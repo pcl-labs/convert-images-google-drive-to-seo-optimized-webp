@@ -6,7 +6,7 @@ import time
 import uuid
 from typing import Callable, Optional
 from fastapi import Request, Response, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
 import logging
@@ -75,7 +75,7 @@ class AuthenticationMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: Callable):
         # Skip auth for public endpoints
         public_paths = [
-            "/",
+            "/api",
             "/health",
             "/docs",
             "/redoc",
@@ -86,14 +86,10 @@ class AuthenticationMiddleware(BaseHTTPMiddleware):
             "/auth/logout",
         ]
         
-        # Check if path is exactly in public_paths or starts with a public path (but not just "/")
+        # Check if path is in the public paths list or starts with a public path
         is_public = False
         for path in public_paths:
-            if path == "/":
-                if request.url.path == "/":
-                    is_public = True
-                    break
-            elif request.url.path.startswith(path):
+            if request.url.path.startswith(path):
                 is_public = True
                 break
         
@@ -132,6 +128,10 @@ class AuthenticationMiddleware(BaseHTTPMiddleware):
             if not token:
                 if settings.debug:
                     logger.debug(f"Authentication failed - no token found for {request.url.path}")
+                # For browser requests to '/', redirect to login for better UX
+                accept = (request.headers.get("accept") or "").lower()
+                if request.url.path == "/" and ("text/html" in accept or "*/*" in accept):
+                    return RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
                 return JSONResponse(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     content={"error": "Authentication required", "error_code": "AUTH_ERROR"}
@@ -259,7 +259,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     
     async def dispatch(self, request: Request, call_next: Callable):
         # Skip rate limiting for health checks
-        if request.url.path in ["/health", "/"]:
+        if request.url.path in ["/health"]:
             return await call_next(request)
         
         client_id = self._get_client_id(request)

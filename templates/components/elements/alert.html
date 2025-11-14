@@ -1,0 +1,15 @@
+{% macro alert(kind="info", text="", dismissible=True) %}
+  {% set styles = {
+    'info': 'bg-sky-500/10 text-sky-300 ring-1 ring-sky-500/30',
+    'success': 'bg-emerald-500/10 text-emerald-300 ring-1 ring-emerald-500/30',
+    'error': 'bg-rose-500/10 text-rose-300 ring-1 ring-rose-500/30'
+  } %}
+  <div x-data="{show:true}" x-show="show" class="relative rounded-md px-3 py-2 text-sm {{ styles.get(kind, styles['info']) }}">
+    <div>{{ text|safe }}</div>
+    {% if dismissible %}
+    <button @click="show=false" class="absolute right-2 top-2 text-slate-400 hover:text-slate-200">
+      <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+    </button>
+    {% endif %}
+  </div>
+{% endmacro %}

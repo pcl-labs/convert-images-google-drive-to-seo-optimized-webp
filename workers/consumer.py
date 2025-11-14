@@ -31,6 +31,7 @@ from core.drive_utils import (
 )
 from core.image_processor import process_image
 from api.database import Database, update_job_status
+from api.notifications import notify_job
 from api.app_logging import setup_logging, get_logger
 from core.filename_utils import FILENAME_ID_SEPARATOR, sanitize_folder_name, parse_download_name, make_output_dir_name
 from core.constants import TEMP_DIR, FAIL_LOG_PATH
@@ -332,8 +333,13 @@ async def process_optimization_job(
             upload_failed=len(failed_uploads),
             processing_failed=len(failed_processing),
         ))
-        
+
         app_logger.info(f"Job {job_id} completed successfully")
+        # Create success notification
+        try:
+            await notify_job(db, user_id=user_id, job_id=job_id, level="success", text=f"Job {job_id} completed")
+        except Exception:
+            pass
         
     except Exception as e:
         app_logger.error(f"Job {job_id} failed: {e}", exc_info=True)
@@ -343,6 +349,11 @@ async def process_optimization_job(
             "failed",
             error=str(e)
         )
+        # Create failure notification
+        try:
+            await notify_job(db, user_id=user_id, job_id=job_id, level="error", text=f"Job {job_id} failed")
+        except Exception:
+            pass
         raise
 
 

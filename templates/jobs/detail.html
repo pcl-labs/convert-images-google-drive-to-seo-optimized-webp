@@ -1,24 +1,76 @@
 {% extends "base.html" %}
+{% set page_title = 'Job ' ~ (job.id or job.job_id) %}
 {% block content %}
-  <section>
-    <hgroup>
-      <h1>Job {{ job.job_id }}</h1>
-      <p>Status: <strong>{{ job.status }}</strong></p>
-    </hgroup>
-    {% if job.error %}
-      <article class="contrast">Error: {{ job.error }}</article>
-    {% endif %}
-    <p>Drive Folder: {{ job.drive_folder }}</p>
+<div class="p-4 md:p-6 space-y-6">
+  <div class="flex items-center justify-between">
+    <div>
+      <h1 class="text-xl font-semibold text-white">Job {{ job.id or job.job_id }}</h1>
+      <div class="mt-1 text-sm text-slate-400">Created {{ job.created_at }}</div>
+    </div>
+    <div class="flex items-center gap-2">
+      {% from 'components/elements/button.html' import button %}
+      <form hx-post="/jobs/{{ job.id or job.job_id }}/retry" hx-swap="none" hx-on:htmx:afterOnLoad="window.dispatchEvent(new CustomEvent('toast',{detail:{type:'success',text:'Job retried'}}))">{{ button('Retry','secondary') }}</form>
+      <form hx-delete="/jobs/{{ job.id or job.job_id }}" hx-swap="none" hx-on:htmx:afterOnLoad="window.dispatchEvent(new CustomEvent('toast',{detail:{type:'success',text:'Job cancelled'}}))">{{ button('Cancel','destructive') }}</form>
+    </div>
+  </div>
+
+  <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+    <div class="md:col-span-2 bg-slate-900/60 border border-slate-800 rounded-xl">
+      <div class="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
+        <div class="font-semibold text-white">Metadata</div>
+        {% from 'components/elements/badge.html' import badge %}
+        <div>{{ badge(job.status_label or job.status, status=job.status) }}</div>
+      </div>
+      <div class="p-4 space-y-2 text-slate-200">
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
+          <div><span class="text-slate-400 text-sm">Type</span><div class="font-medium">{{ job.kind or job.type }}</div></div>
+          <div><span class="text-slate-400 text-sm">Input</span><div class="font-medium break-all">{{ job.input or job.drive_folder or job.youtube_url }}</div></div>
+          <div><span class="text-slate-400 text-sm">Owner</span><div class="font-medium">{{ job.user or '-' }}</div></div>
+          <div><span class="text-slate-400 text-sm">Updated</span><div class="font-medium">{{ job.updated_at or '-' }}</div></div>
+        </div>
+        {% if job.error %}
+          {% from 'components/elements/alert.html' import alert %}
+          <div class="mt-3">{{ alert('error', job.error) }}</div>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="bg-slate-900/60 border border-slate-800 rounded-xl">
+      <div class="px-4 py-3 border-b border-slate-800 font-semibold text-white">Status Timeline</div>
+      <ol class="p-4 space-y-3 text-sm">
+        {% for e in job.events or [] %}
+          <li class="flex items-start gap-2">
+            <div class="h-2 w-2 mt-1.5 rounded-full bg-sky-500"></div>
+            <div>
+              <div class="text-slate-200">{{ e.message }}</div>
+              <div class="text-slate-500 text-xs">{{ e.ts }}</div>
+            </div>
+          </li>
+        {% else %}
+          <li class="text-slate-400">No events yet</li>
+        {% endfor %}
+      </ol>
+    </div>
+  </div>
+
+  <div class="bg-slate-900/60 border border-slate-800 rounded-xl">
+    <div class="px-4 py-3 border-b border-slate-800 font-semibold text-white">Output</div>
     <div id="job-status"
+         class="p-4 space-y-2"
          data-status="{{ job.status }}"
-         hx-get="/jobs/{{ job.job_id }}"
-         hx-trigger="every 2s[document.querySelector('#job-status') && document.querySelector('#job-status').dataset.status === 'processing']"
-         hx-swap="innerHTML">
-      <p>Status: <strong>{{ job.status }}</strong></p>
-      {% if job.error %}
-        <article class="contrast">Error: {{ job.error }}</article>
+         hx-get="/jobs/{{ job.id or job.job_id }}"
+         hx-trigger="every 2s[document.querySelector('#job-status') && document.querySelector('#job-status').dataset.status === 'running']"
+         hx-swap="outerHTML">
+      {% if job.output %}
+        <pre class="whitespace-pre-wrap text-sm text-slate-300">{{ job.output }}</pre>
+      {% else %}
+        <p class="text-slate-400 text-sm">No output yet.</p>
       {% endif %}
     </div>
-    <p><a href="/dashboard">Back to Dashboard</a></p>
-  </section>
+  </div>
+
+  <div>
+    <a href="/jobs" class="text-sky-400 hover:text-sky-300">Back to Jobs</a>
+  </div>
+</div>
 {% endblock %}

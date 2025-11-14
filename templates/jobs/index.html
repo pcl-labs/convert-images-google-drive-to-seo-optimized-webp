@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block page_title %}Jobs{% endblock %}
+{% block content %}
+<div class="p-4 md:p-6 space-y-6">
+  <div class="flex items-center justify-between">
+    <div class="space-y-1">
+      <h1 class="text-xl font-semibold text-white">Jobs</h1>
+      <p class="text-sm text-slate-400">Monitor and manage processing jobs</p>
+    </div>
+    <div>
+      {% from 'components/elements/dropdown.html' import dropdown %}
+      {% set label = (current_status or 'all')|title %}
+      {% set trigger %}
+        <button @click="toggle()" @keydown.escape="close()" aria-haspopup="menu" :aria-expanded="open.toString()" class="inline-flex items-center gap-2 rounded-md bg-slate-800/80 border border-slate-700 px-3 py-2 text-sm text-slate-200 hover:bg-slate-800">
+          <span>Status: {{ label }}</span>
+          <svg class="h-4 w-4 text-slate-400" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.17l3.71-3.94a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clip-rule="evenodd"/></svg>
+        </button>
+      {% endset %}
+      {% call dropdown(trigger, id='status-filter', align='right', width='sm') %}
+        <nav class="py-1 text-sm" role="menu">
+          <a href="/jobs" class="block px-3 py-2 text-slate-200 hover:bg-slate-800/60" role="menuitem">All</a>
+          <a href="/jobs?status=queued" class="block px-3 py-2 text-slate-200 hover:bg-slate-800/60" role="menuitem">Queued</a>
+          <a href="/jobs?status=running" class="block px-3 py-2 text-slate-200 hover:bg-slate-800/60" role="menuitem">Running</a>
+          <a href="/jobs?status=completed" class="block px-3 py-2 text-slate-200 hover:bg-slate-800/60" role="menuitem">Completed</a>
+          <a href="/jobs?status=failed" class="block px-3 py-2 text-slate-200 hover:bg-slate-800/60" role="menuitem">Failed</a>
+        </nav>
+      {% endcall %}
+    </div>
+  </div>
+
+  <div class="bg-slate-900/60 border border-slate-800 rounded-xl">
+    <div class="p-0 overflow-x-auto">
+      {% from 'components/data/table.html' import table with context %}
+      {% from 'components/elements/button.html' import button %}
+      {% from 'components/elements/badge.html' import badge %}
+  {% from 'components/elements/button.html' import button %}
+      {% call table(headers=["Job ID","Type","Status","Created","Actions"]) %}
+        {% for job in jobs %}
+          <tr>
+            <td class="px-3 py-2 md:px-4 md:py-3 whitespace-nowrap">{{ job.id }}</td>
+            <td class="px-3 py-2 md:px-4 md:py-3">{{ job.kind }}</td>
+            <td class="px-3 py-2 md:px-4 md:py-3">{{ badge(job.status_label, status=job.status) }}</td>
+            <td class="px-3 py-2 md:px-4 md:py-3">{{ job.created_at }}</td>
+            <td class="px-3 py-2 md:px-4 md:py-3">
+              {% from 'components/elements/dropdown.html' import dropdown %}
+              {% set row_trigger %}
+                <button @click="toggle()" @keydown.escape="close()" aria-haspopup="menu" :aria-expanded="open.toString()" class="inline-flex items-center gap-2 rounded-md bg-slate-800/60 border border-slate-700 px-2.5 py-1.5 text-xs text-slate-200 hover:bg-slate-800">
+                  <span>Actions</span>
+                  <svg class="h-3.5 w-3.5 text-slate-400" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.17l3.71-3.94a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clip-rule="evenodd"/></svg>
+                </button>
+              {% endset %}
+              {% call dropdown(row_trigger, id='row-actions-' ~ job.id, align='right', width='sm') %}
+                <nav class="py-1 text-sm" role="menu">
+                  <a href="/jobs/{{ job.id }}" class="block px-3 py-2 text-slate-200 hover:bg-slate-800/60" role="menuitem">View</a>
+                  {{ button(
+                    'Retry',
+                    variant='ghost',
+                    with_spinner=True,
+                    extra_classes='block w-full text-left px-3 py-2 text-slate-200 hover:bg-slate-800/60',
+                    attrs='role="menuitem" hx-post="/jobs/' ~ job.id ~ '/retry" hx-swap="none" hx-on:htmx:afterOnLoad="window.dispatchEvent(new CustomEvent(\'toast\',{detail:{type:\'success\',text:\'Job retried\'}}))" hx-on:htmx:error="window.dispatchEvent(new CustomEvent(\'toast\',{detail:{type:\'error\',text:\'Retry failed\'}}))"'
+                  ) }}
+                  {{ button(
+                    'Cancel',
+                    variant='ghost',
+                    with_spinner=True,
+                    extra_classes='block w-full text-left px-3 py-2 text-rose-400 hover:bg-slate-800/60',
+                    attrs='role="menuitem" hx-delete="/jobs/' ~ job.id ~ '" hx-swap="none" hx-on:htmx:afterOnLoad="window.dispatchEvent(new CustomEvent(\'toast\',{detail:{type:\'success\',text:\'Job cancelled\'}}))" hx-on:htmx:error="window.dispatchEvent(new CustomEvent(\'toast\',{detail:{type:\'error\',text:\'Cancel failed\'}}))"'
+                  ) }}
+                </nav>
+              {% endcall %}
+            </td>
+          </tr>
+        {% else %}
+          <tr>
+            <td colspan="5" class="px-4 py-6 text-center text-slate-400">No jobs found</td>
+          </tr>
+        {% endfor %}
+      {% endcall %}
+    </div>
+  </div>
+</div>
+{% endblock %}
