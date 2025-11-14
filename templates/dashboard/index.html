@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% set page_title = 'Dashboard' %}
+{% block content %}
+<div class="p-4 md:p-6 space-y-6">
+  <div class="space-y-1">
+    <h1 class="text-xl font-semibold text-white">Dashboard</h1>
+    <p class="text-sm text-slate-400">Overview and quick actions</p>
+  </div>
+
+  <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+    <div class="bg-slate-800/50 border border-slate-700 rounded-xl p-4">
+      <div class="text-slate-400 text-sm">Queued</div>
+      <div class="mt-2 text-2xl font-semibold text-white">{{ stats.queued or 0 }}</div>
+    </div>
+    <div class="bg-slate-800/50 border border-slate-700 rounded-xl p-4">
+      <div class="text-slate-400 text-sm">Running</div>
+      <div class="mt-2 text-2xl font-semibold text-white">{{ stats.running or 0 }}</div>
+    </div>
+    <div class="bg-slate-800/50 border border-slate-700 rounded-xl p-4">
+      <div class="text-slate-400 text-sm">Completed</div>
+      <div class="mt-2 text-2xl font-semibold text-white">{{ stats.completed or 0 }}</div>
+    </div>
+  </div>
+
+  <div class="bg-slate-900/60 border border-slate-800 rounded-xl">
+    <div class="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
+      <div class="font-semibold text-white">Create Job</div>
+    </div>
+    <div class="p-4 space-y-3">
+      <form hx-post="/dashboard/jobs" hx-target="#recent-jobs-table" hx-swap="outerHTML">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+        <label class="block text-sm text-slate-300">YouTube URL or Drive Folder URL</label>
+        <div class="mt-1 flex gap-2">
+          <input name="drive_url" type="url" placeholder="https://..." class="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500" required>
+          <button type="submit" class="inline-flex items-center justify-center rounded-lg bg-sky-600 hover:bg-sky-500 text-white px-3 py-2 text-sm font-medium">Run</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div id="recent-jobs" class="bg-slate-900/60 border border-slate-800 rounded-xl">
+    <div class="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
+      <div class="font-semibold text-white">Recent Jobs</div>
+      <a href="/dashboard/jobs" class="text-sm text-sky-400 hover:text-sky-300">View all</a>
+    </div>
+    <div id="recent-jobs-table" class="p-0 overflow-x-auto">
+      {% from 'components/data/table.html' import table with context %}
+      {% call table(headers=["Job ID","Type","Status","Created","View"]) %}
+        {% for job in jobs %}
+          <tr>
+            <td class="px-3 py-2 md:px-4 md:py-3 whitespace-nowrap">{{ job.id }}</td>
+            <td class="px-3 py-2 md:px-4 md:py-3">{{ job.kind }}</td>
+            <td class="px-3 py-2 md:px-4 md:py-3">
+              {% from 'components/elements/badge.html' import badge %}
+              {{ badge(job.status_label, status=job.status) }}
+            </td>
+            <td class="px-3 py-2 md:px-4 md:py-3">{{ job.created_at }}</td>
+            <td class="px-3 py-2 md:px-4 md:py-3">
+              <a href="/dashboard/jobs/{{ job.id }}" class="text-sky-400 hover:text-sky-300">View</a>
+            </td>
+          </tr>
+        {% else %}
+          <tr>
+            <td colspan="5" class="px-4 py-6 text-center text-slate-400">No recent jobs</td>
+          </tr>
+        {% endfor %}
+      {% endcall %}
+    </div>
+  </div>
+
+  <div class="bg-slate-900/60 border border-slate-800 rounded-xl">
+    <div class="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
+      <div class="font-semibold text-white">Developer Docs</div>
+    </div>
+    <div class="p-4 flex flex-wrap gap-3 text-sm">
+      <a href="/docs" class="inline-flex items-center rounded-md px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700">Swagger UI</a>
+      <a href="/redoc" class="inline-flex items-center rounded-md px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700">ReDoc</a>
+      <a href="/openapi.json" class="inline-flex items-center rounded-md px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700">OpenAPI JSON</a>
+      <a href="/api" class="inline-flex items-center rounded-md px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700">API Index</a>
+    </div>
+  </div>
+</div>
+{% endblock %}

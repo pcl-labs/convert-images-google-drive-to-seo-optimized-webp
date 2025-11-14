@@ -159,6 +159,42 @@ class Database:
             logger.error(f"SQLite batch operation failed: {e}", exc_info=True)
             raise DatabaseError(f"Database operation failed: {str(e)}")
 
+    async def batch(self, statements: List[tuple[str, tuple]]):
+        """Execute multiple SQL statements atomically.
+        For D1, uses db.batch() with prepared statements; for SQLite, wraps in a transaction.
+        Each statement is a tuple of (sql, params_tuple).
+        """
+        if self.db and hasattr(self.db, "prepare") and hasattr(self.db, "batch"):
+            try:
+                prepared = [self.db.prepare(sql).bind(*(params or ())) for sql, params in statements]
+                return await self.db.batch(prepared)
+            except Exception as e:
+                logger.error(f"D1 batch failed: {e}", exc_info=True)
+                raise DatabaseError(f"Database operation failed: {str(e)}")
+        # SQLite fallback
+        try:
+            def _exec_batch():
+                conn = self._get_sqlite_connection()
+                try:
+                    cur = conn.cursor()
+                    try:
+                        conn.execute("BEGIN")
+                        for sql, params in statements:
+                            cur.execute(sql, params or ())
+                        conn.commit()
+                        return True
+                    except Exception:
+                        try:
+                            conn.rollback()
+                        finally:
+                            raise
+                finally:
+                    conn.close()
+            return await asyncio.to_thread(_exec_batch)
+        except Exception as e:
+            logger.error(f"SQLite exec batch failed: {e}", exc_info=True)
+            raise DatabaseError(f"Database operation failed: {str(e)}")
+
 
 # User operations
 async def create_user(db: Database, user_id: str, github_id: Optional[str] = None, email: Optional[str] = None) -> Dict[str, Any]:
@@ -305,10 +341,29 @@ async def get_user_by_api_key(db: Database, api_key: str) -> Optional[Dict[str, 
 
 # Google OAuth token operations
 async def get_google_tokens(db: Database, user_id: str) -> Optional[Dict[str, Any]]:
-    """Get stored Google OAuth tokens for a user."""
+    """Get stored Google OAuth tokens for a user (decrypted)."""
+    from .crypto import decrypt
     query = "SELECT * FROM google_tokens WHERE user_id = ?"
     result = await db.execute(query, (user_id,))
-    return dict(result) if result else None
+    if not result:
+        return None
+    token_dict = dict(result)
+    # Decrypt tokens
+    if token_dict.get("access_token"):
+        try:
+            token_dict["access_token"] = decrypt(token_dict["access_token"])
+        except Exception:
+            # If decryption fails, token might be unencrypted (migration case)
+            # Keep as-is for backward compatibility
+            pass
+    if token_dict.get("refresh_token"):
+        try:
+            token_dict["refresh_token"] = decrypt(token_dict["refresh_token"])
+        except Exception:
+            # If decryption fails, token might be unencrypted (migration case)
+            # Keep as-is for backward compatibility
+            pass
+    return token_dict
 
 
 async def upsert_google_tokens(
@@ -320,7 +375,11 @@ async def upsert_google_tokens(
     token_type: Optional[str],
     scopes: Optional[str]
 ) -> None:
-    """Insert or update Google OAuth tokens for a user."""
+    """Insert or update Google OAuth tokens for a user (encrypted at rest)."""
+    from .crypto import encrypt
+    # Encrypt tokens before storing
+    encrypted_access_token = encrypt(access_token) if access_token else None
+    encrypted_refresh_token = encrypt(refresh_token) if refresh_token else None
     query = (
         "INSERT INTO google_tokens (user_id, access_token, refresh_token, expiry, token_type, scopes) "
         "VALUES (?, ?, ?, ?, ?, ?) "
@@ -332,7 +391,7 @@ async def upsert_google_tokens(
         "scopes = excluded.scopes, "
         "updated_at = datetime('now')"
     )
-    await db.execute(query, (user_id, access_token, refresh_token, expiry, token_type, scopes))
+    await db.execute(query, (user_id, encrypted_access_token, encrypted_refresh_token, expiry, token_type, scopes))
 
 
 async def update_google_tokens_expiry(
@@ -341,9 +400,18 @@ async def update_google_tokens_expiry(
     access_token: str,
     expiry: Optional[str]
 ) -> None:
-    """Update access token and expiry after a refresh."""
+    """Update access token and expiry after a refresh (encrypted at rest)."""
+    from .crypto import encrypt
+    # Encrypt token before storing
+    encrypted_access_token = encrypt(access_token) if access_token else None
     query = "UPDATE google_tokens SET access_token = ?, expiry = ?, updated_at = datetime('now') WHERE user_id = ?"
-    await db.execute(query, (access_token, expiry, user_id))
+    await db.execute(query, (encrypted_access_token, expiry, user_id))
+
+
+async def delete_google_tokens(db: Database, user_id: str) -> None:
+    """Delete stored Google OAuth tokens for a user (disconnect)."""
+    query = "DELETE FROM google_tokens WHERE user_id = ?"
+    await db.execute(query, (user_id,))
 
 # Job operations
 async def create_job(
@@ -367,7 +435,8 @@ async def create_job(
         "uploaded": 0,
         "deleted": 0,
         "download_failed": 0,
-        "upload_failed": 0
+        "upload_failed": 0,
+        "recent_logs": []
     })
     extensions_json = json.dumps(extensions)
     result = await db.execute(
@@ -490,4 +559,132 @@ async def get_user_count(db: Database) -> int:
     query = "SELECT COUNT(*) as total FROM users"
     result = await db.execute(query, ())
     return dict(result).get("total", 0) if result else 0
+
+
+# Notifications & Events schema and operations
+async def ensure_notifications_schema(db: Database) -> None:
+    """Create events, notifications, and deliveries tables if they do not exist."""
+    # Execute schema creation atomically
+    stmts = [
+        (
+            """
+            CREATE TABLE IF NOT EXISTS events (
+                id TEXT PRIMARY KEY,
+                type TEXT NOT NULL,
+                aggregate_type TEXT NOT NULL,
+                aggregate_id TEXT NOT NULL,
+                payload TEXT,
+                occurred_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            """,
+            (),
+        ),
+        ("CREATE INDEX IF NOT EXISTS idx_events_aggregate ON events(aggregate_type, aggregate_id, occurred_at DESC)", ()),
+        (
+            """
+            CREATE TABLE IF NOT EXISTS notifications (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                event_id TEXT,
+                level TEXT NOT NULL,
+                title TEXT,
+                text TEXT NOT NULL,
+                context TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                expires_at TEXT
+            )
+            """,
+            (),
+        ),
+        (
+            """
+            CREATE TABLE IF NOT EXISTS notification_deliveries (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                notification_id TEXT NOT NULL,
+                delivered_at TEXT NOT NULL DEFAULT (datetime('now')),
+                seen_at TEXT,
+                dismissed_at TEXT
+            )
+            """,
+            (),
+        ),
+        ("CREATE INDEX IF NOT EXISTS idx_notifications_user_created ON notifications(user_id, created_at DESC)", ()),
+        ("CREATE INDEX IF NOT EXISTS idx_deliveries_user ON notification_deliveries(user_id, notification_id)", ()),
+    ]
+    await db.batch(stmts)
+
+
+async def emit_event(db: Database, evt_id: str, type_: str, aggregate_type: str, aggregate_id: str, payload: dict | None) -> None:
+    await db.execute(
+        "INSERT OR IGNORE INTO events (id, type, aggregate_type, aggregate_id, payload, occurred_at) VALUES (?, ?, ?, ?, ?, datetime('now'))",
+        (evt_id, type_, aggregate_type, aggregate_id, json.dumps(payload or {})),
+    )
+
+
+async def create_notification(db: Database, notif_id: str, user_id: str, level: str, text: str, title: str | None = None, context: dict | None = None, event_id: str | None = None) -> None:
+    await db.execute(
+        "INSERT OR REPLACE INTO notifications (id, user_id, event_id, level, title, text, context, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))",
+        (notif_id, user_id, event_id, level, title or None, text, json.dumps(context or {})),
+    )
+    # Also ensure a delivery row exists for the user
+    await db.execute(
+        "INSERT OR IGNORE INTO notification_deliveries (id, user_id, notification_id, delivered_at) VALUES (?, ?, ?, datetime('now'))",
+        (f"{notif_id}:{user_id}", user_id, notif_id),
+    )
+
+
+async def list_notifications(db: Database, user_id: str, after_id: str | None = None, limit: int = 20) -> List[Dict[str, Any]]:
+    # Use composite cursor (created_at, id) and include delivery fields via LEFT JOIN
+    cursor_created_at: Optional[str] = None
+    cursor_id: Optional[str] = None
+    if after_id:
+        row = await db.execute("SELECT created_at, id FROM notifications WHERE id = ?", (after_id,))
+        if row:
+            d = dict(row)
+            cursor_created_at = d.get("created_at")
+            cursor_id = d.get("id")
+    query = (
+        "SELECT n.*, nd.seen_at, nd.dismissed_at "
+        "FROM notifications n "
+        "LEFT JOIN notification_deliveries nd ON nd.notification_id = n.id AND nd.user_id = ? "
+        "WHERE n.user_id = ?"
+    )
+    params: List[Any] = [user_id, user_id]
+    if cursor_created_at is not None and cursor_id is not None:
+        query += " AND (n.created_at > ? OR (n.created_at = ? AND n.id > ?))"
+        params.extend([cursor_created_at, cursor_created_at, cursor_id])
+    query += " ORDER BY n.created_at DESC, n.id DESC LIMIT ?"
+    params.append(limit)
+    rows = await db.execute_all(query, tuple(params))
+    return [dict(r) for r in rows] if rows else []
+
+
+async def mark_notification_seen(db: Database, user_id: str, notification_id: str) -> None:
+    await db.execute(
+        "UPDATE notification_deliveries SET seen_at = datetime('now') WHERE user_id = ? AND notification_id = ?",
+        (user_id, notification_id),
+    )
+
+
+async def dismiss_notification(db: Database, user_id: str, notification_id: str) -> None:
+    await db.execute(
+        "UPDATE notification_deliveries SET dismissed_at = datetime('now') WHERE user_id = ? AND notification_id = ?",
+        (user_id, notification_id),
+    )
+
+
+def map_job_status_to_notification(job: Dict[str, Any]) -> Dict[str, Any] | None:
+    """Simple projector: map a job row to a notification payload (level, text)."""
+    st = job.get("status", "queued")
+    job_id = job.get("job_id")
+    if not job_id:
+        return None
+    # Terminal states only to reduce noise
+    if st == "completed":
+        return {"level": "success", "text": f"Job {job_id} completed"}
+    if st in ("failed", "cancelled"):
+        return {"level": "error", "text": f"Job {job_id} {st}"}
+    # Suppress non-terminal info-level updates by default
+    return None
 

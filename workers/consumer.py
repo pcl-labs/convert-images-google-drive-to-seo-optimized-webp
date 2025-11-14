@@ -17,6 +17,7 @@ Filename Format Requirement:
 """
 
 import os
+import re
 from typing import Dict, Any, Optional
 import asyncio
 import functools
@@ -31,6 +32,7 @@ from core.drive_utils import (
 )
 from core.image_processor import process_image
 from api.database import Database, update_job_status
+from api.notifications import notify_job
 from api.app_logging import setup_logging, get_logger
 from core.filename_utils import FILENAME_ID_SEPARATOR, sanitize_folder_name, parse_download_name, make_output_dir_name
 from core.constants import TEMP_DIR, FAIL_LOG_PATH
@@ -54,6 +56,7 @@ def make_progress(
     download_failed: int = 0,
     upload_failed: int = 0,
     processing_failed: int = 0,
+    recent_logs: Optional[list[str]] = None,
 ):
     return {
         "stage": stage,
@@ -65,6 +68,7 @@ def make_progress(
         "download_failed": download_failed,
         "upload_failed": upload_failed,
         "processing_failed": processing_failed,
+        "recent_logs": recent_logs or [],
     }
 
 def extract_file_id_from_filename(
@@ -136,8 +140,59 @@ async def process_optimization_job(
     See module docstring for detailed filename format requirements.
     """
     try:
+        # Local recent logs buffer (keeps last 20)
+        recent_logs: list[str] = []
+        MAX_RECENT = 50
+
+        # Basic sanitizer to reduce PII/secret leakage in progress logs
+        SENSITIVE_PATTERNS = [
+            # Bearer/API tokens
+            re.compile(r"(bearer\s+[A-Za-z0-9\-_.=:+/]{10,})", re.IGNORECASE),
+            re.compile(r"(api[_-]?key\s*[:=]\s*[A-Za-z0-9\-_.=:+/]{10,})", re.IGNORECASE),
+            re.compile(r"(token\s*[:=]\s*[A-Za-z0-9\-_.=:+/]{10,})", re.IGNORECASE),
+            # Emails
+            re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}") ,
+            # IPv4
+            re.compile(r"\b(?:(?:2[0-5]{2}|1?\d?\d)\.){3}(?:2[0-5]{2}|1?\d?\d)\b"),
+            # File paths (basic)
+            re.compile(r"(/[^\s]+)+"),
+            re.compile(r"([A-Za-z]:\\[^\s]+)"),
+            # URLs with potential creds
+            re.compile(r"https?://[^\s]+"),
+        ]
+
+        def sanitize_log_entry(msg: str) -> str:
+            try:
+                s = str(msg)
+                for pat in SENSITIVE_PATTERNS:
+                    s = pat.sub("[REDACTED]", s)
+                # trim overly long messages
+                if len(s) > 300:
+                    s = s[:297] + "..."
+                return s
+            except Exception:
+                return "[log]"
+
+        def log_step(msg: str):
+            safe = sanitize_log_entry(msg)
+            recent_logs.append(safe)
+            if len(recent_logs) > MAX_RECENT:
+                del recent_logs[0:len(recent_logs) - MAX_RECENT]
+
         # Update status to processing
-        await update_job_status(db, job_id, "processing", progress=make_progress("extracting_folder_id"))
+        log_step("Initializing: extracting folder ID")
+        app_logger.info(
+            f"Job {job_id} status transition: pending -> processing",
+            extra={
+                "job_id": job_id,
+                "user_id": user_id,
+                "event": "job.status_transition",
+                "old_status": "pending",
+                "new_status": "processing",
+                "stage": "extracting_folder_id"
+            }
+        )
+        await update_job_status(db, job_id, "processing", progress=make_progress("extracting_folder_id", recent_logs=recent_logs))
         
         # Build per-user Drive service
         service = await build_drive_service_for_user(db, user_id)
@@ -159,7 +214,18 @@ async def process_optimization_job(
         extensions_set = normalize_extensions(extensions)
         
         # Download images
-        await update_job_status(db, job_id, "processing", progress=make_progress("downloading"))
+        log_step("Download started")
+        app_logger.info(
+            f"Job {job_id} progress: stage -> downloading",
+            extra={
+                "job_id": job_id,
+                "user_id": user_id,
+                "event": "job.progress",
+                "status": "processing",
+                "stage": "downloading"
+            }
+        )
+        await update_job_status(db, job_id, "processing", progress=make_progress("downloading", recent_logs=recent_logs))
         
         downloaded, failed_downloads, filename_to_file_id = await asyncio.to_thread(
             download_images,
@@ -172,17 +238,33 @@ async def process_optimization_job(
             service
         )
         
+        log_step(f"Download finished: {len(downloaded)} ok, {len(failed_downloads)} failed")
         await update_job_status(db, job_id, "processing", progress=make_progress(
             "downloading",
             downloaded=len(downloaded),
             download_failed=len(failed_downloads),
+            recent_logs=recent_logs,
         ))
         
         # Optimize images
+        log_step("Optimization started")
+        app_logger.info(
+            f"Job {job_id} progress: stage -> optimizing",
+            extra={
+                "job_id": job_id,
+                "user_id": user_id,
+                "event": "job.progress",
+                "status": "processing",
+                "stage": "optimizing",
+                "downloaded": len(downloaded),
+                "download_failed": len(failed_downloads)
+            }
+        )
         await update_job_status(db, job_id, "processing", progress=make_progress(
             "optimizing",
             downloaded=len(downloaded),
             download_failed=len(failed_downloads),
+            recent_logs=recent_logs,
         ))
         
         optimized = []
@@ -219,6 +301,7 @@ async def process_optimization_job(
             
             # Update progress every N files or on last file
             if idx % PROGRESS_UPDATE_INTERVAL == 0 or idx == len(downloaded):
+                log_step(f"Optimization progress: {len(optimized)} optimized, {len(skipped)} skipped, {len(failed_processing)} failed")
                 await update_job_status(db, job_id, "processing", progress=make_progress(
                     "optimizing",
                     downloaded=len(downloaded),
@@ -226,9 +309,26 @@ async def process_optimization_job(
                     skipped=len(skipped),
                     download_failed=len(failed_downloads),
                     processing_failed=len(failed_processing),
+                    recent_logs=recent_logs,
                 ))
         
         # Upload optimized images
+        log_step("Upload started")
+        app_logger.info(
+            f"Job {job_id} progress: stage -> uploading",
+            extra={
+                "job_id": job_id,
+                "user_id": user_id,
+                "event": "job.progress",
+                "status": "processing",
+                "stage": "uploading",
+                "downloaded": len(downloaded),
+                "optimized": len(optimized),
+                "skipped": len(skipped),
+                "download_failed": len(failed_downloads),
+                "processing_failed": len(failed_processing)
+            }
+        )
         await update_job_status(db, job_id, "processing", progress=make_progress(
             "uploading",
             downloaded=len(downloaded),
@@ -236,6 +336,7 @@ async def process_optimization_job(
             skipped=len(skipped),
             download_failed=len(failed_downloads),
             processing_failed=len(failed_processing),
+            recent_logs=recent_logs,
         ))
         
         # Detect actual extensions in output directory, with fallback defaults
@@ -255,6 +356,7 @@ async def process_optimization_job(
             service
         )
         
+        log_step(f"Upload finished: {len(uploaded)} ok, {len(failed_uploads)} failed")
         await update_job_status(db, job_id, "processing", progress=make_progress(
             "uploading",
             downloaded=len(downloaded),
@@ -264,11 +366,13 @@ async def process_optimization_job(
             download_failed=len(failed_downloads),
             upload_failed=len(failed_uploads),
             processing_failed=len(failed_processing),
+            recent_logs=recent_logs,
         ))
         
         # Delete originals if requested
         deleted_count = 0
         if cleanup_originals:
+            log_step("Cleanup started")
             await update_job_status(db, job_id, "processing", progress=make_progress(
                 "cleaning_up",
                 downloaded=len(downloaded),
@@ -278,6 +382,7 @@ async def process_optimization_job(
                 download_failed=len(failed_downloads),
                 upload_failed=len(failed_uploads),
                 processing_failed=len(failed_processing),
+                recent_logs=recent_logs,
             ))
             
             original_file_ids = []
@@ -307,6 +412,7 @@ async def process_optimization_job(
             if original_file_ids:
                 await asyncio.to_thread(delete_images, folder_id, original_file_ids, service)
                 deleted_count = len(original_file_ids)
+                log_step(f"Cleanup finished: deleted {deleted_count} originals")
             else:
                 app_logger.warning(
                     f"No valid file IDs extracted for cleanup from {len(downloaded)} downloaded files",
@@ -321,6 +427,7 @@ async def process_optimization_job(
             shutil.rmtree(output_dir)
         
         # Mark as completed
+        log_step("Completed successfully")
         await update_job_status(db, job_id, "completed", progress=make_progress(
             "completed",
             downloaded=len(downloaded),
@@ -331,18 +438,60 @@ async def process_optimization_job(
             download_failed=len(failed_downloads),
             upload_failed=len(failed_uploads),
             processing_failed=len(failed_processing),
+            recent_logs=recent_logs,
         ))
-        
-        app_logger.info(f"Job {job_id} completed successfully")
+
+        app_logger.info(
+            f"Job {job_id} completed successfully",
+            extra={
+                "job_id": job_id,
+                "user_id": user_id,
+                "event": "job.status_transition",
+                "old_status": "processing",
+                "new_status": "completed",
+                "stage": "completed",
+                "stats": {
+                    "downloaded": len(downloaded),
+                    "optimized": len(optimized),
+                    "skipped": len(skipped),
+                    "uploaded": len(uploaded),
+                    "deleted": deleted_count,
+                    "download_failed": len(failed_downloads),
+                    "upload_failed": len(failed_uploads),
+                    "processing_failed": len(failed_processing)
+                }
+            }
+        )
+        # Create success notification
+        try:
+            await notify_job(db, user_id=user_id, job_id=job_id, level="success", text=f"Job {job_id} completed")
+        except Exception:
+            pass
         
     except Exception as e:
-        app_logger.error(f"Job {job_id} failed: {e}", exc_info=True)
+        app_logger.error(
+            f"Job {job_id} failed: {e}",
+            exc_info=True,
+            extra={
+                "job_id": job_id,
+                "user_id": user_id,
+                "event": "job.status_transition",
+                "old_status": "processing",
+                "new_status": "failed",
+                "error": str(e)
+            }
+        )
         await update_job_status(
             db,
             job_id,
             "failed",
             error=str(e)
         )
+        # Create failure notification
+        try:
+            await notify_job(db, user_id=user_id, job_id=job_id, level="error", text=f"Job {job_id} failed")
+        except Exception:
+            pass
         raise
 
 
