@@ -168,11 +168,12 @@ class QueueProducer:
                 await self.queue.send(message)
             else:
                 await self._send_via_cloudflare(message)
-            logger.info("Queue message enqueued", extra={"job_id": message.get("job_id")})
-            return True
-        except Exception as exc:
+        except Exception:
             logger.error("Failed to send queue message", exc_info=True, extra={"job_id": message.get("job_id")})
             raise
+        else:
+            logger.info("Queue message enqueued", extra={"job_id": message.get("job_id")})
+            return True
 
     async def send_to_dlq(self, job_id: str, error: str, original_message: Dict[str, Any]) -> bool:
         if self._inline_mode:

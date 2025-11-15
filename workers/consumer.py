@@ -53,7 +53,8 @@ from api.database import (
     get_job,
 )
 from api.config import settings
-from core.transcripts import fetch_transcript_with_fallback
+from api.google_oauth import build_youtube_service_for_user
+from core.youtube_captions import fetch_captions_text, YouTubeCaptionsError
 from core.ai_modules import (
     generate_outline,
     organize_chapters,
@@ -576,6 +577,7 @@ async def process_ingest_youtube_job(
 
         payload_metadata = job_payload.get("metadata") or {}
         payload_frontmatter = job_payload.get("frontmatter") or {}
+        # Prefer authoritative API duration if provided in job payload/metadata; transcript duration is a fallback.
         payload_duration = _normalize_duration(job_payload.get("duration_s") or payload_metadata.get("duration_seconds"))
 
         document = await get_document(db, document_id, user_id=user_id)
@@ -591,45 +593,39 @@ async def process_ingest_youtube_job(
         if not isinstance(frontmatter, dict):
             frontmatter = {}
 
-        # Prepare config
+        # Prepare config and fetch captions via official YouTube API
         langs_raw = settings.transcript_langs
         if isinstance(langs_raw, str):
             langs = [s.strip() for s in langs_raw.split(",") if s.strip()]
         else:
             langs = langs_raw or ["en"]
-        # Fetch transcript with fallback
-        result = await asyncio.to_thread(
-            fetch_transcript_with_fallback,
-            youtube_video_id,
-            langs,
-        )
-
-        if not result.get("success"):
-            # Record usage if any metrics present
+        try:
+            yt_service = await build_youtube_service_for_user(db, user_id)  # type: ignore
+        except ValueError as exc:
+            await update_job_status(db, job_id, "failed", error=str(exc))
+            return
+        try:
+            cap = await asyncio.to_thread(fetch_captions_text, yt_service, youtube_video_id, langs)
+        except YouTubeCaptionsError as exc:
+            await update_job_status(db, job_id, "failed", error=str(exc))
             try:
-                await record_usage_event(
-                    db,
-                    user_id,
-                    job_id,
-                    "transcribe",
-                    {
-                        "engine": "captions",
-                        "duration_s": result.get("duration_s"),
-                    },
-                )
+                await notify_job(db, user_id=user_id, job_id=job_id, level="error", text="YouTube ingestion failed: captions unavailable")
             except Exception:
                 pass
-            await update_job_status(db, job_id, "failed", error=str(result.get("error") or "transcript_failed"))
+            return
+        if not cap.get("success"):
+            await update_job_status(db, job_id, "failed", error=str(cap.get("error") or "captions_unavailable"))
             try:
-                await notify_job(db, user_id=user_id, job_id=job_id, level="error", text="YouTube ingestion failed: transcript unavailable")
+                await notify_job(db, user_id=user_id, job_id=job_id, level="error", text="YouTube ingestion failed: captions unavailable")
             except Exception:
                 pass
             return
 
-        text = (result.get("text") or "").strip()
-        source = result.get("source") or "unknown"
-        lang = result.get("lang") or "en"
-        duration_s = _normalize_duration(result.get("duration_s")) or payload_duration
+        text = (cap.get("text") or "").strip()
+        source = cap.get("source") or "captions"
+        lang = cap.get("lang") or "en"
+        # Duration: authoritative API value provided in job payload/metadata
+        duration_s = payload_duration
 
         # Validate required fields
         if duration_s is None:
@@ -641,13 +637,7 @@ async def process_ingest_youtube_job(
                 pass
             return
 
-        # Record usage events
-        bytes_downloaded = result.get("bytes_downloaded")
-        if bytes_downloaded:
-            try:
-                await record_usage_event(db, user_id, job_id, "download", {"bytes_downloaded": int(bytes_downloaded), "duration_s": duration_s})
-            except Exception:
-                pass
+        # Record usage events (transcribe only; no external downloads here)
         try:
             await record_usage_event(
                 db,
@@ -655,7 +645,7 @@ async def process_ingest_youtube_job(
                 job_id,
                 "transcribe",
                 {
-                    "engine": "captions",
+                    "engine": "captions_api",
                     "duration_s": duration_s,
                 },
             )

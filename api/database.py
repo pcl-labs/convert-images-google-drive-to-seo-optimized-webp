@@ -838,6 +838,9 @@ async def get_pending_jobs(
     """
     if statuses is None:
         statuses = [JobStatusEnum.PENDING.value, 'queued']
+    # If caller passes an empty list, avoid generating IN () and return no rows.
+    if not statuses:
+        return []
     
     placeholders = ','.join(['?' for _ in statuses])
     query = f"""
