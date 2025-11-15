@@ -18,6 +18,7 @@ Filename Format Requirement:
 
 import os
 import re
+import json
 from typing import Dict, Any, Optional
 import asyncio
 import functools
@@ -31,7 +32,7 @@ from core.drive_utils import (
     is_valid_drive_file_id,
 )
 from core.image_processor import process_image
-from api.database import Database, update_job_status, update_document, set_job_output, record_usage_event
+from api.database import Database, update_job_status, update_document, set_job_output, record_usage_event, get_document
 from api.config import settings
 from core.transcripts import fetch_transcript_with_fallback
 from api.notifications import notify_job
@@ -119,6 +120,32 @@ def extract_file_id_from_filename(
             exc_info=True
         )
         return None
+
+
+def _parse_document_metadata(raw: Dict[str, Any]) -> Dict[str, Any]:
+    metadata = raw.get("metadata")
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata)
+        except Exception:
+            metadata = {}
+    if metadata is None:
+        metadata = {}
+    return metadata
+
+
+async def _resolve_drive_folder(db: Database, document_id: str, user_id: str) -> str:
+    doc = await get_document(db, document_id, user_id=user_id)
+    if not doc:
+        raise ValueError("Document not found for optimize job")
+    metadata = _parse_document_metadata(doc)
+    source_type = doc.get("source_type")
+    if source_type not in {"drive", "drive_folder"}:
+        raise ValueError("Document is not associated with a Drive folder")
+    folder_id = doc.get("source_ref") or metadata.get("drive_folder_id")
+    if not folder_id:
+        raise ValueError("Drive folder reference missing on document")
+    return folder_id
 
 
 async def process_optimization_job(
@@ -681,20 +708,29 @@ async def handle_queue_message(message: Dict[str, Any], db: Database):
                     pass
                 return
             await process_ingest_text_job(db, job_id, user_id, document_id)
-        else:
-            # Default to optimization path for backward compatibility
-            drive_folder = message.get("drive_folder")
-            if not drive_folder or not drive_folder.strip():
-                app_logger.error(
-                    f"Invalid queue message: missing or empty drive_folder for job_id={job_id}",
-                    extra={"job_id": job_id}
-                )
+        elif job_type == "optimize_drive":
+            document_id = message.get("document_id")
+            if not document_id:
+                app_logger.error("Optimize job missing document_id")
                 try:
-                    await update_job_status(db, job_id, "failed", error="Missing or empty drive_folder")
+                    await update_job_status(db, job_id, "failed", error="Missing document_id")
+                    try:
+                        await notify_job(db, user_id=user_id, job_id=job_id, level="error", text="Job failed: missing document reference")
+                    except Exception:
+                        pass
                 except Exception:
                     pass
+                return
+            try:
+                drive_folder = await _resolve_drive_folder(db, document_id, user_id)
+            except Exception as exc:
+                app_logger.error(f"Failed resolving Drive folder for job {job_id}: {exc}")
                 try:
-                    await notify_job(db, user_id=user_id, job_id=job_id, level="error", text="Job failed: invalid drive_folder")
+                    await update_job_status(db, job_id, "failed", error=str(exc))
+                    try:
+                        await notify_job(db, user_id=user_id, job_id=job_id, level="error", text="Job failed: invalid Drive document")
+                    except Exception:
+                        pass
                 except Exception:
                     pass
                 return
@@ -709,8 +745,9 @@ async def handle_queue_message(message: Dict[str, Any], db: Database):
                 cleanup_originals=message.get("cleanup_originals", False),
                 max_retries=message.get("max_retries", 3)
             )
+        else:
+            app_logger.error(f"Unknown job_type '{job_type}' for job {job_id}")
     except Exception as e:
         app_logger.error(f"Failed to process job {job_id}: {e}", exc_info=True)
         # The job status is already updated to failed in respective processors
         raise
-

@@ -77,7 +77,7 @@ def test_optimize_requires_auth():
     response = requests.post(
         f"{BASE_URL}/api/v1/optimize",
         json={
-            "drive_folder": "test-folder-id"
+            "document_id": "doc-test"
         },
         timeout=TIMEOUT_SECONDS
     )
@@ -215,4 +215,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

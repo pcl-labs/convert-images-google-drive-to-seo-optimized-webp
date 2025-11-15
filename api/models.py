@@ -27,67 +27,6 @@ class JobType(str, Enum):
     GENERATE_BLOG = "generate_blog"
 
 
-class OptimizeRequest(BaseModel):
-    """Request model for image optimization."""
-    
-    drive_folder: str = Field(
-        ...,
-        description="Google Drive folder ID or share link",
-        min_length=10,
-        max_length=500
-    )
-    extensions: Optional[List[str]] = Field(
-        default=["jpg", "jpeg", "png", "bmp", "tiff", "heic", "webp"],
-        description="List of image extensions to process",
-        max_length=10
-    )
-    overwrite: bool = Field(
-        default=False,
-        description="If True, will overwrite existing files; mutually exclusive with skip_existing"
-    )
-    skip_existing: bool = Field(
-        default=True,
-        description="If True, will skip existing optimized files; mutually exclusive with overwrite"
-    )
-    cleanup_originals: bool = Field(
-        default=False,
-        description="Delete original images after optimization"
-    )
-    max_retries: int = Field(
-        default=3,
-        ge=0,
-        le=10,
-        description="Number of retry attempts for failed operations"
-    )
-    
-    @field_validator('extensions')
-    @classmethod
-    def validate_extensions(cls, v):
-        """Validate image extensions."""
-        allowed = {'jpg', 'jpeg', 'png', 'bmp', 'tiff', 'tif', 'heic', 'webp'}
-        if not v:
-            return ["jpg", "jpeg", "png", "bmp", "tiff", "heic", "webp"]
-        validated = []
-        invalid = []
-        for ext in v:
-            ext_clean = str(ext).lower().lstrip('.')
-            if ext_clean in allowed:
-                validated.append(ext_clean)
-            else:
-                invalid.append(ext)
-        if invalid:
-            raise ValueError(
-                f"Invalid extensions: {invalid}. Allowed: {sorted(allowed)}"
-            )
-        return validated
-
-    @model_validator(mode="after")
-    def validate_flags(self):
-        if self.overwrite and self.skip_existing:
-            raise ValueError("'overwrite' and 'skip_existing' cannot both be True")
-        return self
-
-
 class JobProgress(BaseModel):
     """Job progress tracking."""
     
@@ -112,7 +51,6 @@ class JobStatus(BaseModel):
     created_at: datetime
     completed_at: Optional[datetime] = None
     error: Optional[str] = None
-    drive_folder: Optional[str] = None
     job_type: Optional[str] = None
     document_id: Optional[str] = None
     output: Optional[Dict[str, Any]] = None
@@ -188,6 +126,47 @@ class Document(BaseModel):
     updated_at: Optional[datetime] = None
 
 
+class DriveDocumentRequest(BaseModel):
+    drive_source: str = Field(..., min_length=5, max_length=500, description="Drive share link or folder ID")
+
+
+class OptimizeDocumentRequest(BaseModel):
+    document_id: str = Field(..., min_length=5, max_length=100)
+    extensions: Optional[List[str]] = Field(
+        default=["jpg", "jpeg", "png", "bmp", "tiff", "heic", "webp"],
+        description="List of image extensions to process",
+        max_length=10
+    )
+    overwrite: bool = Field(default=False)
+    skip_existing: bool = Field(default=True)
+    cleanup_originals: bool = Field(default=False)
+    max_retries: int = Field(default=3, ge=0, le=10)
+
+    @field_validator('extensions')
+    @classmethod
+    def validate_extensions(cls, v):
+        allowed = {'jpg', 'jpeg', 'png', 'bmp', 'tiff', 'tif', 'heic', 'webp'}
+        if not v:
+            return ["jpg", "jpeg", "png", "bmp", "tiff", "heic", "webp"]
+        validated = []
+        invalid = []
+        for ext in v:
+            ext_clean = str(ext).lower().lstrip('.')
+            if ext_clean in allowed:
+                validated.append(ext_clean)
+            else:
+                invalid.append(ext)
+        if invalid:
+            raise ValueError(f"Invalid extensions: {invalid}. Allowed: {sorted(allowed)}")
+        return validated
+
+    @model_validator(mode="after")
+    def validate_flags(self):
+        if self.overwrite and self.skip_existing:
+            raise ValueError("'overwrite' and 'skip_existing' cannot both be True")
+        return self
+
+
 class IngestYouTubeRequest(BaseModel):
     url: HttpUrl
 
@@ -203,4 +182,3 @@ class IngestYouTubeRequest(BaseModel):
 class IngestTextRequest(BaseModel):
     text: str
     title: Optional[str] = None
-

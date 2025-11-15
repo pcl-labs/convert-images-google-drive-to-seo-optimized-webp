@@ -8,7 +8,6 @@ import datetime
 from typing import Dict, Any, Optional, Protocol
 
 from .config import settings
-from .models import OptimizeRequest
 
 logger = logging.getLogger(__name__)
 
@@ -24,32 +23,6 @@ class QueueProducer:
         """Initialize queue producer."""
         self.queue: Optional[QueueLike] = queue or settings.queue
         self.dlq: Optional[QueueLike] = dlq or settings.dlq
-    
-    async def send_job(self, job_id: str, user_id: str, request: OptimizeRequest) -> bool:
-        """Send a job to the queue."""
-        if not self.queue:
-            logger.warning("Queue not configured, job will not be processed")
-            return False
-        
-        try:
-            message = {
-                "job_id": job_id,
-                "user_id": user_id,
-                "drive_folder": request.drive_folder,
-                "extensions": request.extensions,
-                "overwrite": request.overwrite,
-                "skip_existing": request.skip_existing,
-                "cleanup_originals": request.cleanup_originals,
-                "max_retries": request.max_retries,
-            }
-            
-            # Send to queue
-            await self.queue.send(message)
-            logger.info(f"Sent job {job_id} to queue")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to send job {job_id} to queue: {e}", exc_info=True)
-            return False
 
     async def send_generic(self, message: Dict[str, Any]) -> bool:
         """Send a validated message to the queue.
@@ -60,8 +33,7 @@ class QueueProducer:
            - user_id: str
            - job_type: str (e.g., 'optimize_drive', 'ingest_text', 'ingest_youtube', 'generate_blog')
            Optional fields depend on job_type, for example:
-           - document_id: str (for ingestion/generation)
-           - drive_folder: str (for optimize_drive)
+           - document_id: str (for ingestion/optimization/generation)
            - youtube_video_id: str (for ingest_youtube)
 
         2) Document operation messages (required fields):
@@ -72,7 +44,7 @@ class QueueProducer:
         - If 'job_type' is present, 'job_id' and 'user_id' are required (non-empty strings).
         - For job_type 'ingest_youtube', require 'document_id' and 'youtube_video_id'.
         - For job_type 'ingest_text', require 'document_id'.
-        - For job_type 'optimize_drive', require 'drive_folder'.
+        - For job_type 'optimize_drive', require 'document_id'.
         - If 'operation' is present (document message), require 'document_id'.
         - Unknown shapes are rejected to prevent downstream failures.
         """
@@ -98,8 +70,8 @@ class QueueProducer:
                     logger.error(f"Invalid ingest_text message: require document_id (job_type={jt})")
                     return False
             elif jt == "optimize_drive":
-                if not _is_str(message.get("drive_folder")):
-                    logger.error(f"Invalid optimize_drive message: require drive_folder (job_type={jt})")
+                if not _is_str(message.get("document_id")):
+                    logger.error(f"Invalid optimize_drive message: require document_id (job_type={jt})")
                     return False
             elif jt == "generate_blog":
                 # generation requires an existing document

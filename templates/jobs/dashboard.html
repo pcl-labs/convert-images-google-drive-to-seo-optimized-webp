@@ -3,13 +3,13 @@
   <section>
     <hgroup>
       <h1>Dashboard</h1>
-      <p>Paste a Google Drive folder URL to start optimization.</p>
+      <p>Enter a Document ID to kick off optimization. Use the Documents API to register Drive folders.</p>
     </hgroup>
     <form hx-post="/dashboard/jobs" hx-target="#jobs-list" hx-swap="outerHTML">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
       <label>
-        Drive URL
-        <input type="url" name="drive_url" placeholder="https://drive.google.com/drive/folders/..." required />
+        Document ID
+        <input type="text" name="document_id" placeholder="doc_123..." required />
       </label>
       <div>
         <button type="submit">Create Job</button>

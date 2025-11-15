@@ -22,7 +22,7 @@ These rules capture lessons from Phase 1 to reduce regressions and improve consi
   - Job messages must include `job_id`, `user_id`, `job_type`.
   - `ingest_youtube` requires `document_id` and `youtube_video_id`.
   - `ingest_text` requires `document_id`.
-  - `optimize_drive` requires `drive_folder`.
+  - `optimize_drive` requires `document_id` (Drive folder lives on the document metadata).
   - Reject and log unknown shapes.
 - In workers, on invalid message payloads, always:
   - Update job status to `failed` and record an error reason.
