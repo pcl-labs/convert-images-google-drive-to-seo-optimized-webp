@@ -528,7 +528,7 @@ async def dashboard_generate_blog(
     user: dict = Depends(get_current_user),
 ):
     cookie_token = request.cookies.get("csrf_token")
-    if not cookie_token or cookie_token != csrf_token:
+    if not secrets.compare_digest(str(cookie_token or ""), str(csrf_token or "")):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
     try:
         options = GenerateBlogOptions(
@@ -558,7 +558,7 @@ async def dashboard_regenerate_section(
     user: dict = Depends(get_current_user),
 ):
     cookie_token = request.cookies.get("csrf_token")
-    if not cookie_token or cookie_token != csrf_token:
+    if not secrets.compare_digest(str(cookie_token or ""), str(csrf_token or "")):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
     if section_index < 0:
         return _render_flash(request, "Invalid section index", "error", status.HTTP_400_BAD_REQUEST)
@@ -583,7 +583,7 @@ async def dashboard_document_export(
     user: dict = Depends(get_current_user),
 ):
     cookie_token = request.cookies.get("csrf_token")
-    if not cookie_token or cookie_token != csrf_token:
+    if not secrets.compare_digest(str(cookie_token or ""), str(csrf_token or "")):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
     normalized = target.lower()
     allowed = {"google_docs", "zapier", "wordpress"}

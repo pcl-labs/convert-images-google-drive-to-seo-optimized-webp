@@ -1,3 +1,4 @@
+{% from 'components/elements/icon.html' import icon %}
 {% macro modal(id, title="Confirm", confirm_text="Confirm", cancel_text="Cancel") %}
 <div
   x-data="modalState('{{ id }}')"
@@ -16,7 +17,7 @@
       <div class="px-4 py-3 border-b border-border flex items-center justify-between">
         <h3 :id="titleId" class="text-content font-semibold">{{ title }}</h3>
         <button aria-label="Close modal" @click="closeModal()" class="text-contentMuted hover:text-content">
-          <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+          {{ icon('close', size='h-5 w-5') }}
         </button>
       </div>
       <div class="p-4 text-content">
