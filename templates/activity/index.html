@@ -3,8 +3,8 @@
 {% block content %}
 <div class="p-4 md:p-6 space-y-6">
   <div class="space-y-1">
-    <h1 class="text-xl font-semibold text-white">Activity</h1>
-    <p class="text-sm text-slate-400">Recent notifications</p>
+    <h1 class="text-xl font-semibold text-content">Activity</h1>
+    <p class="text-sm text-contentMuted">Recent notifications</p>
   </div>
 
   <div class="space-y-2">
@@ -24,7 +24,7 @@
         </div>
       {% endfor %}
     {% else %}
-      <div class="text-slate-400 text-sm">No notifications yet.</div>
+      <div class="text-contentMuted text-sm">No notifications yet.</div>
     {% endif %}
   </div>
 </div>

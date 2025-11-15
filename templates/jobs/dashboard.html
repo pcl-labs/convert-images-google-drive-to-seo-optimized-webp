@@ -7,13 +7,12 @@
     </hgroup>
     <form hx-post="/dashboard/jobs" hx-target="#jobs-list" hx-swap="outerHTML">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-      <label>
-        Document ID
-        <input type="text" name="document_id" placeholder="doc_123..." required />
-      </label>
+      {% from 'components/elements/input.html' import input %}
+      {{ input('document_id', label='Document ID', placeholder='doc_123...', attrs='required') }}
       <div>
-        <button type="submit">Create Job</button>
-        <a href="/auth/google/start" role="button" class="secondary">Link Google</a>
+        {% from 'components/elements/button.html' import button %}
+        {{ button('Create Job', variant='primary', attrs='type="submit"') }}
+        <a href="/auth/google/start" class="btn-secondary">Link Google</a>
       </div>
     </form>
   </section>
