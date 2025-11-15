@@ -47,7 +47,8 @@ async def enqueue_job_with_guard(
     
     enqueued = False
     enqueue_exception: Optional[Exception] = None
-    queue_configured = getattr(queue, "queue", None) is not None
+    # Consider queue configured if it has a bound queue OR exposes send_generic (stub/local)
+    queue_configured = (getattr(queue, "queue", None) is not None) or hasattr(queue, "send_generic")
     
     if queue_configured:
         try:

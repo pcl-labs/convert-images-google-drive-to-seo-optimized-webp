@@ -1,5 +1,5 @@
 """
-Production-ready FastAPI web application for Google Drive Image Optimizer.
+Production-ready FastAPI web application for Quill.
 """
 
 from fastapi import FastAPI, Request, status
@@ -67,7 +67,8 @@ async def lifespan(app: FastAPI):
     
     # Initialize queue producer
     queue_producer = QueueProducer(queue=settings.queue, dlq=settings.dlq)
-    app_logger.info("Queue producer initialized")
+    queue_mode = "inline" if settings.use_inline_queue else ("workers-binding" if settings.queue else "api")
+    app_logger.info(f"Queue producer initialized (mode: {queue_mode})")
     # Expose to shared deps
     set_queue_producer(queue_producer)
     
@@ -138,8 +139,18 @@ async def lifespan(app: FastAPI):
         
         # Step 4: Cleanup queue producer
         if queue_producer is not None:
+            # Attempt to close HTTP clients via queue_producer.close(), if available
+            if hasattr(queue_producer, 'close'):
+                try:
+                    result = queue_producer.close()
+                    if inspect.isawaitable(result) or asyncio.iscoroutine(result):
+                        await result
+                    app_logger.info("Queue producer HTTP clients closed")
+                except Exception as e:
+                    app_logger.error(f"Error in queue_producer.close(): {e}", exc_info=True)
+
+            # Independently attempt to cleanup the underlying queue object
             try:
-                # Check if the underlying queue object has a close method
                 if hasattr(queue_producer, 'queue') and queue_producer.queue is not None:
                     queue_obj = queue_producer.queue
                     # Check for common close/stop method names
@@ -152,10 +163,10 @@ async def lifespan(app: FastAPI):
                                 method()
                             app_logger.info(f"Queue {method_name} called successfully")
                             break
-                app_logger.info("Queue producer closed")
             except Exception as e:
-                app_logger.error(f"Error closing queue producer: {e}", exc_info=True)
+                app_logger.error(f"Error cleaning up underlying queue object: {e}", exc_info=True)
             finally:
+                app_logger.info("Queue producer closed")
                 queue_producer = None
         
         app_logger.info("Shutdown cleanup completed")

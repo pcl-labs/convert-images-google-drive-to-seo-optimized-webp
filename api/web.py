@@ -13,7 +13,7 @@ from fastapi import APIRouter, Request, Depends, Form, HTTPException, status
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, PlainTextResponse
 from starlette.templating import Jinja2Templates
 from starlette.responses import Response, StreamingResponse
-from typing import Optional
+from typing import Optional, Dict, Any
 import os
 import uuid
 import logging
@@ -27,7 +27,7 @@ from .auth import verify_jwt_token
 from .database import (
     list_jobs,
     get_job_stats,
-    get_google_tokens,
+    list_google_tokens,
     get_job,
     update_job_status,
     delete_google_tokens,
@@ -57,6 +57,8 @@ from .notifications import notify_job
 from .notifications_stream import notifications_stream_response
 from .constants import COOKIE_OAUTH_STATE, COOKIE_GOOGLE_OAUTH_STATE
 from .utils import normalize_ui_status
+from core.constants import GOOGLE_SCOPE_DRIVE, GOOGLE_SCOPE_YOUTUBE, GOOGLE_SCOPE_GMAIL, GOOGLE_INTEGRATION_SCOPES
+from .google_oauth import parse_google_scope_list
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +115,101 @@ SERVICES_META = {
         "created_at": None,
     },
 }
+
+INTEGRATION_STATUS_LABELS = {
+    "completed": "Connected",
+    "disconnected": "Disconnected",
+    "action_required": "Reconnect required",
+}
+
+GOOGLE_SCOPE_LABELS = {
+    GOOGLE_SCOPE_DRIVE: "Drive access",
+    GOOGLE_SCOPE_YOUTUBE: "YouTube (full access - required for captions)",
+    "https://www.googleapis.com/auth/youtube.force-ssl": "YouTube (full access - required for captions)",
+    GOOGLE_SCOPE_GMAIL: "Gmail read-only",
+}
+
+
+def _scope_names(scopes: list[str]) -> list[str]:
+    return [GOOGLE_SCOPE_LABELS.get(scope, scope) for scope in scopes]
+
+
+def _build_google_integration_entries(token_rows: Optional[list[Dict[str, Any]]]) -> Dict[str, Dict[str, Any]]:
+    token_map: Dict[str, Dict[str, Any]] = {}
+    if token_rows:
+        for row in token_rows:
+            key = str(row.get("integration") or "").lower()
+            if key:
+                token_map[key] = row
+
+    def _entry(
+        key: str,
+        *,
+        hints: Dict[str, str],
+    ) -> Dict[str, Any]:
+        row = token_map.get(key)
+        granted_scopes = parse_google_scope_list(row.get("scopes")) if row else []
+        required_scopes = GOOGLE_INTEGRATION_SCOPES.get(key, [])
+        missing_scope_ids = [scope for scope in required_scopes if scope not in granted_scopes]
+        connected = bool(row) and not missing_scope_ids
+        needs_reconnect = bool(row) and bool(missing_scope_ids)
+        if connected:
+            status = "completed"
+            hint = hints["connected"]
+        elif needs_reconnect:
+            status = "action_required"
+            hint = hints["reconnect"]
+        else:
+            status = "disconnected"
+            hint = hints["connect"]
+        return {
+            "connected": connected,
+            "needs_reconnect": needs_reconnect,
+            "status": status,
+            "status_label": INTEGRATION_STATUS_LABELS.get(status, status.title()),
+            "status_hint": hint,
+            "missing_scopes": _scope_names(missing_scope_ids),
+            "connect_url": f"/auth/google/start?integration={key}&redirect=/dashboard/integrations/{key}",
+            "reconnect_url": f"/auth/google/start?integration={key}&redirect=/dashboard/integrations/{key}",
+            "connected_at": row.get("created_at") if row else None,
+            "granted_scopes": _scope_names(granted_scopes),
+            "scopes_raw": granted_scopes,
+            "account_connected": bool(row),
+            "can_disconnect": bool(row),
+        }
+
+    drive_entry = _entry(
+        "drive",
+        hints={
+            "connected": "Drive folders are ready for ingestion.",
+            "reconnect": "Reconnect Google to grant Drive access.",
+            "connect": "Connect Google Drive to sync folders.",
+        },
+    )
+    youtube_entry = _entry(
+        "youtube",
+        hints={
+            "connected": "YouTube ingestion and metadata fetch are enabled.",
+            "reconnect": "Reconnect Google to add the YouTube scope (required for captions API).",
+            "connect": "Connect Google to unlock YouTube ingestion.",
+        },
+    )
+    return {
+        "drive": drive_entry,
+        "youtube": youtube_entry,
+    }
+
+
+def _build_integrations_model(tokens: list[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    google_entries = _build_google_integration_entries(tokens)
+    google_entries["gmail"] = {
+        "connected": False,
+        "needs_reconnect": False,
+        "status": "planned",
+        "status_label": "Not available",
+        "status_hint": "Gmail workflows are on the roadmap.",
+    }
+    return google_entries
 
 def _get_csrf_token(request: Request) -> str:
     token = request.cookies.get("csrf_token")
@@ -372,8 +469,10 @@ async def dashboard(request: Request, page: int = 1, user: dict = Depends(get_cu
     stats = await get_job_stats(db, user["user_id"])  # { total, completed, failed, pending, processing }
     csrf = _get_csrf_token(request)
     # Google connection status for dashboard badge
-    tokens = await get_google_tokens(db, user["user_id"])  # type: ignore
-    google_connected = bool(tokens)
+    google_tokens = await list_google_tokens(db, user["user_id"])  # type: ignore
+    token_map = {str(row.get("integration")).lower(): row for row in (google_tokens or []) if row.get("integration")}
+    drive_connected = "drive" in token_map
+    youtube_connected = "youtube" in token_map
 
     # Transform jobs for dashboard table
     def to_view(j):
@@ -399,7 +498,8 @@ async def dashboard(request: Request, page: int = 1, user: dict = Depends(get_cu
         },
         "csrf_token": csrf,
         "page_title": "Dashboard",
-        "google_connected": google_connected,
+        "drive_connected": drive_connected,
+        "youtube_connected": youtube_connected,
     }
     resp = templates.TemplateResponse("dashboard/index.html", context)
     if not request.cookies.get("csrf_token"):
@@ -414,15 +514,18 @@ async def documents_page(request: Request, page: int = 1, user: dict = Depends(g
     db = ensure_db()
     csrf = _get_csrf_token(request)
     documents, total = await _load_document_views(db, user["user_id"], page=page, page_size=20)
-    tokens = await get_google_tokens(db, user["user_id"])  # type: ignore
-    google_connected = bool(tokens)
+    google_tokens = await list_google_tokens(db, user["user_id"])  # type: ignore
+    token_map = {str(row.get("integration")).lower(): row for row in (google_tokens or []) if row.get("integration")}
+    drive_connected = "drive" in token_map
+    youtube_connected = "youtube" in token_map
     context = {
         "request": request,
         "user": user,
         "documents": documents,
         "total_documents": total,
         "csrf_token": csrf,
-        "google_connected": google_connected,
+        "drive_connected": drive_connected,
+        "youtube_connected": youtube_connected,
         "page_title": "Documents",
         "flash": None,
     }
@@ -840,13 +943,8 @@ async def jobs_page(request: Request, user: dict = Depends(get_current_user), pa
 @router.get("/dashboard/integrations", response_class=HTMLResponse)
 async def integrations_page(request: Request, user: dict = Depends(get_current_user)):
     db = ensure_db()
-    tokens = await get_google_tokens(db, user["user_id"])  # type: ignore
-    google_connected = bool(tokens)
-    integrations = {
-        "gmail": {"connected": False, "status": "disconnected", "status_label": "Disconnected"},
-        "drive": {"connected": google_connected, "status": ("completed" if google_connected else "disconnected"), "status_label": ("Connected" if google_connected else "Disconnected")},
-        "youtube": {"connected": False, "status": "disconnected", "status_label": "Disconnected"},
-    }
+    tokens = await list_google_tokens(db, user["user_id"])  # type: ignore
+    integrations = _build_integrations_model(tokens)
     services_meta = SERVICES_META
     csrf = _get_csrf_token(request)
     context = {"request": request, "user": user, "integrations": integrations, "services_meta": services_meta, "page_title": "Integrations", "csrf_token": csrf}
@@ -863,20 +961,15 @@ async def integrations_drive_disconnect(request: Request, csrf_token: str = Form
     if cookie_token is None or csrf_token is None or not hmac.compare_digest(str(cookie_token), str(csrf_token)):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
     db = ensure_db()
-    await delete_google_tokens(db, user["user_id"])  # type: ignore
+    await delete_google_tokens(db, user["user_id"], integration="drive")  # type: ignore
     return RedirectResponse(url="/dashboard/integrations", status_code=status.HTTP_302_FOUND)
 
 
 @router.get("/dashboard/integrations/partials/grid", response_class=HTMLResponse)
 async def integrations_grid_partial(request: Request, user: dict = Depends(get_current_user)):
     db = ensure_db()
-    tokens = await get_google_tokens(db, user["user_id"])  # type: ignore
-    google_connected = bool(tokens)
-    integrations = {
-        "gmail": {"connected": False, "status": "disconnected", "status_label": "Disconnected"},
-        "drive": {"connected": google_connected, "status": ("completed" if google_connected else "disconnected"), "status_label": ("Connected" if google_connected else "Disconnected")},
-        "youtube": {"connected": False, "status": "disconnected", "status_label": "Disconnected"},
-    }
+    tokens = await list_google_tokens(db, user["user_id"])  # type: ignore
+    integrations = _build_integrations_model(tokens)
     services_meta = SERVICES_META
     csrf = _get_csrf_token(request)
     return templates.TemplateResponse("integrations/partials/grid.html", {"request": request, "integrations": integrations, "services_meta": services_meta, "csrf_token": csrf})
@@ -889,13 +982,8 @@ async def integration_detail(service: str, request: Request, user: dict = Depend
     if service not in allowed_services:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     db = ensure_db()
-    tokens = await get_google_tokens(db, user["user_id"])  # type: ignore
-    google_connected = bool(tokens)
-    integrations = {
-        "gmail": {"connected": False, "status": "disconnected", "status_label": "Disconnected"},
-        "drive": {"connected": google_connected, "status": ("completed" if google_connected else "disconnected"), "status_label": ("Connected" if google_connected else "Disconnected")},
-        "youtube": {"connected": False, "status": "disconnected", "status_label": "Disconnected"},
-    }
+    tokens = await list_google_tokens(db, user["user_id"])  # type: ignore
+    integrations = _build_integrations_model(tokens)
     services_meta = SERVICES_META
     csrf = _get_csrf_token(request)
     return templates.TemplateResponse(
@@ -1036,11 +1124,18 @@ async def integration_connect_stub(service: str, request: Request, user: dict = 
 
 
 @router.post("/dashboard/integrations/{service}/disconnect")
-async def integration_disconnect_stub(service: str, request: Request, user: dict = Depends(get_current_user)):
-    """Stub disconnect for non-Drive services."""
-    if service not in {"gmail", "youtube"}:
+async def integration_disconnect(service: str, request: Request, csrf_token: str = Form(...), user: dict = Depends(get_current_user)):
+    cookie_token = request.cookies.get("csrf_token")
+    if cookie_token is None or csrf_token is None or not hmac.compare_digest(str(cookie_token), str(csrf_token)):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
+    integration_key = service.lower()
+    if integration_key not in {"youtube", "gmail"}:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
-    raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=f"{service} disconnect not implemented yet")
+    if integration_key == "gmail":
+        raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="Gmail disconnect not implemented yet")
+    db = ensure_db()
+    await delete_google_tokens(db, user["user_id"], integration=integration_key)  # type: ignore
+    return RedirectResponse(url="/dashboard/integrations", status_code=status.HTTP_302_FOUND)
 
 
 @router.get("/dashboard/settings", response_class=HTMLResponse)

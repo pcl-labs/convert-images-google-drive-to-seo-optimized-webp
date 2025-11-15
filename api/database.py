@@ -105,6 +105,8 @@ class Database:
             cur.execute("CREATE INDEX IF NOT EXISTS idx_documents_source ON documents(source_type, source_ref)")
             cur.execute("PRAGMA table_info('documents')")
             doc_cols = {row[1] for row in cur.fetchall()}
+            if 'raw_text' not in doc_cols:
+                cur.execute("ALTER TABLE documents ADD COLUMN raw_text TEXT")
             if 'content_format' not in doc_cols:
                 cur.execute("ALTER TABLE documents ADD COLUMN content_format TEXT")
             if 'frontmatter' not in doc_cols:
@@ -204,6 +206,8 @@ class Database:
                 cur.execute("ALTER TABLE jobs ADD COLUMN document_id TEXT")
             if 'output' not in cols:
                 cur.execute("ALTER TABLE jobs ADD COLUMN output TEXT")
+            if 'payload' not in cols:
+                cur.execute("ALTER TABLE jobs ADD COLUMN payload TEXT")
             # Helpful indexes (CREATE INDEX IF NOT EXISTS is idempotent)
             cur.execute("CREATE INDEX IF NOT EXISTS idx_jobs_job_type ON jobs(job_type)")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_jobs_document_id ON jobs(document_id)")
@@ -417,6 +421,7 @@ async def create_job_extended(
     output: Optional[Dict[str, Any]] = None,
     drive_folder: Optional[str] = None,
     extensions: Optional[List[str]] = None,
+    payload: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Create a new job with extended fields. Keeps compatibility with existing jobs table.
     Stores output as JSON text when provided.
@@ -434,9 +439,10 @@ async def create_job_extended(
     })
     extensions_json = json.dumps(extensions or [])
     output_json = json.dumps(output) if output is not None else None
+    payload_json = json.dumps(payload) if payload is not None else None
     query = (
-        "INSERT INTO jobs (job_id, user_id, status, progress, drive_folder, extensions, job_type, document_id, output) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *"
+        "INSERT INTO jobs (job_id, user_id, status, progress, drive_folder, extensions, job_type, document_id, output, payload) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *"
     )
     result = await db.execute(
         query,
@@ -450,6 +456,7 @@ async def create_job_extended(
             job_type,
             document_id,
             output_json,
+            payload_json,
         ),
     )
     return dict(result) if result else {}
@@ -574,79 +581,102 @@ async def get_user_by_api_key(db: Database, api_key: str) -> Optional[Dict[str, 
     return {'candidates': pbkdf2_records, 'api_key': api_key} if pbkdf2_records else None
 
 
-# Google OAuth token operations
-async def get_google_tokens(db: Database, user_id: str) -> Optional[Dict[str, Any]]:
-    """Get stored Google OAuth tokens for a user (decrypted)."""
+# Google OAuth token operations (per integration)
+def _decrypt_google_token_row(row: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not row:
+        return None
     from .crypto import decrypt
-    query = "SELECT * FROM google_tokens WHERE user_id = ?"
-    result = await db.execute(query, (user_id,))
+    decoded = dict(row)
+    for field in ("access_token", "refresh_token"):
+        if decoded.get(field):
+            try:
+                decoded[field] = decrypt(decoded[field])
+            except Exception:
+                pass
+    return decoded
+
+
+async def list_google_tokens(db: Database, user_id: str) -> List[Dict[str, Any]]:
+    """Return all integration tokens for a user."""
+    rows = await db.execute_all("SELECT * FROM google_integration_tokens WHERE user_id = ?", (user_id,))
+    tokens: List[Dict[str, Any]] = []
+    if not rows:
+        return tokens
+    for row in rows:
+        decoded = _decrypt_google_token_row(dict(row))
+        if decoded:
+            tokens.append(decoded)
+    return tokens
+
+
+async def get_google_token(db: Database, user_id: str, integration: str) -> Optional[Dict[str, Any]]:
+    result = await db.execute(
+        "SELECT * FROM google_integration_tokens WHERE user_id = ? AND integration = ?",
+        (user_id, integration),
+    )
     if not result:
         return None
-    token_dict = dict(result)
-    # Decrypt tokens
-    if token_dict.get("access_token"):
-        try:
-            token_dict["access_token"] = decrypt(token_dict["access_token"])
-        except Exception:
-            # If decryption fails, token might be unencrypted (migration case)
-            # Keep as-is for backward compatibility
-            pass
-    if token_dict.get("refresh_token"):
-        try:
-            token_dict["refresh_token"] = decrypt(token_dict["refresh_token"])
-        except Exception:
-            # If decryption fails, token might be unencrypted (migration case)
-            # Keep as-is for backward compatibility
-            pass
-    return token_dict
+    return _decrypt_google_token_row(dict(result))
 
 
-async def upsert_google_tokens(
+async def upsert_google_token(
     db: Database,
     user_id: str,
+    integration: str,
     access_token: str,
     refresh_token: Optional[str],
     expiry: Optional[str],
     token_type: Optional[str],
-    scopes: Optional[str]
+    scopes: Optional[str],
 ) -> None:
-    """Insert or update Google OAuth tokens for a user (encrypted at rest)."""
+    """Insert or update Google OAuth tokens for a specific integration."""
     from .crypto import encrypt
-    # Encrypt tokens before storing
-    encrypted_access_token = encrypt(access_token) if access_token else None
-    encrypted_refresh_token = encrypt(refresh_token) if refresh_token else None
-    query = (
-        "INSERT INTO google_tokens (user_id, access_token, refresh_token, expiry, token_type, scopes) "
-        "VALUES (?, ?, ?, ?, ?, ?) "
-        "ON CONFLICT(user_id) DO UPDATE SET "
-        "access_token = excluded.access_token, "
-        "refresh_token = COALESCE(excluded.refresh_token, google_tokens.refresh_token), "
-        "expiry = excluded.expiry, "
-        "token_type = excluded.token_type, "
-        "scopes = excluded.scopes, "
-        "updated_at = datetime('now')"
+    token_id = f"{user_id}:{integration}"
+    encrypted_access = encrypt(access_token) if access_token else None
+    encrypted_refresh = encrypt(refresh_token) if refresh_token else None
+    query = """
+        INSERT INTO google_integration_tokens (
+            token_id, user_id, integration, access_token, refresh_token, expiry, token_type, scopes, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+        ON CONFLICT(user_id, integration) DO UPDATE SET
+            access_token = excluded.access_token,
+            refresh_token = COALESCE(excluded.refresh_token, google_integration_tokens.refresh_token),
+            expiry = excluded.expiry,
+            token_type = excluded.token_type,
+            scopes = excluded.scopes,
+            updated_at = datetime('now')
+    """
+    await db.execute(
+        query,
+        (token_id, user_id, integration, encrypted_access, encrypted_refresh, expiry, token_type, scopes),
     )
-    await db.execute(query, (user_id, encrypted_access_token, encrypted_refresh_token, expiry, token_type, scopes))
 
 
-async def update_google_tokens_expiry(
+async def update_google_token_expiry(
     db: Database,
     user_id: str,
+    integration: str,
     access_token: str,
-    expiry: Optional[str]
+    expiry: Optional[str],
 ) -> None:
-    """Update access token and expiry after a refresh (encrypted at rest)."""
+    """Update access token and expiry after refresh."""
     from .crypto import encrypt
-    # Encrypt token before storing
-    encrypted_access_token = encrypt(access_token) if access_token else None
-    query = "UPDATE google_tokens SET access_token = ?, expiry = ?, updated_at = datetime('now') WHERE user_id = ?"
-    await db.execute(query, (encrypted_access_token, expiry, user_id))
+    encrypted_access = encrypt(access_token) if access_token else None
+    await db.execute(
+        "UPDATE google_integration_tokens SET access_token = ?, expiry = ?, updated_at = datetime('now') WHERE user_id = ? AND integration = ?",
+        (encrypted_access, expiry, user_id, integration),
+    )
 
 
-async def delete_google_tokens(db: Database, user_id: str) -> None:
-    """Delete stored Google OAuth tokens for a user (disconnect)."""
-    query = "DELETE FROM google_tokens WHERE user_id = ?"
-    await db.execute(query, (user_id,))
+async def delete_google_tokens(db: Database, user_id: str, integration: Optional[str] = None) -> None:
+    """Delete stored Google OAuth tokens (per integration or all)."""
+    if integration:
+        await db.execute(
+            "DELETE FROM google_integration_tokens WHERE user_id = ? AND integration = ?",
+            (user_id, integration),
+        )
+    else:
+        await db.execute("DELETE FROM google_integration_tokens WHERE user_id = ?", (user_id,))
 
 # Job operations
 async def create_job(
@@ -793,6 +823,40 @@ async def get_job_stats(db: Database, user_id: Optional[str] = None) -> Dict[str
         "processing": 0
     }
 
+async def get_pending_jobs(
+    db: Database,
+    limit: int = 100,
+    statuses: Optional[List[str]] = None
+) -> List[Dict[str, Any]]:
+    """Get pending or queued jobs that need to be processed.
+    
+    Args:
+        db: Database instance
+        limit: Maximum number of jobs to return
+        statuses: List of statuses to include (default: ['pending', 'queued'])
+    
+    Returns:
+        List of job dictionaries (excludes cancelled jobs)
+    """
+    if statuses is None:
+        statuses = [JobStatusEnum.PENDING.value, 'queued']
+    # If caller passes an empty list, avoid generating IN () and return no rows.
+    if not statuses:
+        return []
+    
+    placeholders = ','.join(['?' for _ in statuses])
+    query = f"""
+        SELECT * FROM jobs
+        WHERE status IN ({placeholders})
+        AND status != 'cancelled'
+        ORDER BY created_at ASC
+        LIMIT ?
+    """
+    params = list(statuses) + [limit]
+    results = await db.execute_all(query, tuple(params))
+    return [dict(row) for row in results] if results else []
+
+
 async def list_jobs_by_document(
     db: Database,
     user_id: str,
@@ -891,6 +955,14 @@ async def update_document(
     document_id: str,
     updates: Dict[str, Any],
 ) -> None:
+    """Update document fields. All updates are applied atomically.
+    
+    Args:
+        db: Database instance
+        document_id: Document ID to update
+        updates: Dictionary of field updates. Allowed fields: source_type, source_ref, 
+                 raw_text, metadata, content_format, frontmatter, latest_version_id
+    """
     allowed = {"source_type", "source_ref", "raw_text", "metadata", "content_format", "frontmatter", "latest_version_id"}
     fields = []
     params: list[Any] = []
@@ -900,12 +972,15 @@ async def update_document(
             if k in {"metadata", "frontmatter"} and v is not None:
                 params.append(json.dumps(v))
             else:
+                # Include None and empty strings - don't filter them out
                 params.append(v)
     if not fields:
         return
+    # Use SQLite-compatible datetime (works for both D1 and SQLite)
     fields.append("updated_at = datetime('now')")
     params.append(document_id)
-    await db.execute(f"UPDATE documents SET {', '.join(fields)} WHERE document_id = ?", tuple(params))
+    query = f"UPDATE documents SET {', '.join(fields)} WHERE document_id = ?"
+    await db.execute(query, tuple(params))
 
 
 async def create_document_version(

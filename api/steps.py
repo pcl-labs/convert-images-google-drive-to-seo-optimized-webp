@@ -19,7 +19,9 @@ from .database import (
     get_step_invocation,
     save_step_invocation,
 )
-from core.transcripts import fetch_transcript_with_fallback
+from api.google_oauth import build_youtube_service_for_user
+from core.youtube_api import fetch_video_metadata, YouTubeAPIError
+from core.youtube_captions import fetch_captions_text, YouTubeCaptionsError
 from core.ai_modules import generate_outline, organize_chapters, compose_blog, default_title_from_outline
 
 
@@ -128,11 +130,26 @@ async def transcript_fetch(request: Request, payload: TranscriptFetchRequest, us
         return maybe_cached
 
     langs = payload.langs or ["en"]
-    result = fetch_transcript_with_fallback(payload.video_id, langs)
-    if not result.get("success"):
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=result.get("error") or "Transcript unavailable")
+    try:
+        yt_service = await build_youtube_service_for_user(db, user["user_id"])  # type: ignore
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
-    text = result.get("text") or ""
+    # Authoritative metadata (duration)
+    try:
+        meta_bundle = await asyncio.to_thread(fetch_video_metadata, yt_service, payload.video_id)
+    except YouTubeAPIError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+
+    # Captions text via official API
+    try:
+        cap = await asyncio.to_thread(fetch_captions_text, yt_service, payload.video_id, langs)
+    except YouTubeCaptionsError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    if not cap.get("success"):
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=cap.get("error") or "Captions unavailable")
+
+    text = cap.get("text") or ""
     if payload.document_id:
         doc = await _load_document_text(db, user["user_id"], payload.document_id)
         existing_meta_raw = doc.get("metadata")
@@ -140,11 +157,19 @@ async def transcript_fetch(request: Request, payload: TranscriptFetchRequest, us
             existing_meta = json.loads(existing_meta_raw) if isinstance(existing_meta_raw, str) else (existing_meta_raw or {})
         except Exception:
             existing_meta = {}
+        # Prefer authoritative API duration from the metadata bundle.
+        duration_out = None
+        try:
+            youtube_meta = meta_bundle.get("metadata") or {}
+            duration_out = youtube_meta.get("duration_seconds")
+        except Exception:
+            duration_out = None
         new_meta = {
             **(existing_meta or {}),
             "source": "youtube",
-            "lang": result.get("lang"),
-            "duration_s": result.get("duration_s"),
+            "lang": cap.get("lang"),
+            # Precedence: API duration in metadata
+            "duration_s": duration_out,
         }
         await update_document(
             db,
@@ -158,9 +183,10 @@ async def transcript_fetch(request: Request, payload: TranscriptFetchRequest, us
     response_body = {
         "document_id": payload.document_id,
         "text": text,
-        "lang": result.get("lang"),
-        "duration_s": result.get("duration_s"),
-        "source": result.get("source"),
+        "lang": cap.get("lang"),
+        # Use API-provided duration
+        "duration_s": duration_out,
+        "source": cap.get("source"),
     }
     if payload.job_id:
         await record_usage_event(
@@ -168,7 +194,7 @@ async def transcript_fetch(request: Request, payload: TranscriptFetchRequest, us
             user["user_id"],
             payload.job_id,
             "transcribe",
-            {"duration_s": result.get("duration_s"), "lang": result.get("lang")},
+            {"duration_s": duration_out, "lang": cap.get("lang")},
         )
     await _finalize_idempotency(db, user["user_id"], key, "transcript.fetch", hash_val, response_body, status.HTTP_200_OK)
     return response_body

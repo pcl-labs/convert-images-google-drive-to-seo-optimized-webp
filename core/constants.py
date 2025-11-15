@@ -13,11 +13,21 @@ TEMP_DIR = "temp_download"
 OUTPUT_DIR_PREFIX = "optimized_"
 ALT_TEXT_MAP = "alt_text_map.json"
 
-# Google API
-# Only Drive-specific scopes are required for this application.
-GOOGLE_DRIVE_SCOPES = [
-    "https://www.googleapis.com/auth/drive",
-]
+# Google API scopes per integration
+GOOGLE_SCOPE_DRIVE = "https://www.googleapis.com/auth/drive"
+# Note: youtube.force-ssl scope is required for captions API access (not just youtube)
+# The youtube.force-ssl scope provides full access to manage YouTube account and content, including captions
+GOOGLE_SCOPE_YOUTUBE = "https://www.googleapis.com/auth/youtube.force-ssl"
+GOOGLE_SCOPE_GMAIL = "https://www.googleapis.com/auth/gmail.readonly"
+
+GOOGLE_INTEGRATION_SCOPES = {
+    "drive": [GOOGLE_SCOPE_DRIVE],
+    "youtube": [GOOGLE_SCOPE_YOUTUBE],
+    "gmail": [GOOGLE_SCOPE_GMAIL],
+}
+
+# Legacy/default scopes used by CLI utilities (Drive only)
+GOOGLE_OAUTH_SCOPES = [GOOGLE_SCOPE_DRIVE]
 
 # Extensions (without leading dots)
 DEFAULT_EXTENSIONS = [
