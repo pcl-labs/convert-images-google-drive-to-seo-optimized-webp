@@ -124,8 +124,6 @@ CREATE TABLE IF NOT EXISTS google_integration_tokens (
     FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
 );
 
-CREATE INDEX IF NOT EXISTS idx_google_tokens_user_integration ON google_integration_tokens(user_id, integration);
-
 -- Phase 1: Content normalization and unified job types
 -- Create documents table
 CREATE TABLE IF NOT EXISTS documents (

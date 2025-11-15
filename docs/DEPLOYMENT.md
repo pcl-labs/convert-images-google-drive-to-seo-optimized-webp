@@ -52,8 +52,8 @@ open https://your-worker.your-subdomain.workers.dev/docs
 
 ## Queue Configuration Modes
 
-- Inline (local dev): `USE_INLINE_QUEUE=true` executes jobs via DB polling. No Cloudflare Queue required. Start the consumer locally with `python workers/consumer.py --inline`.
-- Cloudflare Queues (production): `USE_INLINE_QUEUE=false` requires `JOB_QUEUE`/`DLQ` bindings in `wrangler.toml` and secrets `CF_ACCOUNT_ID`, `CF_API_TOKEN`, plus `CF_QUEUE_NAME`/`CF_QUEUE_DLQ`.
+- DB-backed inline queue (local dev): `USE_INLINE_QUEUE=true` persists jobs to the database and a local consumer polls the DB to process them. No Cloudflare Queue required. Start the consumer locally with `python workers/consumer.py --inline`.
+- Cloudflare Queues (production): `USE_INLINE_QUEUE=false` uses Cloudflare Queues. Requires `JOB_QUEUE`/`DLQ` bindings in `wrangler.toml` and secrets `CF_ACCOUNT_ID`, `CF_API_TOKEN`, plus `CF_QUEUE_NAME`/`CF_QUEUE_DLQ`.
 - Validation: In production, inline mode is rejected by `api/config.py` to prevent misconfiguration.
 
 ## Queue Verification & Troubleshooting
@@ -86,15 +86,15 @@ These are set as secrets in Cloudflare Workers:
 
 ### Local Development Environment Variables (`.env` file)
 
-For local development with inline queue mode:
+For local development with the DB-backed inline queue:
 
-- `USE_INLINE_QUEUE=true` - Use in-memory queue instead of Cloudflare Queue (default for local dev)
+- `USE_INLINE_QUEUE=true` - Use the DB-backed inline queue (jobs are persisted in the database and polled by the local consumer). This is the default for local dev.
 - `CF_ACCOUNT_ID` - Cloudflare account ID (from `wrangler whoami`)
 - `CF_API_TOKEN` - Cloudflare API token (created in dashboard, step 2 above)
 - `CF_QUEUE_NAME=quill-jobs` - Primary queue name
 - `CF_QUEUE_DLQ=quill-dlq` - Dead letter queue name
 
-**Note**: When `USE_INLINE_QUEUE=true`, the queue operations run in-memory and don't require Cloudflare Queue API access. Set to `false` for production to use real Cloudflare Queues.
+**Note**: When `USE_INLINE_QUEUE=true`, jobs are persisted and polled from the database; Cloudflare Queues are not used. Set `USE_INLINE_QUEUE=false` for production to use Cloudflare Queues (inline mode is rejected by production validation).
 
 ### Google APIs
 
