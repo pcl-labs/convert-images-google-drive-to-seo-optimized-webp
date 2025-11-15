@@ -129,7 +129,7 @@ Uses Jinja's `call` block syntax:
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `kind` | string | `"info"` | Alert type: `"info"`, `"success"`, or `"error"` |
-| `text` | string | `""` | Alert message (supports HTML via `|safe` filter) |
+| `text` | string | `""` | Alert message (supports HTML via `` `|safe` `` filter) |
 | `dismissible` | boolean | `True` | Show close button |
 
 ### Variants
