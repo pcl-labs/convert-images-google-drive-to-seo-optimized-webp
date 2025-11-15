@@ -105,6 +105,8 @@ class Database:
             cur.execute("CREATE INDEX IF NOT EXISTS idx_documents_source ON documents(source_type, source_ref)")
             cur.execute("PRAGMA table_info('documents')")
             doc_cols = {row[1] for row in cur.fetchall()}
+            if 'raw_text' not in doc_cols:
+                cur.execute("ALTER TABLE documents ADD COLUMN raw_text TEXT")
             if 'content_format' not in doc_cols:
                 cur.execute("ALTER TABLE documents ADD COLUMN content_format TEXT")
             if 'frontmatter' not in doc_cols:

@@ -15,7 +15,9 @@ ALT_TEXT_MAP = "alt_text_map.json"
 
 # Google API scopes per integration
 GOOGLE_SCOPE_DRIVE = "https://www.googleapis.com/auth/drive"
-GOOGLE_SCOPE_YOUTUBE = "https://www.googleapis.com/auth/youtube.readonly"
+# Note: youtube.force-ssl scope is required for captions API access (not just youtube)
+# The youtube.force-ssl scope provides full access to manage YouTube account and content, including captions
+GOOGLE_SCOPE_YOUTUBE = "https://www.googleapis.com/auth/youtube.force-ssl"
 GOOGLE_SCOPE_GMAIL = "https://www.googleapis.com/auth/gmail.readonly"
 
 GOOGLE_INTEGRATION_SCOPES = {

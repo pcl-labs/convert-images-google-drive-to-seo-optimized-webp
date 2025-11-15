@@ -466,9 +466,10 @@ async def google_auth_callback(code: str, state: str, request: Request, user: di
         response.delete_cookie(key="google_integration", path="/", samesite="lax", httponly=True, secure=is_secure)
         response.delete_cookie(key="google_redirect_next", path="/", samesite="lax", httponly=True, secure=is_secure)
         return response
-    except Exception:
-        logger.error("Google callback failed", exc_info=True)
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Google authentication failed") from None
+    except Exception as e:
+        logger.error(f"Google callback failed: {e}", exc_info=True)
+        error_detail = str(e) if settings.debug else "Google authentication failed"
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=error_detail) from None
 
 
 @router.get("/auth/google/status", tags=["Authentication"])

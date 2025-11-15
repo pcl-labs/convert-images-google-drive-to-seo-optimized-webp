@@ -1,6 +1,18 @@
+import os
 import pytest
 
 from api.config import Settings
+
+
+@pytest.fixture(autouse=True)
+def clear_queue_env(monkeypatch):
+    # Disable .env loading so init kwargs drive behavior
+    monkeypatch.setenv("PYTEST_DISABLE_DOTENV", "1")
+    monkeypatch.delenv("USE_INLINE_QUEUE", raising=False)
+    monkeypatch.delenv("CF_ACCOUNT_ID", raising=False)
+    monkeypatch.delenv("CF_API_TOKEN", raising=False)
+    monkeypatch.delenv("CF_QUEUE_NAME", raising=False)
+    return
 
 
 def base_kwargs(**overrides):
