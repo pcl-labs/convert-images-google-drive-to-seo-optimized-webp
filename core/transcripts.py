@@ -4,31 +4,28 @@ import logging
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound, VideoUnavailable
 from youtube_transcript_api.formatters import TextFormatter
 
-# Note: avoid importing audio_fetch (yt_dlp) at module import time. We'll import lazily in fallback.
-
 
 def _join_transcript_chunks(chunks: List[dict]) -> str:
     fmt = TextFormatter()
     return fmt.format_transcript(chunks)
 
 
-def _get_duration_from_yt_dlp(video_id: str) -> Optional[float]:
-    """Fetch video duration (seconds) via yt-dlp info-only. Returns None on error."""
+def _get_duration_from_chunks(chunks) -> Optional[float]:
+    """Calculate video duration from transcript chunks. Returns None if chunks are empty or invalid.
+    
+    Chunks are FetchedTranscriptSnippet objects with .start and .duration attributes.
+    """
+    if not chunks:
+        return None
     try:
-        from yt_dlp import YoutubeDL  # lazy import
-        ydl_opts = {
-            "quiet": True, 
-            "skip_download": True,
-            "ignoreerrors": True,  # Continue on download errors to still get metadata
-        }
-        with YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False, process=False)
-            if isinstance(info, dict):
-                duration = info.get("duration")
-                if duration is not None:
-                    return float(duration)
-    except Exception:
-        logging.getLogger(__name__).debug("yt_dlp_duration_error", exc_info=True)
+        # Get the last chunk's start time + duration
+        last_chunk = chunks[-1]
+        start = getattr(last_chunk, "start", None)
+        duration = getattr(last_chunk, "duration", None)
+        if start is not None and duration is not None:
+            return float(start) + float(duration)
+    except (AttributeError, ValueError, TypeError):
+        pass
     return None
 
 
@@ -40,9 +37,11 @@ def try_fetch_captions(video_id: str, langs: List[str]) -> Dict[str, Any]:
         for lang in langs:
             try:
                 tr = tl.find_transcript([lang])
-                text = _join_transcript_chunks(tr.fetch())
+                chunks = tr.fetch()
+                text = _join_transcript_chunks(chunks)
                 if text and text.strip():
-                    duration_s = _get_duration_from_yt_dlp(video_id)
+                    # Extract duration from transcript chunks
+                    duration_s = _get_duration_from_chunks(chunks)
                     return {"success": True, "text": text, "source": "captions", "lang": tr.language_code, "duration_s": duration_s}
             except Exception:
                 logging.getLogger(__name__).debug("caption_lang_try_error", exc_info=True)
@@ -51,9 +50,11 @@ def try_fetch_captions(video_id: str, langs: List[str]) -> Dict[str, Any]:
         try:
             target_lang = (langs[0].split(",")[0] if (isinstance(langs, list) and len(langs) > 0 and isinstance(langs[0], str)) else "en")
             tr_any = tl.find_transcript(["es", "fr", "de"]).translate(target_lang)
-            text = _join_transcript_chunks(tr_any.fetch())
+            chunks = tr_any.fetch()
+            text = _join_transcript_chunks(chunks)
             if text and text.strip():
-                duration_s = _get_duration_from_yt_dlp(video_id)
+                # Extract duration from transcript chunks
+                duration_s = _get_duration_from_chunks(chunks)
                 return {"success": True, "text": text, "source": "captions_translated", "lang": tr_any.language_code, "duration_s": duration_s}
         except Exception:
             logging.getLogger(__name__).debug("caption_translate_error", exc_info=True)

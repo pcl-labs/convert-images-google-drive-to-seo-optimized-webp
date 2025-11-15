@@ -8,24 +8,36 @@
     Back
   </a>
 
-  {% from 'components/elements/integration_card.html' import integration_card %}
-  {{ integration_card(service, {'connected': integration and integration.connected}, csrf_token) }}
+{% set integration_data = integration or {} %}
+{% from 'components/elements/integration_card.html' import integration_card %}
+{{ integration_card(service, integration_data, csrf_token) }}
 
   <div>
     <h2 class="text-sm font-semibold text-content mb-2">Information</h2>
     {% from 'components/elements/card.html' import card %}
     {% call card() %}
-      {% if integration and integration.connected %}
+      <div class="px-4 py-4 border-b border-border space-y-1">
+        <div class="flex items-center justify-between">
+          <div class="text-contentMuted">Status</div>
+          <div class="text-content font-medium">{{ integration_data.status_label or 'Disconnected' }}</div>
+        </div>
+        {% if integration_data.status_hint %}
+          <p class="text-xs text-contentMuted">{{ integration_data.status_hint }}</p>
+        {% endif %}
+        {% if integration_data.missing_scopes %}
+          <p class="text-xs text-amber-500">Missing scopes: {{ integration_data.missing_scopes | join(', ') }}</p>
+        {% endif %}
+      </div>
+      {% if integration_data.connected_at %}
         <div class="flex items-center justify-between px-4 py-4 border-b border-border">
           <div class="text-contentMuted">Connected on</div>
-          <div class="text-content">{{ service.created_at or '—' }}</div>
-        </div>
-      {% else %}
-        <div class="flex items-center justify-between px-4 py-4 border-b border-border">
-          <div class="text-contentMuted">Created at</div>
-          <div class="text-content">{{ service.created_at or '—' }}</div>
+          <div class="text-content">{{ integration_data.connected_at }}</div>
         </div>
       {% endif %}
+      <div class="flex items-center justify-between px-4 py-4 border-b border-border">
+        <div class="text-contentMuted">Created at</div>
+        <div class="text-content">{{ service.created_at or '—' }}</div>
+      </div>
       <div class="flex items-center justify-between px-4 py-4 border-b border-border">
         <div class="text-contentMuted">Category</div>
         <div class="text-content">{{ service.category }}</div>
@@ -33,6 +45,16 @@
       <div class="flex items-center justify-between px-4 py-4 border-b border-border">
         <div class="text-contentMuted">Developer</div>
         <div class="text-content">{{ service.developer }}</div>
+      </div>
+      <div class="flex items-center justify-between px-4 py-4 border-b border-border">
+        <div class="text-contentMuted">Granted scopes</div>
+        <div class="text-right text-content text-sm">
+          {% if integration_data.granted_scopes %}
+            {{ integration_data.granted_scopes | join(', ') }}
+          {% else %}
+            —
+          {% endif %}
+        </div>
       </div>
       <a class="flex items-center justify-between px-4 py-4 border-b border-border hover:bg-surfaceMuted/50" href="{{ service.website }}" target="_blank" rel="noopener">
         <div class="text-contentMuted">Website</div>

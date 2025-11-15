@@ -65,7 +65,7 @@ def test_google_oauth_start_redirects_when_configured(client):
     if not settings.google_client_id or not settings.google_client_secret:
         import pytest
         pytest.skip("Google OAuth not configured")
-    response = client.get("/auth/google/start", follow_redirects=False)
+    response = client.get("/auth/google/start?integration=drive", follow_redirects=False)
     assert response.status_code in [302, 303, 307]
 
 
@@ -99,7 +99,7 @@ def test_google_oauth_url_generation():
     
     state = secrets.token_urlsafe(16)
     redirect_uri = "http://localhost:8000/auth/google/callback"
-    url = get_google_oauth_url(state, redirect_uri)
+    url = get_google_oauth_url(state, redirect_uri, integration="drive")
     
     assert "accounts.google.com" in url
     assert "client_id" in url

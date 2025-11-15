@@ -5,6 +5,7 @@ from typing import Optional
 import uuid
 import secrets
 import json
+import asyncio
 from datetime import datetime, timezone
 
 from .config import settings
@@ -35,7 +36,7 @@ from .database import (
     list_jobs,
     get_job_stats,
     update_job_status,
-    get_google_tokens,
+    list_google_tokens,
     get_user_by_id,
     create_document,
     get_document,
@@ -45,11 +46,19 @@ from .database import (
 )
 from .notifications import notify_job
 from .auth import create_user_api_key
-from .google_oauth import get_google_oauth_url, exchange_google_code, build_drive_service_for_user
+from .google_oauth import (
+    get_google_oauth_url,
+    exchange_google_code,
+    build_drive_service_for_user,
+    build_youtube_service_for_user,
+    normalize_google_integration,
+    parse_google_scope_list,
+)
 from .constants import COOKIE_GOOGLE_OAUTH_STATE
 from .app_logging import get_logger
 from .exceptions import JobNotFoundError
 from core.drive_utils import extract_folder_id_from_input
+from core.youtube_api import fetch_video_metadata, YouTubeAPIError
 from .deps import (
     ensure_db,
     ensure_services,
@@ -69,6 +78,20 @@ router = APIRouter()
 def _parse_job_progress_model(progress_str: str) -> JobProgress:
     data = parse_job_progress(progress_str) or {}
     return JobProgress(**data)
+
+
+def _summarize_google_tokens(rows: list[dict]) -> dict:
+    summary: dict[str, dict] = {}
+    for row in rows:
+        integration = row.get("integration")
+        if not integration:
+            continue
+        summary[integration] = {
+            "expiry": row.get("expiry"),
+            "scopes": parse_google_scope_list(row.get("scopes")),
+            "updated_at": row.get("updated_at"),
+        }
+    return summary
 
 
 def _parse_db_datetime(value):
@@ -211,6 +234,29 @@ async def start_ingest_youtube_job(db, queue, user_id: str, url: str) -> JobStat
     video_id = parse_youtube_video_id(clean_url)
     if not video_id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid YouTube URL")
+    try:
+        youtube_service = await build_youtube_service_for_user(db, user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    try:
+        metadata_bundle = await asyncio.to_thread(fetch_video_metadata, youtube_service, video_id)
+    except YouTubeAPIError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    youtube_meta = metadata_bundle.get("metadata") or {}
+    frontmatter = metadata_bundle.get("frontmatter") or {}
+    frontmatter.setdefault("source", "youtube")
+    if "slug" not in frontmatter:
+        frontmatter["slug"] = f"yt-{video_id}"
+    youtube_meta["url"] = clean_url
+    doc_meta = {
+        "url": clean_url,
+        "source": "youtube",
+        "youtube": youtube_meta,
+        "title": frontmatter.get("title"),
+        "duration_seconds": youtube_meta.get("duration_seconds"),
+    }
+
     job_id = str(uuid.uuid4())
     document_id = str(uuid.uuid4())
     await create_document(
@@ -220,9 +266,23 @@ async def start_ingest_youtube_job(db, queue, user_id: str, url: str) -> JobStat
         source_type="youtube",
         source_ref=video_id,
         raw_text=None,
-        metadata={"url": clean_url},
+        metadata=doc_meta,
+        frontmatter=frontmatter,
+        content_format="youtube",
     )
-    job_row = await create_job_extended(db, job_id, user_id, job_type=JobType.INGEST_YOUTUBE.value, document_id=document_id)
+    job_row = await create_job_extended(
+        db,
+        job_id,
+        user_id,
+        job_type=JobType.INGEST_YOUTUBE.value,
+        document_id=document_id,
+        payload={
+            "youtube_video_id": video_id,
+            "metadata": youtube_meta,
+            "frontmatter": frontmatter,
+            "duration_s": youtube_meta.get("duration_seconds"),
+        },
+    )
     payload = {
         "job_id": job_id,
         "user_id": user_id,
@@ -268,7 +328,14 @@ async def start_ingest_text_job(db, queue, user_id: str, text: str, title: Optio
         raw_text=clean_text,
         metadata=metadata,
     )
-    job_row = await create_job_extended(db, job_id, user_id, job_type=JobType.INGEST_TEXT.value, document_id=document_id)
+    job_row = await create_job_extended(
+        db,
+        job_id,
+        user_id,
+        job_type=JobType.INGEST_TEXT.value,
+        document_id=document_id,
+        payload={"title": title},
+    )
     payload = {"job_id": job_id, "user_id": user_id, "job_type": JobType.INGEST_TEXT.value, "document_id": document_id}
     enqueued, enqueue_exception, should_fail = await enqueue_job_with_guard(queue, job_id, user_id, payload, allow_inline_fallback=False)
     if should_fail:
@@ -310,14 +377,19 @@ async def github_link_status(user: dict = Depends(get_current_user)):
 
 
 @router.get("/auth/google/start", tags=["Authentication"])
-async def google_auth_start(request: Request):
+async def google_auth_start(
+    request: Request,
+    integration: str = Query("drive", description="Google integration to connect (drive, youtube, gmail)"),
+    redirect: Optional[str] = Query(None, description="Optional path to redirect after linking"),
+):
     try:
+        integration_key = normalize_google_integration(integration)
         if settings.base_url:
             redirect_uri = f"{settings.base_url.rstrip('/')}/auth/google/callback"
         else:
             redirect_uri = str(request.url.replace(path="/auth/google/callback", query=""))
         state = secrets.token_urlsafe(16)
-        auth_url = get_google_oauth_url(state, redirect_uri)
+        auth_url = get_google_oauth_url(state, redirect_uri, integration=integration_key)
 
         is_secure = settings.environment == "production" or request.url.scheme == "https"
         response = RedirectResponse(url=auth_url)
@@ -333,6 +405,27 @@ async def google_auth_start(request: Request):
         response.set_cookie(
             key="google_redirect_uri",
             value=redirect_uri,
+            httponly=True,
+            secure=is_secure,
+            samesite="lax",
+            max_age=600,
+            path="/",
+        )
+        response.set_cookie(
+            key="google_integration",
+            value=integration_key,
+            httponly=True,
+            secure=is_secure,
+            samesite="lax",
+            max_age=600,
+            path="/",
+        )
+        redirect_path = redirect or f"/dashboard/integrations/{integration_key}"
+        if not redirect_path.startswith("/"):
+            redirect_path = f"/dashboard/integrations/{integration_key}"
+        response.set_cookie(
+            key="google_redirect_next",
+            value=redirect_path,
             httponly=True,
             secure=is_secure,
             samesite="lax",
@@ -355,13 +448,23 @@ async def google_auth_callback(code: str, state: str, request: Request, user: di
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid state parameter - possible CSRF attack")
 
     redirect_uri = request.cookies.get("google_redirect_uri") or str(request.url.replace(query=""))
+    integration_cookie = request.cookies.get("google_integration")
+    try:
+        integration_key = normalize_google_integration(integration_cookie)
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing or invalid Google integration selection")
 
     try:
-        await exchange_google_code(db, user["user_id"], code, redirect_uri)
+        await exchange_google_code(db, user["user_id"], code, redirect_uri, integration=integration_key)
         is_secure = settings.environment == "production" or request.url.scheme == "https"
-        response = RedirectResponse(url="/dashboard", status_code=status.HTTP_302_FOUND)
+        next_path = request.cookies.get("google_redirect_next") or f"/dashboard/integrations/{integration_key}"
+        if not next_path.startswith("/"):
+            next_path = f"/dashboard/integrations/{integration_key}"
+        response = RedirectResponse(url=next_path, status_code=status.HTTP_302_FOUND)
         response.delete_cookie(key=COOKIE_GOOGLE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
         response.delete_cookie(key="google_redirect_uri", path="/", samesite="lax", httponly=True, secure=is_secure)
+        response.delete_cookie(key="google_integration", path="/", samesite="lax", httponly=True, secure=is_secure)
+        response.delete_cookie(key="google_redirect_next", path="/", samesite="lax", httponly=True, secure=is_secure)
         return response
     except Exception:
         logger.error("Google callback failed", exc_info=True)
@@ -371,10 +474,12 @@ async def google_auth_callback(code: str, state: str, request: Request, user: di
 @router.get("/auth/google/status", tags=["Authentication"])
 async def google_link_status(user: dict = Depends(get_current_user)):
     db = ensure_db()
-    tokens = await get_google_tokens(db, user["user_id"])  # type: ignore
-    if not tokens:
-        return {"linked": False}
-    return {"linked": True, "expiry": tokens.get("expiry"), "scopes": tokens.get("scopes")}
+    rows = await list_google_tokens(db, user["user_id"])  # type: ignore
+    summary = _summarize_google_tokens(rows)
+    return {
+        "linked": bool(summary),
+        "integrations": summary,
+    }
 
 
 @router.get("/auth/providers/status", tags=["Authentication"])
@@ -385,15 +490,14 @@ async def providers_status(user: dict = Depends(get_current_user)):
     if not github_linked:
         stored = await get_user_by_id(db, user["user_id"])  # type: ignore
         github_linked = bool(stored and stored.get("github_id"))
-    tokens = await get_google_tokens(db, user["user_id"])  # type: ignore
-    google_linked = bool(tokens)
+    rows = await list_google_tokens(db, user["user_id"])  # type: ignore
+    summary = _summarize_google_tokens(rows)
     return {
         "github_linked": github_linked,
-        "google_linked": google_linked,
+        "google_linked": bool(summary),
         "github_expiry": None,
         "github_scopes": None,
-        "google_expiry": tokens.get("expiry") if tokens else None,
-        "google_scopes": tokens.get("scopes") if tokens else None,
+        "google_integrations": summary,
     }
 
 
@@ -538,6 +642,7 @@ async def start_optimize_job(
         job_type=JobType.OPTIMIZE_DRIVE.value,
         document_id=document_id,
         extensions=request.extensions or [],
+        payload=request.model_dump(),
     )
     payload = {
         "job_id": job_id,
@@ -594,6 +699,7 @@ async def start_generate_blog_job(
         user_id,
         job_type=JobType.GENERATE_BLOG.value,
         document_id=document_id,
+        payload={"options": req.options.model_dump()},
     )
     payload = {
         "job_id": job_id,

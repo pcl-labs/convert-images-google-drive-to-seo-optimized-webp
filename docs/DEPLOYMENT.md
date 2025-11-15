@@ -1,112 +1,5 @@
 # Deployment Guide for Cloudflare Workers
 
-This guide covers deploying the production-ready FastAPI application to Cloudflare Workers.
-
-## Prerequisites
-
-1. Cloudflare account with Workers enabled
-2. Wrangler CLI installed: `npm install -g wrangler`
-3. GitHub OAuth app created (for authentication)
-
-## Manual Setup Steps (User Action Required)
-
-These steps require manual interaction and cannot be automated:
-
-### 1. Authenticate with Cloudflare
-
-```bash
-wrangler login
-```
-
-This command opens a browser window where you must log in to your Cloudflare account. The CLI cannot automate this authentication step.
-
-### 2. Create API Token
-
-API tokens cannot be created via the CLI and must be created in the Cloudflare Dashboard:
-
-1. Navigate to: https://dash.cloudflare.com/profile/api-tokens
-2. Click "Create Token"
-3. Use "Edit Cloudflare Workers" template or create a custom token with these permissions:
-   - **Account > Workers Scripts: Edit** (for deploying workers)
-   - **Account > Queues: Edit** (required for queue operations)
-   - **Account > D1: Edit** (for database operations)
-   - **Account > Account Settings: Read** (optional, for account info)
-   - **User > User Details: Read** (optional, for user info)
-4. Select your account in "Account Resources"
-5. Copy the token value immediately (it's only shown once)
-6. Save it securely - you'll need it for the `CF_API_TOKEN` environment variable
-
-**Important**: The token value is only displayed once. If you lose it, you'll need to create a new token.
-
-### 3. Get Account ID
-
-After logging in, retrieve your account ID:
-
-```bash
-wrangler whoami
-```
-
-This outputs your account ID, which you'll need for the `CF_ACCOUNT_ID` environment variable.
-
-Alternatively, you can find your account ID in the Cloudflare dashboard URL when viewing any resource: `https://dash.cloudflare.com/{account_id}/...`
-
-## Automated Setup Steps
-
-These steps can be run via CLI commands:
-
-### 1. Create D1 Database
-
-```bash
-# Create the database
-wrangler d1 create quill-db
-```
-
-The output will include the `database_id`. Update `wrangler.toml` with the database_id from the output:
-
-```toml
-[[d1_databases]]
-binding = "DB"
-database_name = "quill-db"
-database_id = "933d76cf-a988-4a71-acc6-d884278c6402"  # Replace with your actual ID
-```
-
-**Note**: The database `quill-db` has already been created for this project with ID `933d76cf-a988-4a71-acc6-d884278c6402`.
-
-### 2. Initialize Database Schema
-
-```bash
-# Run the schema migration
-wrangler d1 execute quill-db --file=migrations/schema.sql
-```
-
-### 3. Create Queues
-
-```bash
-# Create the main queue
-wrangler queues create quill-jobs
-
-# Create the dead letter queue
-wrangler queues create quill-dlq
-```
-
-**Note**: Queue names should match what's configured in your `wrangler.toml` and environment variables.
-
-**Note**: The queues `quill-jobs` and `quill-dlq` have already been created for this project.
-
-### 4. Configure Environment Variables
-
-For local development, create a `.env` file with:
-
-```bash
-# Cloudflare Queue Configuration
-USE_INLINE_QUEUE=true                # Set to false for production
-CF_ACCOUNT_ID=                        # From wrangler whoami
-CF_API_TOKEN=                        # From Cloudflare dashboard (step 2 above)
-CF_QUEUE_NAME=quill-jobs             # Primary queue name
-CF_QUEUE_DLQ=quill-dlq               # Dead letter queue name
-```
-
-For production (Cloudflare Workers), set `USE_INLINE_QUEUE=false` and ensure the API token has the required permissions.
 
 ### 5. Set Secrets
 
@@ -121,6 +14,10 @@ wrangler secret put JWT_SECRET_KEY
 # Encryption key for Fernet (32-byte base64 URL-safe). Generate with:
 # python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 wrangler secret put ENCRYPTION_KEY
+
+# Google OAuth client (single client with Drive + YouTube scopes)
+wrangler secret put GOOGLE_CLIENT_ID
+wrangler secret put GOOGLE_CLIENT_SECRET
 
 # Optional: Set redirect URI
 wrangler secret put GITHUB_REDIRECT_URI
@@ -153,6 +50,25 @@ curl https://your-worker.your-subdomain.workers.dev/health
 open https://your-worker.your-subdomain.workers.dev/docs
 ```
 
+## Queue Configuration Modes
+
+- Inline (local dev): `USE_INLINE_QUEUE=true` executes jobs via DB polling. No Cloudflare Queue required. Start the consumer locally with `python workers/consumer.py --inline`.
+- Cloudflare Queues (production): `USE_INLINE_QUEUE=false` requires `JOB_QUEUE`/`DLQ` bindings in `wrangler.toml` and secrets `CF_ACCOUNT_ID`, `CF_API_TOKEN`, plus `CF_QUEUE_NAME`/`CF_QUEUE_DLQ`.
+- Validation: In production, inline mode is rejected by `api/config.py` to prevent misconfiguration.
+
+## Queue Verification & Troubleshooting
+
+1. Submit a job (optimize or ingest) via API; observe logs:
+   - `wrangler tail` should show an enqueue log from `api/cloudflare_queue.py`.
+   - Job status should move from `pending` to `processing` shortly after.
+2. Check Cloudflare Dashboard > Workers > Queues:
+   - `quill-jobs` should receive messages; DLQ (`quill-dlq`) should be empty under normal operation.
+3. If jobs remain `pending`:
+   - Confirm `USE_INLINE_QUEUE` is set correctly for the environment.
+   - Verify `wrangler.toml` queue bindings match actual queue names.
+   - Ensure `CF_ACCOUNT_ID`/`CF_API_TOKEN` are set and token has Queues:Edit.
+   - Inspect errors emitted by `CloudflareQueueAPI.send` (status/response body).
+
 ## Environment Variables
 
 ### Cloudflare Workers Secrets (set via `wrangler secret put`)
@@ -166,6 +82,7 @@ These are set as secrets in Cloudflare Workers:
 - `GITHUB_REDIRECT_URI` - OAuth redirect URI (optional, defaults to callback URL)
 - `ENVIRONMENT` - Environment name (optional, defaults to "production")
 - `DEBUG` - Enable debug mode (optional, defaults to "false")
+- `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` - OAuth client used for Drive/YouTube integrations (each integration requests the scopes it needs).
 
 ### Local Development Environment Variables (`.env` file)
 
@@ -178,6 +95,12 @@ For local development with inline queue mode:
 - `CF_QUEUE_DLQ=quill-dlq` - Dead letter queue name
 
 **Note**: When `USE_INLINE_QUEUE=true`, the queue operations run in-memory and don't require Cloudflare Queue API access. Set to `false` for production to use real Cloudflare Queues.
+
+### Google APIs
+
+- Enable both **Google Drive API** and **YouTube Data API v3** on the same Google Cloud project.
+- Configure the OAuth consent screen with the scopes listed in `core/constants.py` (`GOOGLE_INTEGRATION_SCOPES`). Each integration (drive, youtube, gmail) runs its own OAuth flow.
+- Users only link their Google account once; missing scopes cause `/ingest/youtube` to return `400` with a helpful message instead of falling back to unofficial transcript scraping.
 
 ## Local Development
 
@@ -252,4 +175,3 @@ pytest --cov=. tests/
 - [ ] Error logging configured
 - [ ] Rate limiting tested
 - [ ] CORS configured for frontend (if applicable)
-

@@ -1,5 +1,5 @@
 """
-Production-ready FastAPI web application for Google Drive Image Optimizer.
+Production-ready FastAPI web application for Quill.
 """
 
 from fastapi import FastAPI, Request, status
@@ -67,7 +67,8 @@ async def lifespan(app: FastAPI):
     
     # Initialize queue producer
     queue_producer = QueueProducer(queue=settings.queue, dlq=settings.dlq)
-    app_logger.info("Queue producer initialized")
+    queue_mode = "inline" if settings.use_inline_queue else ("workers-binding" if settings.queue else "api")
+    app_logger.info(f"Queue producer initialized (mode: {queue_mode})")
     # Expose to shared deps
     set_queue_producer(queue_producer)
     
@@ -139,8 +140,12 @@ async def lifespan(app: FastAPI):
         # Step 4: Cleanup queue producer
         if queue_producer is not None:
             try:
+                # Close HTTP clients if using Cloudflare Queue API
+                if hasattr(queue_producer, 'close'):
+                    await queue_producer.close()
+                    app_logger.info("Queue producer HTTP clients closed")
                 # Check if the underlying queue object has a close method
-                if hasattr(queue_producer, 'queue') and queue_producer.queue is not None:
+                elif hasattr(queue_producer, 'queue') and queue_producer.queue is not None:
                     queue_obj = queue_producer.queue
                     # Check for common close/stop method names
                     for method_name in ['close', 'stop', 'cleanup', 'shutdown']:

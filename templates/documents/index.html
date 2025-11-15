@@ -17,26 +17,37 @@
           <div class="text-content font-semibold text-sm">Link Drive Folder</div>
           <p class="text-xs text-contentMuted">Requires Google integration</p>
         </div>
-        {% if google_connected %}
+        {% if drive_connected %}
           {% from 'components/elements/badge.html' import badge %}
           {{ badge('Connected', status='completed') }}
         {% else %}
-          <a href="/auth/google/start" class="text-xs text-primary hover:text-primary/80">Connect Google</a>
+          <a href="/auth/google/start?integration=drive&redirect=/dashboard/documents" class="text-xs text-primary hover:text-primary/80">Connect Google</a>
         {% endif %}
       </div>
       <form class="space-y-3" hx-post="/dashboard/documents/drive" hx-target="#documents-table" hx-swap="outerHTML">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-        {{ input('drive_source', label='Drive folder link or ID', placeholder='https://drive.google.com/drive/folders/...', attrs='required' + (' disabled' if not google_connected else '')) }}
-        {{ button('Register Document', variant='primary', attrs='type="submit" class="w-full"' + (' disabled' if not google_connected else '')) }}
+        {{ input('drive_source', label='Drive folder link or ID', placeholder='https://drive.google.com/drive/folders/...', attrs='required' + (' disabled' if not drive_connected else '')) }}
+        {{ button('Register Document', variant='primary', attrs='type="submit" class="w-full"' + (' disabled' if not drive_connected else '')) }}
       </form>
     {% endcall %}
 
     {% call card() %}
-      <div class="text-content font-semibold text-sm mb-3">Ingest YouTube Video</div>
+      <div class="flex items-center justify-between mb-3">
+        <div>
+          <div class="text-content font-semibold text-sm">Ingest YouTube Video</div>
+          <p class="text-xs text-contentMuted">Requires YouTube integration</p>
+        </div>
+        {% if youtube_connected %}
+          {% from 'components/elements/badge.html' import badge %}
+          {{ badge('Connected', status='completed') }}
+        {% else %}
+          <a href="/auth/google/start?integration=youtube&redirect=/dashboard/documents" class="text-xs text-primary hover:text-primary/80">Connect YouTube</a>
+        {% endif %}
+      </div>
       <form class="space-y-3" hx-post="/dashboard/documents/youtube" hx-target="#documents-table" hx-swap="outerHTML">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-        {{ input('youtube_url', label='YouTube URL', type='url', placeholder='https://www.youtube.com/watch?v=...', attrs='required') }}
-        {{ button('Queue Transcript & Chapters', variant='primary', attrs='type="submit" class="w-full"') }}
+        {{ input('youtube_url', label='YouTube URL', type='url', placeholder='https://www.youtube.com/watch?v=...', attrs='required' + (' disabled' if not youtube_connected else '')) }}
+        {{ button('Queue Transcript & Chapters', variant='primary', attrs='type="submit" class="w-full"' + (' disabled' if not youtube_connected else '')) }}
       </form>
     {% endcall %}
 
