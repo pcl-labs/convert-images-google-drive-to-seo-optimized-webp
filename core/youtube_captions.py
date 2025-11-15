@@ -11,7 +11,7 @@ class YouTubeCaptionsError(Exception):
 
 def _select_caption_track(items: List[Dict[str, Any]], langs: List[str]) -> Optional[Dict[str, Any]]:
     # Normalize langs like ["en", "en-US"] preference
-    prefs = [l.strip().lower() for l in (langs or ["en"]) if isinstance(l, str) and l.strip()]
+    prefs = [lang.strip().lower() for lang in (langs or ["en"]) if isinstance(lang, str) and lang.strip()]
     # Prefer exact languageCode, then try primary language match (e.g., 'en' matches 'en-US')
     def score(item: Dict[str, Any]) -> int:
         snippet = item.get("snippet", {})

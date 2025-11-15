@@ -199,6 +199,37 @@ def parse_google_scope_list(raw_scopes: Optional[object]) -> List[str]:
     return normalized
 
 
+async def _refresh_and_update_token(
+    db: Database,
+    user_id: str,
+    integration_key: str,
+    creds: Credentials,
+    stored_scopes: List[str],
+):
+    """Refresh credentials and update stored token.
+
+    If scopes changed after refresh, perform full upsert (access/refresh/expiry/scopes).
+    Otherwise, only update access token and expiry to avoid duplicate writes.
+    Exceptions during refresh are logged and re-raised to surface credential failures.
+    """
+    await asyncio.to_thread(creds.refresh, Request())
+    refreshed_scopes = creds.scopes or []
+    expiry_iso = creds.expiry.astimezone(timezone.utc).isoformat().replace("+00:00", "Z") if creds.expiry else None
+    if refreshed_scopes != stored_scopes:
+        await upsert_google_token(
+            db,
+            user_id=user_id,
+            integration=integration_key,
+            access_token=creds.token,
+            refresh_token=creds.refresh_token,
+            expiry=expiry_iso,
+            token_type="Bearer",
+            scopes=" ".join(refreshed_scopes),
+        )
+    else:
+        await update_google_token_expiry(db, user_id, integration_key, creds.token, expiry_iso)
+
+
 async def _build_google_service_for_user(
     db: Database,
     user_id: str,
@@ -232,34 +263,12 @@ async def _build_google_service_for_user(
 
     if not creds.valid:
         if creds.expired and creds.refresh_token:
-            did_upsert = False
             try:
-                await asyncio.to_thread(creds.refresh, Request())
-                # After refresh, update stored scopes if they changed (Google may grant additional scopes)
-                refreshed_scopes = creds.scopes or []
-                if refreshed_scopes != scopes:
-                    scopes_str = " ".join(refreshed_scopes)
-                    await upsert_google_token(
-                        db,
-                        user_id=user_id,
-                        integration=integration_key,
-                        access_token=creds.token,
-                        refresh_token=creds.refresh_token,
-                        expiry=creds.expiry.astimezone(timezone.utc).isoformat().replace("+00:00", "Z") if creds.expiry else None,
-                        token_type="Bearer",
-                        scopes=scopes_str,
-                    )
-                    did_upsert = True
+                await _refresh_and_update_token(db, user_id, integration_key, creds, scopes)
             except Exception as e:
                 # Log refresh error and re-raise to surface credential failures to the caller
                 logger.warning(f"Token refresh had issues (may be scope-related): {e}")
                 raise
-            # Only update expiry/access when scopes are unchanged; upsert already handled the update otherwise
-            if not did_upsert:
-                expiry_iso = None
-                if creds.expiry:
-                    expiry_iso = creds.expiry.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
-                await update_google_token_expiry(db, user_id, integration_key, creds.token, expiry_iso)
         else:
             raise ValueError("Google credentials invalid and no refresh token available")
 
