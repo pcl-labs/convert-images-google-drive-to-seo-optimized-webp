@@ -39,8 +39,8 @@ module.exports = {
         lg: 'var(--shadow-lg)'
       },
       fontFamily: {
-        sans: 'var(--font-sans)',
-        mono: 'var(--font-mono)'
+        sans: ['var(--font-sans)', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+        mono: ['var(--font-mono)', 'ui-monospace', 'monospace']
       }
     }
   },

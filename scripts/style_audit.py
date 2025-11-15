@@ -287,38 +287,195 @@ def analyze():
         if k not in ARBITRARY_ALLOWLIST:
             arbitrary_disallowed[k] = v
 
-    # Button uniformity check: find all button macro invocations and check variant usage
+    # Button uniformity check: robustly find all button macro invocations and check variant usage
     button_usage = defaultdict(lambda: Counter())  # file -> Counter(variants)
     button_invocations_no_variant = []  # files with button() calls without explicit variant
-    # Find button macro calls - they can span multiple lines
-    button_call_pattern = re.compile(r"\{\{\s*button\s*\([^}]*\}\}", re.MULTILINE | re.DOTALL)
+    button_call_ranges = defaultdict(list)  # file -> list of (start_line, end_line)
+
+    def _split_top_level_args(s: str):
+        args = []
+        buf = []
+        in_sq = in_dq = False
+        esc = False
+        depth = 0
+        for ch in s:
+            if esc:
+                buf.append(ch)
+                esc = False
+                continue
+            if ch == '\\':
+                esc = True
+                buf.append(ch)
+                continue
+            if not in_dq and ch == "'":
+                in_sq = not in_sq
+                buf.append(ch)
+                continue
+            if not in_sq and ch == '"':
+                in_dq = not in_dq
+                buf.append(ch)
+                continue
+            if in_sq or in_dq:
+                buf.append(ch)
+                continue
+            if ch == '(':
+                depth += 1
+                buf.append(ch)
+                continue
+            if ch == ')':
+                depth = max(0, depth - 1)
+                buf.append(ch)
+                continue
+            if ch == ',' and depth == 0:
+                args.append(''.join(buf).strip())
+                buf = []
+                continue
+            buf.append(ch)
+        if buf:
+            args.append(''.join(buf).strip())
+        return args
+
     for path in iter_files():
         try:
             content = path.read_text(encoding="utf-8")
         except Exception:
             continue
         rel = str(path.relative_to(ROOT))
-        # Find all button macro calls (handles multiline)
-        for match in button_call_pattern.finditer(content):
-            call_text = match.group(0)
-            # Check for variant parameter (named or positional)
-            variant_match = re.search(r"variant\s*=\s*['\"]([^'\"]+)['\"]", call_text)
-            if variant_match:
-                variant = variant_match.group(1)
-                button_usage[rel][variant] += 1
-            elif re.search(r"button\s*\([^,)]+,\s*['\"](primary|secondary|destructive|ghost)['\"]", call_text):
-                # Positional variant (second argument)
-                pos_match = re.search(r"['\"](primary|secondary|destructive|ghost)['\"]", call_text)
-                if pos_match:
-                    button_usage[rel][pos_match.group(1)] += 1
-            else:
-                # Button call without explicit variant (uses default 'primary')
-                snippet = call_text.replace('\n', ' ').strip()[:120]
-                button_invocations_no_variant.append((rel, snippet))
+
+        # Precompute line start indices for mapping char index -> line number
+        lines = content.splitlines(keepends=True)
+        line_starts = []
+        acc = 0
+        for ln in lines:
+            line_starts.append(acc)
+            acc += len(ln)
+        def idx_to_line(idx: int) -> int:
+            # binary search
+            lo, hi = 0, len(line_starts) - 1
+            ans = 0
+            while lo <= hi:
+                mid = (lo + hi) // 2
+                if line_starts[mid] <= idx:
+                    ans = mid
+                    lo = mid + 1
+                else:
+                    hi = mid - 1
+            return ans + 1  # 1-based
+
+        i = 0
+        n = len(content)
+        while i < n - 1:
+            if content[i] == '{' and content[i+1] == '{':
+                j = i + 2
+                # skip whitespace
+                while j < n and content[j].isspace():
+                    j += 1
+                # check macro name
+                if content[j:j+6] == 'button':
+                    k = j + 6
+                    while k < n and content[k].isspace():
+                        k += 1
+                    if k < n and content[k] == '(':
+                        # scan until matching '}}' with balanced parens
+                        in_sq = in_dq = False
+                        esc = False
+                        depth = 0
+                        end = k
+                        while end < n:
+                            ch = content[end]
+                            if esc:
+                                esc = False
+                                end += 1
+                                continue
+                            if ch == '\\':
+                                esc = True
+                                end += 1
+                                continue
+                            if not in_dq and ch == "'":
+                                in_sq = not in_sq
+                                end += 1
+                                continue
+                            if not in_sq and ch == '"':
+                                in_dq = not in_dq
+                                end += 1
+                                continue
+                            if not (in_sq or in_dq):
+                                if ch == '(':
+                                    depth += 1
+                                elif ch == ')':
+                                    depth = max(0, depth - 1)
+                                # detect end of jinja expr only at depth 0
+                                if ch == '}' and end + 1 < n and content[end+1] == '}' and depth == 0:
+                                    end += 2
+                                    break
+                            end += 1
+                        call_text = content[i:end]
+                        # capture range
+                        start_line = idx_to_line(i)
+                        end_line = idx_to_line(end - 1)
+                        button_call_ranges[rel].append((start_line, end_line))
+                        # parse variant
+                        # get args substring inside button(...)
+                        open_paren = content.find('(', k)
+                        close_pos = open_paren + 1
+                        # find matching close paren from open_paren
+                        in_sq = in_dq = False
+                        esc = False
+                        depth = 1
+                        while close_pos < n:
+                            ch = content[close_pos]
+                            if esc:
+                                esc = False
+                                close_pos += 1
+                                continue
+                            if ch == '\\':
+                                esc = True
+                                close_pos += 1
+                                continue
+                            if not in_dq and ch == "'":
+                                in_sq = not in_sq
+                                close_pos += 1
+                                continue
+                            if not in_sq and ch == '"':
+                                in_dq = not in_dq
+                                close_pos += 1
+                                continue
+                            if not (in_sq or in_dq):
+                                if ch == '(':
+                                    depth += 1
+                                elif ch == ')':
+                                    depth -= 1
+                                    if depth == 0:
+                                        close_pos += 1
+                                        break
+                            close_pos += 1
+                        arg_str = content[open_paren+1:close_pos-1]
+                        # search named variant first
+                        named = re.search(r"variant\s*=\s*['\"]([^'\"]+)['\"]", arg_str)
+                        if named:
+                            button_usage[rel][named.group(1)] += 1
+                        else:
+                            # split top-level args to check positional
+                            args = _split_top_level_args(arg_str)
+                            if len(args) >= 2:
+                                pos2 = args[1].strip()
+                                m = re.fullmatch(r"['\"](primary|secondary|destructive|ghost)['\"]", pos2)
+                                if m:
+                                    button_usage[rel][m.group(1)] += 1
+                                else:
+                                    snippet = call_text.replace('\n', ' ').strip()[:120]
+                                    button_invocations_no_variant.append((rel, snippet))
+                            else:
+                                snippet = call_text.replace('\n', ' ').strip()[:120]
+                                button_invocations_no_variant.append((rel, snippet))
+                        i = end
+                        continue
+                # not a button call
+            i += 1
 
     # Check for raw button elements that should use the macro
     raw_buttons = []  # (file, line_number, snippet)
-    button_tag_re = re.compile(r"<button[^>]*>")
+    button_tag_re = re.compile(r"<\s*button[^>]*>", re.IGNORECASE)
     for path in iter_files():
         try:
             content = path.read_text(encoding="utf-8")
@@ -327,10 +484,20 @@ def analyze():
             continue
         rel = str(path.relative_to(ROOT))
         for i, line in enumerate(lines, 1):
+            # skip any line that falls within a captured button macro range
+            in_macro = False
+            for (sln, eln) in button_call_ranges.get(rel, []):
+                if sln <= i <= eln:
+                    in_macro = True
+                    break
+            if in_macro:
+                continue
             if button_tag_re.search(line) and "{{ button(" not in line:
-                # Check if it's not a hidden input or other non-button element
-                if '<button' in line.lower() and 'type="hidden"' not in line.lower():
-                    raw_buttons.append((rel, i, line.strip()[:120]))
+                lower = line.lower()
+                # Ignore lines that are actually hidden inputs (not buttons)
+                if '<input' in lower and 'type="hidden"' in lower:
+                    continue
+                raw_buttons.append((rel, i, line.strip()[:120]))
 
     return {
         "components": component_index,
@@ -681,6 +848,10 @@ def main():
                 }
                 for f, s in report.get("per_file_summary", {}).items()
             },
+            # Include button-related data for tools/LLMs
+            "button_usage": report.get("button_usage", {}),
+            "button_invocations_no_variant": report.get("button_invocations_no_variant", []),
+            "raw_buttons": report.get("raw_buttons", []),
         }
         return data
 
