@@ -2,14 +2,12 @@
 {% set page_title = 'Documents' %}
 {% from 'components/elements/input.html' import input %}
 {% from 'components/elements/button.html' import button %}
+{% from 'components/layout/page.html' import page_container, page_header %}
 {% block content %}
-<div class="p-4 md:p-6 space-y-6">
-  <div class="space-y-1">
-    <h1 class="text-xl font-semibold text-content">Documents</h1>
-    <p class="text-sm text-contentMuted">Register sources and ingest content into document IDs.</p>
-  </div>
+{% call page_container() %}
+  {{ page_header('Documents', 'Register sources and ingest content into document IDs.') }}
 
-  <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+  <div class="grid gap-4 lg:grid-cols-3">
     {% from 'components/elements/card.html' import card %}
     {% call card() %}
       <div class="flex items-center justify-between mb-3">
@@ -56,17 +54,17 @@
       <form class="space-y-3" hx-post="/dashboard/documents/text" hx-target="#documents-table" hx-swap="outerHTML">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
         {{ input('title', label='Title (optional)', placeholder='My interview notes') }}
-      <div class="space-y-1">
-        <label for="text_body" class="text-sm text-contentMuted">Text</label>
-        <textarea id="text_body" name="text_body" rows="5" class="field w-full rounded-lg" placeholder="Paste article, transcript, or outline..." required></textarea>
-      </div>
-      {{ button('Create Document', variant='primary', attrs='type="submit" class="w-full"') }}
-    </form>
-  {% endcall %}
+        <div class="space-y-1">
+          <label for="text_body" class="text-sm text-contentMuted">Text</label>
+          <textarea id="text_body" name="text_body" rows="5" class="field w-full rounded-lg" placeholder="Paste article, transcript, or outline..." required></textarea>
+        </div>
+        {{ button('Create Document', variant='primary', attrs='type="submit" class="w-full"') }}
+      </form>
+    {% endcall %}
   </div>
 
   {% call card(title='All Documents', actions='<p class="text-xs text-contentMuted">' ~ total_documents ~ ' total</p><p class="text-xs text-contentMuted">Use Document IDs when scheduling optimization or blog generation jobs.</p>') %}
     {% include "documents/partials/list.html" %}
   {% endcall %}
-</div>
+{% endcall %}
 {% endblock %}

@@ -1,53 +1,59 @@
 {% extends "base.html" %}
 {% set page_title = 'Job ' ~ (job.id or job.job_id) %}
+{% from 'components/layout/page.html' import page_container, page_header %}
 {% block content %}
-<div class="p-4 md:p-6 space-y-6">
-  <div class="flex items-center justify-between">
-    <div>
-      <h1 class="text-xl font-semibold text-content">Job {{ job.id or job.job_id }}</h1>
-      <div class="mt-1 text-sm text-contentMuted">Created {{ job.created_at }}</div>
+{% call page_container() %}
+  {% from 'components/elements/button.html' import button %}
+  {% set header_actions %}
+    <div class="flex w-full flex-col gap-2 sm:flex-row sm:justify-end">
+      <form hx-post="/dashboard/jobs/{{ job.id or job.job_id }}/retry" hx-headers='{"X-CSRF-Token":"{{ csrf_token }}"}' hx-swap="none" hx-on:htmx:afterOnLoad="window.dispatchEvent(new CustomEvent('toast',{detail:{type:'success',text:'Job retried'}}))">{{ button('Retry','secondary', extra_classes='w-full sm:w-auto') }}</form>
+      <form hx-delete="/dashboard/jobs/{{ job.id or job.job_id }}" hx-headers='{"X-CSRF-Token":"{{ csrf_token }}"}' hx-swap="none" hx-on:htmx:afterOnLoad="window.dispatchEvent(new CustomEvent('toast',{detail:{type:'success',text:'Job cancelled'}}))">{{ button('Cancel','destructive', extra_classes='w-full sm:w-auto') }}</form>
     </div>
-    <div class="flex items-center gap-2">
-      {% from 'components/elements/button.html' import button %}
-      <form hx-post="/dashboard/jobs/{{ job.id or job.job_id }}/retry" hx-headers='{"X-CSRF-Token":"{{ csrf_token }}"}' hx-swap="none" hx-on:htmx:afterOnLoad="window.dispatchEvent(new CustomEvent('toast',{detail:{type:'success',text:'Job retried'}}))">{{ button('Retry','secondary') }}</form>
-      <form hx-delete="/dashboard/jobs/{{ job.id or job.job_id }}" hx-headers='{"X-CSRF-Token":"{{ csrf_token }}"}' hx-swap="none" hx-on:htmx:afterOnLoad="window.dispatchEvent(new CustomEvent('toast',{detail:{type:'success',text:'Job cancelled'}}))">{{ button('Cancel','destructive') }}</form>
-    </div>
-  </div>
+  {% endset %}
+  {{ page_header('Job ' ~ (job.id or job.job_id), 'Created ' ~ (job.created_at or 'unknown'), actions=header_actions) }}
 
-  <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-    {% from 'components/elements/card.html' import card %}
-    {% from 'components/elements/badge.html' import badge %}
-    {% call card(title='Metadata', actions='<div>' + badge(job.status_label or job.status, status=job.status) + '</div>') %}
-      <div class="space-y-2 text-content">
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
-          <div><span class="text-contentMuted text-sm">Type</span><div class="font-medium">{{ job.kind or job.type }}</div></div>
-          <div><span class="text-contentMuted text-sm">Document</span><div class="font-medium break-all">{{ job.document_id or '-' }}</div></div>
-          <div><span class="text-contentMuted text-sm">Owner</span><div class="font-medium">{{ job.user or '-' }}</div></div>
-          <div><span class="text-contentMuted text-sm">Updated</span><div class="font-medium">{{ job.updated_at or '-' }}</div></div>
-        </div>
-        {% if job.error %}
-          {% from 'components/elements/alert.html' import alert %}
-          <div class="mt-3">{{ alert('error', job.error) }}</div>
-        {% endif %}
+  {% from 'components/elements/card.html' import card %}
+  {% from 'components/elements/badge.html' import badge %}
+  {% call card(title='Metadata', actions='<div>' + badge(job.status_label or job.status, status=job.status) + '</div>') %}
+    <dl class="grid gap-3 sm:grid-cols-2">
+      <div class="space-y-1">
+        <dt class="text-xs uppercase tracking-wide text-contentMuted">Type</dt>
+        <dd class="text-sm text-content">{{ job.kind or job.type }}</dd>
       </div>
-    {% endcall %}
+      <div class="space-y-1">
+        <dt class="text-xs uppercase tracking-wide text-contentMuted">Document</dt>
+        <dd class="font-mono text-sm text-content break-words">{{ job.document_id or '-' }}</dd>
+      </div>
+      <div class="space-y-1">
+        <dt class="text-xs uppercase tracking-wide text-contentMuted">Owner</dt>
+        <dd class="text-sm text-content">{{ job.user or '-' }}</dd>
+      </div>
+      <div class="space-y-1">
+        <dt class="text-xs uppercase tracking-wide text-contentMuted">Updated</dt>
+        <dd class="text-sm text-content">{{ job.updated_at or '-' }}</dd>
+      </div>
+    </dl>
+    {% if job.error %}
+      {% from 'components/elements/alert.html' import alert %}
+      <div class="mt-4">{{ alert('error', job.error) }}</div>
+    {% endif %}
+  {% endcall %}
 
-    {% call card(title='Status Timeline') %}
-      <ol class="space-y-3 text-sm">
-        {% for e in job.events or [] %}
-          <li class="flex items-start gap-2">
-            <div class="h-2 w-2 mt-1.5 rounded-full bg-primary"></div>
-            <div>
-              <div class="text-content">{{ e.message }}</div>
-              <div class="text-contentMuted text-xs">{{ e.ts }}</div>
-            </div>
-          </li>
-        {% else %}
-          <li class="text-contentMuted">No events yet</li>
-        {% endfor %}
-      </ol>
-    {% endcall %}
-  </div>
+  {% call card(title='Status Timeline') %}
+    <ol class="space-y-3 text-sm">
+      {% for e in job.events or [] %}
+        <li class="flex items-start gap-2">
+          <div class="h-2 w-2 mt-1.5 rounded-full bg-primary"></div>
+          <div>
+            <div class="text-content">{{ e.message }}</div>
+            <div class="text-contentMuted text-xs">{{ e.ts }}</div>
+          </div>
+        </li>
+      {% else %}
+        <li class="text-contentMuted">No events yet</li>
+      {% endfor %}
+    </ol>
+  {% endcall %}
 
   {% call card(title='Output') %}
     <div id="job-status"
@@ -80,8 +86,8 @@
     {% endif %}
   {% endcall %}
 
-  <div>
-    <a href="/dashboard/jobs" class="text-primary hover:text-primary/80">Back to Jobs</a>
+  <div class="flex justify-start">
+    <a href="/dashboard/jobs" class="text-sm text-primary hover:text-primary/80">&larr; Back to Jobs</a>
   </div>
-</div>
+{% endcall %}
 {% endblock %}

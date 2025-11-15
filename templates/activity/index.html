@@ -1,11 +1,9 @@
 {% extends "base.html" %}
 {% set page_title = 'Activity' %}
+{% from 'components/layout/page.html' import page_container, page_header %}
 {% block content %}
-<div class="p-4 md:p-6 space-y-6">
-  <div class="space-y-1">
-    <h1 class="text-xl font-semibold text-content">Activity</h1>
-    <p class="text-sm text-contentMuted">Recent notifications</p>
-  </div>
+{% call page_container() %}
+  {{ page_header('Activity', 'Recent notifications') }}
 
   <div class="space-y-2">
     {% from 'components/elements/alert.html' import alert %}
@@ -13,11 +11,9 @@
     {% if notifications and notifications|length > 0 %}
       {% for n in notifications %}
         {% set level = n.level or 'info' %}
-        <div class="flex items-start justify-between gap-3">
-          <div class="flex-1">
-            {{ alert('success' if level=='success' else ('error' if level=='error' else 'info'), n.text) }}
-          </div>
-          <div class="flex items-center gap-2">
+        <div class="space-y-3 surface rounded-lg p-4">
+          {{ alert('success' if level=='success' else ('error' if level=='error' else 'info'), n.text) }}
+          <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-end">
             {{ button('Seen', variant='ghost', attrs='hx-post="/api/notifications/' ~ n.id ~ '/seen" hx-headers=\'{"X-CSRF-Token":"{{ csrf_token }}"}\' hx-swap="none" hx-on:htmx:afterOnLoad="window.dispatchEvent(new CustomEvent(\'toast\',{detail:{type:\'info\',text:\'Marked seen\'}}))"', with_spinner=True) }}
             {{ button('Dismiss', variant='ghost', attrs='hx-post="/api/notifications/' ~ n.id ~ '/dismiss" hx-headers=\'{"X-CSRF-Token":"{{ csrf_token }}"}\' hx-swap="none" hx-on:htmx:afterOnLoad="window.dispatchEvent(new CustomEvent(\'toast\',{detail:{type:\'info\',text:\'Dismissed\'}}))"', with_spinner=True) }}
           </div>
@@ -27,5 +23,5 @@
       <div class="text-contentMuted text-sm">No notifications yet.</div>
     {% endif %}
   </div>
-</div>
+{% endcall %}
 {% endblock %}

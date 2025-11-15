@@ -1,40 +1,38 @@
 {% extends "base.html" %}
 {% set page_title = 'Account' %}
+{% from 'components/layout/page.html' import page_container, page_header %}
 {% block content %}
-<div class="p-4 md:p-6 space-y-6">
-  <div class="space-y-1">
-    <h1 class="text-xl font-semibold text-content">Account</h1>
-    <p class="text-sm text-contentMuted">Your profile information</p>
-  </div>
+{% call page_container() %}
+  {{ page_header('Account', 'Your profile information') }}
 
   {% from 'components/elements/card.html' import card %}
   {% call card(title='Profile') %}
-    <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-content">
-      <div>
-        <div class="text-contentMuted text-sm">User ID</div>
-        <div class="font-mono break-all">{{ user.user_id }}</div>
+    <dl class="space-y-3 text-sm text-content">
+      <div class="flex flex-col">
+        <dt class="text-xs font-semibold uppercase tracking-wide text-contentMuted">User ID</dt>
+        <dd class="font-mono break-all text-content">{{ user.user_id }}</dd>
       </div>
-      <div>
-        <div class="text-contentMuted text-sm">GitHub ID</div>
-        <div class="font-mono break-all">{{ user.github_id or '-' }}</div>
+      <div class="flex flex-col">
+        <dt class="text-xs font-semibold uppercase tracking-wide text-contentMuted">GitHub ID</dt>
+        <dd class="font-mono break-all text-content">{{ user.github_id or '-' }}</dd>
       </div>
-      <div>
-        <div class="text-contentMuted text-sm">Email</div>
-        <div class="font-mono break-all">{{ user.email or '-' }}</div>
+      <div class="flex flex-col">
+        <dt class="text-xs font-semibold uppercase tracking-wide text-contentMuted">Email</dt>
+        <dd class="font-mono break-all text-content">{{ user.email or '-' }}</dd>
       </div>
-      <div>
-        <div class="text-contentMuted text-sm">Created</div>
-        <div>{{ user.created_at or '-' }}</div>
+      <div class="flex flex-col">
+        <dt class="text-xs font-semibold uppercase tracking-wide text-contentMuted">Created</dt>
+        <dd>{{ user.created_at or '-' }}</dd>
       </div>
-    </div>
+    </dl>
   {% endcall %}
 
-  <div class="flex justify-end">
+  <div class="flex flex-col items-stretch gap-2 md:flex-row md:justify-end">
     <form method="post" action="/auth/logout">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
       {% from 'components/elements/button.html' import button %}
       {{ button('Log out', variant='secondary', attrs='type="submit"', extra_classes='inline-flex items-center gap-2') }}
     </form>
   </div>
-</div>
+{% endcall %}
 {% endblock %}
