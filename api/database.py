@@ -161,27 +161,7 @@ class Database:
                 """
             )
             cur.execute("CREATE INDEX IF NOT EXISTS idx_document_exports_document ON document_exports(document_id, created_at DESC)")
-            # Triggers for document_exports status and updated_at maintenance
-            cur.execute(
-                """
-                CREATE TRIGGER IF NOT EXISTS check_document_export_status 
-                BEFORE INSERT ON document_exports
-                WHEN NEW.status NOT IN ('queued','pending','processing','completed','failed','cancelled')
-                BEGIN
-                    SELECT RAISE(ABORT, 'Invalid status value for document_exports.');
-                END;
-                """
-            )
-            cur.execute(
-                """
-                CREATE TRIGGER IF NOT EXISTS check_document_export_status_update
-                BEFORE UPDATE ON document_exports
-                WHEN NEW.status NOT IN ('queued','pending','processing','completed','failed','cancelled')
-                BEGIN
-                    SELECT RAISE(ABORT, 'Invalid status value for document_exports.');
-                END;
-                """
-            )
+            # Trigger to maintain updated_at on updates
             cur.execute(
                 """
                 CREATE TRIGGER IF NOT EXISTS document_exports_set_updated_at
@@ -192,31 +172,7 @@ class Database:
                 """
             )
 
-            # Triggers to validate documents.latest_version_id refers to existing document_versions
-            cur.execute(
-                """
-                CREATE TRIGGER IF NOT EXISTS documents_check_latest_version_id_insert
-                BEFORE INSERT ON documents
-                WHEN NEW.latest_version_id IS NOT NULL AND NOT EXISTS (
-                    SELECT 1 FROM document_versions dv WHERE dv.version_id = NEW.latest_version_id
-                )
-                BEGIN
-                    SELECT RAISE(ABORT, 'latest_version_id must reference an existing document version');
-                END;
-                """
-            )
-            cur.execute(
-                """
-                CREATE TRIGGER IF NOT EXISTS documents_check_latest_version_id_update
-                BEFORE UPDATE ON documents
-                WHEN NEW.latest_version_id IS NOT NULL AND NOT EXISTS (
-                    SELECT 1 FROM document_versions dv WHERE dv.version_id = NEW.latest_version_id
-                )
-                BEGIN
-                    SELECT RAISE(ABORT, 'latest_version_id must reference an existing document version');
-                END;
-                """
-            )
+            # Rely on FOREIGN KEY (latest_version_id) for referential integrity; no extra triggers needed
             # Idempotent step invocations
             cur.execute(
                 """

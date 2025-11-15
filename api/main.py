@@ -82,6 +82,7 @@ async def lifespan(app: FastAPI):
     
     async def shutdown_cleanup():
         """Perform all shutdown cleanup operations."""
+        global db_instance, queue_producer
         # Step 1: Cancel all SSE connections first (they may be blocking)
         try:
             sse_count = await cancel_all_sse_connections()
