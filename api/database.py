@@ -165,6 +165,7 @@ class Database:
                 """
                 CREATE TRIGGER IF NOT EXISTS document_exports_set_updated_at
                 AFTER UPDATE ON document_exports
+                WHEN NEW.updated_at = OLD.updated_at
                 BEGIN
                     UPDATE document_exports SET updated_at = datetime('now') WHERE export_id = OLD.export_id;
                 END;
