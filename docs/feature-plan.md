@@ -31,7 +31,12 @@ Think in 5 layers:
      * YouTube URLs
    * Normalizes everything into a **Document** model:
 
-     * `document(id, user_id, source_type, source_ref, raw_text, media_refs, transcription_status, ...)`
+     * `document(id, user_id, source_type, source_ref, raw_text, media_refs, transcription_status, content_format, frontmatter, structured_output, ...)`
+     * Store both source payloads (transcripts/raw text) and the **rendered output contract**:
+       * `content_format`: `mdx`, `markdown`, `html`, etc.
+       * `frontmatter`: JSON blob mirroring YAML frontmatter (title, slug, seo, hero image refs).
+       * `structured_output`: normalized JSON (outline, sections, assets) so we can export to any channel later.
+       * `versions`: optional pointer to future `document_versions` table for revision history/export diffs.
 
 2. **Job & Pipeline Orchestration**
 
@@ -152,6 +157,13 @@ Think in 5 layers:
   - Orchestrate: outline → chapters → SEO → compose.
   - Persist to jobs.output (JSON) initially.
   - Add a convenience POST /api/v1/pipelines/generate_blog that invokes the above steps.
+  - Pipeline output contract:
+    - `content_format`: default `mdx`.
+    - `frontmatter`: `{ title, slug, description, tags, hero_image, timestamps }`.
+    - `body.mdx`: the canonical MDX (chapters + AI generated assets).
+    - `body.html`: cached HTML rendering for previews.
+    - `sections`: array with chapter metadata, timestamps for video clips, image prompts, alt text.
+    - `assets`: references to optimized images + transcripts (Drive file IDs, CDN URLs).
 
 - LLM integration and metering
   - Provider config flags (API key, model, timeouts).
@@ -171,3 +183,32 @@ Think in 5 layers:
   - **Cloudflare TODO:** once the dashboard is updated, wire the real Workers Queue + bindings (we're still running locally).
   - **LLM/Training data plan:** decide how to spend Cloudflare Workers AI credits vs. external providers, and persist sanitized document/usage data (e.g., in D1/R2) for future fine-tuning.
   - Idempotency cache retention (future PR): schedule periodic cleanup of `step_invocations` (e.g., delete rows older than 24–48h) to limit storage/PII exposure. Ensure index on `(user_id, request_hash)` for fast duplicate detection. Service layer must sanitize or allowlist `response_body` fields to avoid PII; consider redaction/encryption if needed.
+
+---
+
+## Phase 3.5 — Content Packaging & Export Foundation
+
+- Document output shape
+  - Persist a normalized `document_versions` table: `{document_id, version, content_format, frontmatter_json, mdx_body, html_body, outline_json, assets_manifest, created_at}`.
+  - Each `generate_blog` job writes a new version row (immutability) and updates `documents.latest_version_id`.
+  - Support lightweight diff metadata (e.g., `source_job_id`, `source_step_ids`) for traceability and audit trails.
+
+- Copy/export surfaces
+  - **Copy as MDX**: Dashboard detail view exposes one-click copy of the exact MDX (frontmatter + body) and provides download as `.mdx`.
+  - **Copy as Markdown/HTML**: derived from the same version row, so editors can drop into Notion/GDocs quickly.
+  - **Export targets (queued for future PRs)**:
+    - Google Docs: use Drive API to create/update doc with frontmatter metadata.
+    - Zapier webhook: POST `frontmatter + html` bundle to partner workflows.
+    - WordPress: REST API integration to publish draft posts with featured images + SEO fields.
+    - CMS webhook: generic `POST /api/v1/hooks/export` for user-registered endpoints.
+  - Design export API so each connector consumes the same normalized payload: `frontmatter`, `mdx`, `html`, `assets`.
+  - Include `export_status` + `export_history` tables to track success/failure per target and re-play jobs.
+
+- Editor roadmap alignment
+  - Editor UI should read from `document_versions` and allow toggling between `outline`, `MDX`, and `Rendered` tabs.
+  - Provide “Regenerate section” actions that spawn partial jobs while preserving earlier versions.
+  - Inline asset picker (images/transcript snippets) references the `assets_manifest`.
+
+- Developer ergonomics
+  - Guardrails: strict schema for version payload (Pydantic model) + JSON schema file stored in repo for contract tests.
+  - Tests: assert that generating pipeline produces valid MDX (YAML frontmatter + markdown) and that exports deserialize correctly.

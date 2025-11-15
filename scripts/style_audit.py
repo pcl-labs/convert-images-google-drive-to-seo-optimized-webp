@@ -30,6 +30,7 @@ import os
 import re
 import sys
 import json
+import datetime
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -538,8 +539,8 @@ def main():
                 if allowed:
                     ARBITRARY_ALLOWLIST.clear()
                     ARBITRARY_ALLOWLIST.update(allowed)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"Allowlist load failed for {p}: {e.__class__.__name__}: {e}", file=sys.stderr)
 
     report = analyze()
 
@@ -562,7 +563,7 @@ def main():
                 # We'll aggregate later if drift exists; LLMs can compare
                 pass
         data = {
-            "generated_at": __import__("datetime").datetime.utcnow().isoformat() + "Z",
+            "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
             "root": str(ROOT),
             "path_stats": dict(report.get("path_stats", {})),
             "components": [{"file": f, "macros": ms} for f, ms in report.get("components", [])],
