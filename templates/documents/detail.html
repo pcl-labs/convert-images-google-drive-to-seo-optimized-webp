@@ -1,19 +1,17 @@
 {% extends "base.html" %}
 {% from 'components/elements/input.html' import input %}
 {% from 'components/elements/button.html' import button %}
+{% from 'components/layout/page.html' import page_container, page_header %}
 {% block content %}
-<div class="p-4 md:p-6 space-y-6">
-  <div class="flex items-center justify-between">
-    <div>
-      <p class="text-sm text-contentMuted"><a href="/dashboard/documents" class="text-primary hover:text-primary/80">&larr; Documents</a></p>
-      <h1 class="text-xl font-semibold text-content mt-1 break-all">Document {{ document.id }}</h1>
-      <p class="text-sm text-contentMuted">Source: {{ document.source_label }} • Created {{ document.created_at or 'unknown' }}</p>
+{% call page_container() %}
+  {% set header_actions %}
+    <div class="text-sm text-content break-all">
+      <div class="text-xs uppercase tracking-wide text-contentMuted">Origin</div>
+      <div>{{ document.origin or 'None' }}</div>
     </div>
-    <div class="text-right">
-      <div class="text-xs uppercase text-contentMuted">Origin</div>
-      <div class="text-sm text-content break-all max-w-xs md:max-w-md">{{ document.origin or 'None' }}</div>
-    </div>
-  </div>
+  {% endset %}
+  {{ page_header('Document ' ~ document.id, 'Source: ' ~ document.source_label ~ ' • Created ' ~ (document.created_at or 'unknown'), actions=header_actions) }}
+  <p class="text-sm text-primary"><a href="/dashboard/documents" class="hover:text-primary/80">&larr; Back to Documents</a></p>
 
   <div id="doc-flash" class="space-y-2"></div>
 
@@ -115,53 +113,50 @@
   {% endcall %}
 
   {% call card(title='Versions', actions='') %}
-    <div class="p-0 overflow-x-auto">
-      {% from 'components/data/table.html' import table with context %}
-      {% call table(headers=["Version","Title","Created","Actions"]) %}
-        {% for version in versions %}
-          <tr>
-            <td class="px-3 py-2 md:px-4 md:py-3">v{{ version.version }}</td>
-            <td class="px-3 py-2 md:px-4 md:py-3">{{ version.title or 'Untitled' }}</td>
-            <td class="px-3 py-2 md:px-4 md:py-3 text-contentMuted">{{ version.created_at }}</td>
-            <td class="px-3 py-2 md:px-4 md:py-3 space-x-2">
-              <a class="text-primary text-sm hover:text-primary/80" hx-get="/dashboard/documents/{{ document.id }}/versions/{{ version.version_id }}" hx-target="#version-viewer" hx-swap="outerHTML" href="#">View</a>
-              <a href="/dashboard/documents/{{ document.id }}/versions/{{ version.version_id }}/download?format=mdx" class="text-sm text-contentMuted hover:text-content">MDX</a>
-              <a href="/dashboard/documents/{{ document.id }}/versions/{{ version.version_id }}/download?format=html" class="text-sm text-contentMuted hover:text-content">HTML</a>
-            </td>
-          </tr>
-        {% else %}
-          <tr>
-            <td colspan="4" class="px-4 py-6 text-center text-contentMuted">No versions yet.</td>
-          </tr>
-        {% endfor %}
-      {% endcall %}
+    <div class="space-y-3">
+      {% for version in versions %}
+        <article class="border border-border rounded-lg p-4 space-y-3">
+          <div class="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+            <div>
+              <p class="text-sm font-semibold text-content">v{{ version.version }} &middot; {{ version.title or 'Untitled' }}</p>
+              <p class="text-xs text-contentMuted">{{ version.created_at }}</p>
+            </div>
+            <div class="flex flex-col gap-2 text-sm sm:flex-row sm:items-center">
+              <a class="text-primary hover:text-primary/80" hx-get="/dashboard/documents/{{ document.id }}/versions/{{ version.version_id }}" hx-target="#version-viewer" hx-swap="outerHTML" href="#">View</a>
+              <a href="/dashboard/documents/{{ document.id }}/versions/{{ version.version_id }}/download?format=mdx" class="text-contentMuted hover:text-content">Download MDX</a>
+              <a href="/dashboard/documents/{{ document.id }}/versions/{{ version.version_id }}/download?format=html" class="text-contentMuted hover:text-content">Download HTML</a>
+            </div>
+          </div>
+        </article>
+      {% else %}
+        <div class="rounded-lg border border-border p-6 text-center text-sm text-contentMuted">No versions yet.</div>
+      {% endfor %}
     </div>
   {% endcall %}
 
   {% call card(title='Jobs using this document', actions='<a href="/dashboard/jobs" class="text-sm text-primary hover:text-primary/80">View all jobs</a>') %}
-    <div class="p-0 overflow-x-auto">
-      {% from 'components/data/table.html' import table with context %}
+    <div class="space-y-3">
       {% from 'components/elements/badge.html' import badge %}
-      {% call table(headers=["Job ID","Type","Status","Created","View"]) %}
-        {% for job in jobs %}
-          <tr>
-            <td class="px-3 py-2 md:px-4 md:py-3 whitespace-nowrap">{{ job.id }}</td>
-            <td class="px-3 py-2 md:px-4 md:py-3">{{ job.kind }}</td>
-            <td class="px-3 py-2 md:px-4 md:py-3">{{ badge(job.status_label, status=job.status) }}</td>
-            <td class="px-3 py-2 md:px-4 md:py-3">{{ job.created_at }}</td>
-            <td class="px-3 py-2 md:px-4 md:py-3">
-              <a href="/dashboard/jobs/{{ job.id }}" class="text-primary hover:text-primary/80">View</a>
-            </td>
-          </tr>
-        {% else %}
-          <tr>
-            <td colspan="5" class="px-4 py-6 text-center text-contentMuted">No jobs reference this document yet.</td>
-          </tr>
-        {% endfor %}
-      {% endcall %}
+      {% for job in jobs %}
+        <article class="border border-border rounded-lg p-4 space-y-3">
+          <div class="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+            <div class="space-y-1">
+              <p class="font-mono text-xs text-contentMuted break-all">{{ job.id }}</p>
+              <p class="text-sm text-content">{{ job.kind }}</p>
+              <p class="text-xs text-contentMuted">Created {{ job.created_at }}</p>
+            </div>
+            <div class="flex flex-col gap-2 sm:flex-row sm:items-center">
+              {{ badge(job.status_label, status=job.status) }}
+              <a href="/dashboard/jobs/{{ job.id }}" class="text-sm text-primary hover:text-primary/80">View</a>
+            </div>
+          </div>
+        </article>
+      {% else %}
+        <div class="rounded-lg border border-border p-6 text-center text-sm text-contentMuted">No jobs reference this document yet.</div>
+      {% endfor %}
     </div>
   {% endcall %}
-</div>
+{% endcall %}
 {% endblock %}
 
 {% block extra_scripts %}

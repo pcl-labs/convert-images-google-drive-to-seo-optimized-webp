@@ -234,39 +234,67 @@ Listen for the confirm event:
 
 ---
 
-## Table Component
+## Page Layout Macros
 
-**Location:** `templates/components/data/table.html`
+**Location:** `templates/components/layout/page.html`
 
-**Macro:** `table`
+These macros provide consistent, mobile-friendly scaffolding for dashboard pages.
 
-### Parameters
+### `page_container`
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `headers` | list | `[]` | List of header column names |
-
-### Usage
-
-Uses Jinja's `call` block syntax:
+Wraps page content in standard padding and vertical spacing.
 
 ```jinja
-{% from 'components/data/table.html' import table %}
+{% from 'components/layout/page.html' import page_container %}
 
-{% call table(headers=["Name", "Status", "Created"]) %}
-  <tr>
-    <td class="px-3 py-2 md:px-4 md:py-3 text-content">Item 1</td>
-    <td class="px-3 py-2 md:px-4 md:py-3">{{ badge('Active', status='running') }}</td>
-    <td class="px-3 py-2 md:px-4 md:py-3 text-contentMuted">2024-01-15</td>
-  </tr>
+{% call page_container() %}
+  <!-- Page content -->
 {% endcall %}
 ```
 
-### Styling
+### `page_header`
 
-- Headers use `bg-surfaceMuted/60` background
-- Rows use `divide-y divide-border` for separators
-- Text colors use `text-content` and `text-contentMuted`
+Renders the primary heading with optional description and actions. Actions can be any HTML snippet, such as button groups or dropdown triggers.
+
+```jinja
+{% set actions %}
+  <a href="/dashboard/jobs" class="btn-secondary">All Jobs</a>
+{% endset %}
+
+{{ page_header('Documents', 'Manage registered sources', actions=actions) }}
+```
+
+### `page_section`
+
+Wraps secondary content in a padded surface. Use `surface=False` to remove the default card styling.
+
+```jinja
+{% call page_section(title='Stats', description='Past 30 days') %}
+  <p class="text-sm text-content">Content goes here.</p>
+{% endcall %}
+```
+
+---
+
+## Data List Pattern
+
+Tables have been replaced with responsive cards so data reads well on mobile. Each list item is a `surface` card with stacked metadata.
+
+```jinja
+<div class="space-y-3">
+  {% for item in items %}
+    <article class="surface rounded-lg p-4 space-y-2">
+      <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <h3 class="text-sm font-semibold text-content">{{ item.title }}</h3>
+        {{ badge(item.status_label, status=item.status) }}
+      </div>
+      <p class="text-xs text-contentMuted">Created {{ item.created_at }}</p>
+    </article>
+  {% endfor %}
+</div>
+```
+
+Use `flex` utilities to align actions (e.g., “View” links) on larger screens while keeping a single-column flow on mobile.
 
 ---
 

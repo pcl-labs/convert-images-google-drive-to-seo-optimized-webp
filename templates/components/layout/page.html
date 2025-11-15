@@ -1,0 +1,48 @@
+{% macro page_container(class='') %}
+  <div class="p-4 md:p-6 space-y-6 {{ class }}">
+    {{ caller() }}
+  </div>
+{% endmacro %}
+
+{% macro page_header(title, description=None, actions=None) %}
+  <header class="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+    <div class="space-y-1">
+      <h1 class="text-xl font-semibold text-content">{{ title }}</h1>
+      {% if description %}
+        <p class="text-sm text-contentMuted">{{ description }}</p>
+      {% endif %}
+    </div>
+    {% if actions %}
+      <div class="flex w-full flex-col gap-2 md:w-auto md:flex-row md:items-center md:justify-end">
+        {{ actions|safe }}
+      </div>
+    {% endif %}
+  </header>
+{% endmacro %}
+
+{% macro page_section(title=None, description=None, actions=None, padded=True, surface=True) %}
+  <section class="space-y-3">
+    {% if title or description or actions %}
+      <div class="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+        <div class="space-y-1">
+          {% if title %}
+            <h2 class="text-sm font-semibold uppercase tracking-wide text-contentMuted">{{ title }}</h2>
+          {% endif %}
+          {% if description %}
+            <p class="text-sm text-contentMuted">{{ description }}</p>
+          {% endif %}
+        </div>
+        {% if actions %}
+          <div class="flex w-full flex-col gap-2 md:w-auto md:flex-row md:items-center md:justify-end">
+            {{ actions|safe }}
+          </div>
+        {% endif %}
+      </div>
+    {% endif %}
+    <div class="{{ 'surface rounded-lg' if surface else '' }}">
+      <div class="{{ 'p-4' if padded else '' }}">
+        {{ caller() }}
+      </div>
+    </div>
+  </section>
+{% endmacro %}

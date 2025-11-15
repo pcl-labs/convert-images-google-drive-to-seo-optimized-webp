@@ -7,15 +7,12 @@
 {% from 'components/elements/input.html' import input %}
 {% from 'components/elements/alert.html' import alert %}
 {% from 'components/elements/badge.html' import badge %}
-{% from 'components/data/table.html' import table with context %}
 {% from 'components/overlays/modal.html' import modal %}
 {% from 'components/elements/dropdown.html' import dropdown %}
+{% from 'components/layout/page.html' import page_container, page_header %}
 
-<div class="p-4 md:p-6 space-y-12">
-  <div class="space-y-2">
-    <h1 class="text-3xl font-semibold text-content">Design System Styleguide</h1>
-    <p class="text-contentMuted">Visual reference for all components and design tokens</p>
-  </div>
+{% call page_container(class='space-y-12') %}
+  {{ page_header('Design System Styleguide', 'Visual reference for all components and design tokens') }}
 
   <!-- Design Tokens -->
   <section class="space-y-4">
@@ -216,27 +213,25 @@
     {% endcall %}
   </section>
 
-  <!-- Tables -->
+  <!-- Data Lists -->
   <section class="space-y-4">
-    <h2 class="text-2xl font-semibold text-content">Tables</h2>
-    {% call card() %}
-      {% call table(headers=["Name","Status","Created"]) %}
-        <tr>
-          <td class="px-3 py-2 md:px-4 md:py-3 text-content">Example Item 1</td>
-          <td class="px-3 py-2 md:px-4 md:py-3">{{ badge('Active', status='running') }}</td>
-          <td class="px-3 py-2 md:px-4 md:py-3 text-contentMuted">2024-01-15</td>
-        </tr>
-        <tr>
-          <td class="px-3 py-2 md:px-4 md:py-3 text-content">Example Item 2</td>
-          <td class="px-3 py-2 md:px-4 md:py-3">{{ badge('Pending', status='queued') }}</td>
-          <td class="px-3 py-2 md:px-4 md:py-3 text-contentMuted">2024-01-14</td>
-        </tr>
-        <tr>
-          <td class="px-3 py-2 md:px-4 md:py-3 text-content">Example Item 3</td>
-          <td class="px-3 py-2 md:px-4 md:py-3">{{ badge('Error', status='failed') }}</td>
-          <td class="px-3 py-2 md:px-4 md:py-3 text-contentMuted">2024-01-13</td>
-        </tr>
-      {% endcall %}
+    <h2 class="text-2xl font-semibold text-content">Data Lists</h2>
+    {% call card(title='Responsive Cards') %}
+      <div class="space-y-3">
+        {% for item in [
+          {'name': 'Example Item 1', 'status': 'running', 'created': '2024-01-15'},
+          {'name': 'Example Item 2', 'status': 'queued', 'created': '2024-01-14'},
+          {'name': 'Example Item 3', 'status': 'failed', 'created': '2024-01-13'}
+        ] %}
+          <article class="surface rounded-lg p-4 space-y-2">
+            <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div class="text-sm font-semibold text-content">{{ item.name }}</div>
+              <div>{{ badge(item.status|title, status=item.status) }}</div>
+            </div>
+            <p class="text-xs text-contentMuted">Created {{ item.created }}</p>
+          </article>
+        {% endfor %}
+      </div>
     {% endcall %}
   </section>
 
@@ -410,6 +405,6 @@
       </div>
     {% endcall %}
   </section>
-</div>
+{% endcall %}
 {% endblock %}
 

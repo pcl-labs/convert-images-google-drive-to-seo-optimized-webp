@@ -1,11 +1,9 @@
 {% extends "base.html" %}
 {% set page_title = 'Settings' %}
+{% from 'components/layout/page.html' import page_container, page_header %}
 {% block content %}
-<div class="p-4 md:p-6 space-y-6">
-  <div class="space-y-1">
-    <h1 class="text-xl font-semibold text-content">Settings</h1>
-    <p class="text-sm text-contentMuted">Manage your account and API access</p>
-  </div>
+{% call page_container() %}
+  {{ page_header('Settings', 'Manage your account and API access') }}
 
   {% from 'components/elements/card.html' import card %}
   {% call card(title='API Keys') %}
@@ -18,5 +16,5 @@
       <div id="api-key-result" class="space-y-2"></div>
     </div>
   {% endcall %}
-</div>
+{% endcall %}
 {% endblock %}
