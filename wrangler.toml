@@ -18,15 +18,15 @@ DEBUG = "false"
 [[d1_databases]]
 binding = "DB"
 database_name = "quill-db"
-database_id = ""  # Will be set after creating the database
+database_id = "933d76cf-a988-4a71-acc6-d884278c6402"
 
 # Queue binding
 [[queues.producers]]
-queue = "quill-queue"
-binding = "IMAGE_QUEUE"
+queue = "quill-jobs"
+binding = "JOB_QUEUE"
 
 [[queues.consumers]]
-queue = "quill-queue"
+queue = "quill-jobs"
 max_batch_size = 10
 max_batch_timeout = 30
 max_retries = 3

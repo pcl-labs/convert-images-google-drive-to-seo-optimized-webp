@@ -1,6 +1,6 @@
 MAX_TEXT_LENGTH = 20000  # configurable upper bound for text ingestion
 from fastapi import APIRouter, Request, Depends, HTTPException, status
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, PlainTextResponse
 from typing import Optional
 import uuid
 import secrets
@@ -21,7 +21,13 @@ from .models import (
     IngestTextRequest,
     DriveDocumentRequest,
     OptimizeDocumentRequest,
+    GenerateBlogRequest,
     Document,
+    DocumentVersionSummary,
+    DocumentVersionList,
+    DocumentVersionDetail,
+    DocumentExportRequest,
+    DocumentExportResponse,
 )
 from .database import (
     create_job_extended,
@@ -33,6 +39,9 @@ from .database import (
     get_user_by_id,
     create_document,
     get_document,
+    list_document_versions,
+    get_document_version,
+    create_document_export,
 )
 from .notifications import notify_job
 from .auth import create_user_api_key
@@ -87,6 +96,17 @@ def _coerce_document_metadata(doc: dict) -> dict:
     return doc
 
 
+def _json_field(value, default):
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except Exception:
+            return default
+    if value is None:
+        return default
+    return value
+
+
 def _serialize_document(doc: dict) -> Document:
     parsed = _coerce_document_metadata(dict(doc))
     return Document(
@@ -96,9 +116,46 @@ def _serialize_document(doc: dict) -> Document:
         source_ref=parsed.get("source_ref"),
         raw_text=parsed.get("raw_text"),
         metadata=parsed.get("metadata"),
+        content_format=parsed.get("content_format"),
+        frontmatter=_json_field(parsed.get("frontmatter"), {}),
+        latest_version_id=parsed.get("latest_version_id"),
         created_at=_parse_db_datetime(parsed.get("created_at")),
         updated_at=_parse_db_datetime(parsed.get("updated_at")),
     )
+
+
+def _version_payload(row: dict) -> dict:
+    return {
+        "version_id": row.get("version_id"),
+        "document_id": row.get("document_id"),
+        "version": row.get("version"),
+        "content_format": row.get("content_format"),
+        "frontmatter": _json_field(row.get("frontmatter"), {}),
+        "body_mdx": row.get("body_mdx"),
+        "body_html": row.get("body_html"),
+        "outline": _json_field(row.get("outline"), []),
+        "chapters": _json_field(row.get("chapters"), []),
+        "sections": _json_field(row.get("sections"), []),
+        "assets": _json_field(row.get("assets"), {}),
+        "created_at": _parse_db_datetime(row.get("created_at")),
+    }
+
+
+def _version_summary_model(row: dict) -> DocumentVersionSummary:
+    data = _version_payload(row)
+    return DocumentVersionSummary(
+        version_id=data["version_id"],
+        document_id=data["document_id"],
+        version=data["version"],
+        content_format=data["content_format"],
+        frontmatter=data["frontmatter"],
+        created_at=data["created_at"],
+    )
+
+
+def _version_detail_model(row: dict) -> DocumentVersionDetail:
+    data = _version_payload(row)
+    return DocumentVersionDetail(**data)
 
 
 async def _load_document_for_user(db, document_id: str, user_id: str) -> dict:
@@ -395,6 +452,75 @@ async def create_drive_document_endpoint(req: DriveDocumentRequest, user: dict =
     return await create_drive_document_for_user(db, user["user_id"], req.drive_source)
 
 
+@router.get("/api/v1/documents/{document_id}/versions", response_model=DocumentVersionList, tags=["Documents"])
+async def list_document_versions_endpoint(document_id: str, limit: int = 25, user: dict = Depends(get_current_user)):
+    db = ensure_db()
+    await _load_document_for_user(db, document_id, user["user_id"])
+    rows = await list_document_versions(db, document_id, user["user_id"], limit=max(1, min(limit, 50)))
+    return DocumentVersionList(versions=[_version_summary_model(row) for row in rows])
+
+
+@router.get("/api/v1/documents/{document_id}/versions/{version_id}", response_model=DocumentVersionDetail, tags=["Documents"])
+async def get_document_version_endpoint(document_id: str, version_id: str, user: dict = Depends(get_current_user)):
+    db = ensure_db()
+    await _load_document_for_user(db, document_id, user["user_id"])
+    row = await get_document_version(db, document_id, version_id, user["user_id"])
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Version not found")
+    return _version_detail_model(row)
+
+
+@router.get("/api/v1/documents/{document_id}/versions/{version_id}/body", tags=["Documents"])
+async def get_document_version_body(document_id: str, version_id: str, format: str = "mdx", user: dict = Depends(get_current_user)):
+    db = ensure_db()
+    await _load_document_for_user(db, document_id, user["user_id"])
+    row = await get_document_version(db, document_id, version_id, user["user_id"])
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Version not found")
+    version = _version_detail_model(row)
+    fmt = format.lower()
+    if fmt == "html":
+        body = version.body_html or ""
+        media_type = "text/html"
+        ext = "html"
+    else:
+        body = version.body_mdx or ""
+        media_type = "text/plain"
+        ext = "mdx"
+    if not body:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"{fmt.upper()} body unavailable")
+    headers = {"Content-Disposition": f'attachment; filename=\"{document_id}-{version_id}.{ext}\"'}
+    return PlainTextResponse(body, media_type=media_type, headers=headers)
+
+
+@router.post("/api/v1/documents/{document_id}/exports", response_model=DocumentExportResponse, tags=["Documents"])
+async def create_document_export_endpoint(document_id: str, request: DocumentExportRequest, user: dict = Depends(get_current_user)):
+    db = ensure_db()
+    doc = await _load_document_for_user(db, document_id, user["user_id"])
+    version_id = request.version_id or doc.get("latest_version_id")
+    if not version_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No version available for export")
+    version = await get_document_version(db, document_id, version_id, user["user_id"])
+    if not version:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Version not found")
+    row = await create_document_export(
+        db,
+        document_id=document_id,
+        version_id=version_id,
+        user_id=user["user_id"],
+        target=request.target.value,
+        payload=request.metadata,
+    )
+    return DocumentExportResponse(
+        export_id=row.get("export_id"),
+        status=row.get("status"),
+        target=request.target,
+        version_id=row.get("version_id"),
+        document_id=row.get("document_id"),
+        created_at=_parse_db_datetime(row.get("created_at")),
+    )
+
+
 async def start_optimize_job(
     db,
     queue,
@@ -450,6 +576,59 @@ async def start_optimize_job(
     )
 
 
+async def start_generate_blog_job(
+    db,
+    queue,
+    user_id: str,
+    req: GenerateBlogRequest,
+) -> JobStatus:
+    document_id = req.document_id
+    doc = await _load_document_for_user(db, document_id, user_id)
+    text = (doc.get("raw_text") or "").strip()
+    if not text:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Document is missing raw text to generate from")
+    job_id = str(uuid.uuid4())
+    job_row = await create_job_extended(
+        db,
+        job_id,
+        user_id,
+        job_type=JobType.GENERATE_BLOG.value,
+        document_id=document_id,
+    )
+    payload = {
+        "job_id": job_id,
+        "user_id": user_id,
+        "job_type": JobType.GENERATE_BLOG.value,
+        "document_id": document_id,
+        "options": req.options.model_dump(),
+    }
+    enqueued, enqueue_exception, should_fail = await enqueue_job_with_guard(queue, job_id, user_id, payload, allow_inline_fallback=False)
+    if should_fail:
+        detail = "Queue unavailable or enqueue failed; background processing is required in production."
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=detail)
+    if not enqueued:
+        logger.warning(
+            "generate_blog_job_enqueued_false",
+            extra={
+                "job_id": job_id,
+                "user_id": user_id,
+                "event": "job.enqueue_failed",
+                "reason": "queue unavailable or enqueue failed",
+                "enqueue_exception": (str(enqueue_exception) if enqueue_exception else None),
+            },
+        )
+    progress = _parse_job_progress_model(progress_str=job_row.get("progress", "{}"))
+    return JobStatus(
+        job_id=job_id,
+        user_id=user_id,
+        status=JobStatusEnum.PENDING,
+        progress=progress,
+        created_at=_parse_db_datetime(job_row.get("created_at")),
+        job_type=JobType.GENERATE_BLOG.value,
+        document_id=document_id,
+    )
+
+
 @router.post("/api/v1/optimize", response_model=JobStatus, tags=["Jobs"])
 async def optimize_images(request: OptimizeDocumentRequest, user: dict = Depends(get_current_user)):
     db = ensure_db()
@@ -461,6 +640,18 @@ async def optimize_images(request: OptimizeDocumentRequest, user: dict = Depends
     except Exception as e:
         logger.error(f"Failed to create job: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to create optimization job")
+
+
+@router.post("/api/v1/pipelines/generate_blog", response_model=JobStatus, tags=["Pipelines"])
+async def generate_blog_pipeline(request: GenerateBlogRequest, user: dict = Depends(get_current_user)):
+    db, queue = ensure_services()
+    try:
+        return await start_generate_blog_job(db, queue, user["user_id"], request)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Failed to start generate_blog pipeline", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to create generate_blog job") from None
 
 
 @router.get("/api/v1/jobs/{job_id}", response_model=JobStatus, tags=["Jobs"])

@@ -10,7 +10,7 @@ def _status_label(value: str) -> str:
     return mapping.get(value, (value or "").title())
 
 from fastapi import APIRouter, Request, Depends, Form, HTTPException, status
-from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, PlainTextResponse
 from starlette.templating import Jinja2Templates
 from starlette.responses import Response, StreamingResponse
 from typing import Optional
@@ -21,7 +21,7 @@ import json
 import secrets
 import hmac
 
-from .models import OptimizeDocumentRequest, JobStatusEnum, JobType
+from .models import OptimizeDocumentRequest, JobStatusEnum, JobType, GenerateBlogRequest, GenerateBlogOptions
 from .deps import ensure_services, ensure_db, parse_job_progress, get_current_user
 from .auth import verify_jwt_token
 from .database import (
@@ -39,6 +39,9 @@ from .database import (
     list_documents,
     list_jobs_by_document,
     get_document,
+    list_document_versions,
+    get_document_version,
+    create_document_export,
 )
 from .auth import create_user_api_key
 from .protected import (
@@ -47,6 +50,7 @@ from .protected import (
     create_drive_document_for_user,
     start_ingest_youtube_job,
     start_ingest_text_job,
+    start_generate_blog_job,
 )
 from .config import settings
 from .notifications import notify_job
@@ -137,6 +141,23 @@ def _render_auth_page(request: Request, view_mode: str) -> Response:
     return resp
 
 
+def _json_field(value, default):
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except Exception:
+            return default
+    if value is None:
+        return default
+    return value
+
+
+def _form_bool(value: Optional[str]) -> bool:
+    if value is None:
+        return False
+    return str(value).lower() in {"1", "true", "yes", "on"}
+
+
 def _document_to_view(doc: dict) -> dict:
     metadata = doc.get("metadata")
     if isinstance(metadata, str):
@@ -146,6 +167,8 @@ def _document_to_view(doc: dict) -> dict:
             metadata = {}
     elif metadata is None:
         metadata = {}
+    frontmatter = _json_field(doc.get("frontmatter"), {})
+    latest_generation = metadata.get("latest_generation") if isinstance(metadata, dict) else {}
     source_type = (doc.get("source_type") or "unknown").lower()
     source_label = {
         "drive": "Drive",
@@ -166,6 +189,11 @@ def _document_to_view(doc: dict) -> dict:
         "source_label": source_label,
         "origin": origin,
         "metadata": metadata,
+        "frontmatter": frontmatter,
+        "latest_version_id": doc.get("latest_version_id"),
+        "content_format": doc.get("content_format"),
+        "latest_title": frontmatter.get("title") if isinstance(frontmatter, dict) else None,
+        "latest_generation": latest_generation,
         "created_at": doc.get("created_at"),
     }
 
@@ -185,6 +213,64 @@ async def _render_documents_partial(
     documents, _ = await _load_document_views(db, user["user_id"])
     context = {"request": request, "documents": documents, "flash": flash}
     return templates.TemplateResponse("documents/partials/list.html", context, status_code=status_code)
+
+
+def _version_summary_row(row: dict) -> dict:
+    frontmatter = _json_field(row.get("frontmatter"), {})
+    return {
+        "version_id": row.get("version_id"),
+        "document_id": row.get("document_id"),
+        "version": row.get("version"),
+        "content_format": row.get("content_format"),
+        "frontmatter": frontmatter,
+        "created_at": row.get("created_at"),
+        "title": (frontmatter or {}).get("title"),
+        "slug": (frontmatter or {}).get("slug"),
+    }
+
+
+def _version_detail_row(row: dict) -> dict:
+    summary = _version_summary_row(row)
+    summary.update(
+        {
+            "body_mdx": row.get("body_mdx"),
+            "body_html": row.get("body_html"),
+            "outline": _json_field(row.get("outline"), []),
+            "chapters": _json_field(row.get("chapters"), []),
+            "sections": _json_field(row.get("sections"), []),
+            "assets": _json_field(row.get("assets"), {}),
+        }
+    )
+    return summary
+
+
+async def _load_latest_version(db, user_id: str, document_id: str) -> Optional[dict]:
+    rows = await list_document_versions(db, document_id, user_id, limit=1)
+    if not rows:
+        return None
+    return _version_detail_row(rows[0])
+
+
+async def _load_version_detail(db, user_id: str, document_id: str, version_id: str) -> Optional[dict]:
+    row = await get_document_version(db, document_id, version_id, user_id)
+    if not row:
+        return None
+    return _version_detail_row(row)
+
+
+def _render_flash(request: Request, message: str, kind: str = "info", status_code: int = status.HTTP_200_OK) -> HTMLResponse:
+    context = {"request": request, "flash_kind": kind, "flash_message": message}
+    return templates.TemplateResponse("documents/partials/flash.html", context, status_code=status_code)
+
+
+def _render_version_partial(request: Request, document: dict, version: Optional[dict], csrf_token: str) -> HTMLResponse:
+    context = {
+        "request": request,
+        "document": document,
+        "version": version,
+        "csrf_token": csrf_token,
+    }
+    return templates.TemplateResponse("documents/partials/version_viewer.html", context)
 
 
 @router.get("/api/notifications")
@@ -355,7 +441,12 @@ async def document_detail_page(document_id: str, request: Request, user: dict = 
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
     doc_view = _document_to_view(doc)
     metadata_items = list((doc_view.get("metadata") or {}).items())
+    frontmatter_items = list((doc_view.get("frontmatter") or {}).items())
+    versions_raw = await list_document_versions(db, document_id, user["user_id"], limit=20)
+    version_summaries = [_version_summary_row(row) for row in versions_raw]
+    latest_version = _version_detail_row(versions_raw[0]) if versions_raw else None
     jobs = await list_jobs_by_document(db, user["user_id"], document_id, limit=25)
+    csrf = _get_csrf_token(request)
 
     def to_job_view(job: dict) -> dict:
         status = job.get("status", "queued")
@@ -374,10 +465,152 @@ async def document_detail_page(document_id: str, request: Request, user: dict = 
         "user": user,
         "document": doc_view,
         "metadata_items": metadata_items,
+        "frontmatter_items": frontmatter_items,
         "jobs": [to_job_view(j) for j in jobs],
+        "versions": version_summaries,
+        "latest_version": latest_version,
+        "csrf_token": csrf,
         "page_title": f"Document {document_id}",
     }
-    return templates.TemplateResponse("documents/detail.html", context)
+    resp = templates.TemplateResponse("documents/detail.html", context)
+    if not request.cookies.get("csrf_token"):
+        is_secure = _is_secure_request(request)
+        resp.set_cookie("csrf_token", csrf, httponly=True, samesite="lax", secure=is_secure)
+    return resp
+
+
+@router.get("/dashboard/documents/{document_id}/versions/{version_id}", response_class=HTMLResponse)
+async def document_version_partial(document_id: str, version_id: str, request: Request, user: dict = Depends(get_current_user)):
+    db = ensure_db()
+    doc = await get_document(db, document_id, user_id=user["user_id"])
+    if not doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    version = await _load_version_detail(db, user["user_id"], document_id, version_id)
+    if not version:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Version not found")
+    doc_view = _document_to_view(doc)
+    csrf = _get_csrf_token(request)
+    return _render_version_partial(request, doc_view, version, csrf)
+
+
+@router.get("/dashboard/documents/{document_id}/versions/{version_id}/download")
+async def download_document_version(document_id: str, version_id: str, format: str = "mdx", user: dict = Depends(get_current_user)):
+    db = ensure_db()
+    row = await get_document_version(db, document_id, version_id, user["user_id"])
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Version not found")
+    version = _version_detail_row(row)
+    fmt = format.lower()
+    if fmt == "html":
+        body = version.get("body_html")
+        media_type = "text/html"
+        extension = "html"
+    else:
+        body = version.get("body_mdx")
+        media_type = "text/plain"
+        extension = "mdx"
+    if not body:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"{fmt.upper()} body unavailable for this version")
+    filename = f"{document_id}-{version_id}.{extension}"
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    return PlainTextResponse(body, media_type=media_type, headers=headers)
+
+
+@router.post("/dashboard/documents/{document_id}/generate", response_class=HTMLResponse)
+async def dashboard_generate_blog(
+    document_id: str,
+    request: Request,
+    tone: str = Form("informative"),
+    max_sections: int = Form(5),
+    target_chapters: int = Form(4),
+    include_images: Optional[str] = Form("on"),
+    csrf_token: str = Form(...),
+    user: dict = Depends(get_current_user),
+):
+    cookie_token = request.cookies.get("csrf_token")
+    if not secrets.compare_digest(str(cookie_token or ""), str(csrf_token or "")):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
+    try:
+        options = GenerateBlogOptions(
+            tone=tone.strip() or "informative",
+            max_sections=max_sections,
+            target_chapters=target_chapters,
+            include_images=_form_bool(include_images),
+        )
+    except Exception as exc:
+        return _render_flash(request, f"Invalid options: {exc}", "error", status.HTTP_400_BAD_REQUEST)
+    req_model = GenerateBlogRequest(document_id=document_id, options=options)
+    db, queue = ensure_services()
+    try:
+        await start_generate_blog_job(db, queue, user["user_id"], req_model)
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, str) else "Failed to queue job"
+        return _render_flash(request, detail, "error", exc.status_code)
+    return _render_flash(request, "Blog generation job queued", "success")
+
+
+@router.post("/dashboard/documents/{document_id}/sections/{section_index}/regenerate", response_class=HTMLResponse)
+async def dashboard_regenerate_section(
+    document_id: str,
+    section_index: int,
+    request: Request,
+    csrf_token: str = Form(...),
+    user: dict = Depends(get_current_user),
+):
+    cookie_token = request.cookies.get("csrf_token")
+    if not secrets.compare_digest(str(cookie_token or ""), str(csrf_token or "")):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
+    if section_index < 0:
+        return _render_flash(request, "Invalid section index", "error", status.HTTP_400_BAD_REQUEST)
+    db, queue = ensure_services()
+    try:
+        options = GenerateBlogOptions(section_index=section_index)
+    except Exception as exc:
+        return _render_flash(
+            request,
+            f"Invalid options: {exc}",
+            "error",
+            status.HTTP_400_BAD_REQUEST,
+        )
+    req_model = GenerateBlogRequest(document_id=document_id, options=options)
+    try:
+        await start_generate_blog_job(db, queue, user["user_id"], req_model)
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, str) else "Failed to queue job"
+        return _render_flash(request, detail, "error", exc.status_code)
+    return _render_flash(request, f"Regeneration queued for section {section_index + 1}", "success")
+
+
+@router.post("/dashboard/documents/{document_id}/exports/{target}", response_class=HTMLResponse)
+async def dashboard_document_export(
+    document_id: str,
+    target: str,
+    request: Request,
+    version_id: Optional[str] = Form(None),
+    csrf_token: str = Form(...),
+    user: dict = Depends(get_current_user),
+):
+    cookie_token = request.cookies.get("csrf_token")
+    if not secrets.compare_digest(str(cookie_token or ""), str(csrf_token or "")):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
+    normalized = target.lower()
+    allowed = {"google_docs", "zapier", "wordpress"}
+    if normalized not in allowed:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown export target")
+    db = ensure_db()
+    doc = await get_document(db, document_id, user_id=user["user_id"])
+    if not doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    resolved_version_id = version_id or doc.get("latest_version_id")
+    if not resolved_version_id:
+        return _render_flash(request, "No version available to export", "error", status.HTTP_400_BAD_REQUEST)
+    version = await get_document_version(db, document_id, resolved_version_id, user["user_id"])
+    if not version:
+        return _render_flash(request, "Version not found", "error", status.HTTP_404_NOT_FOUND)
+    row = await create_document_export(db, document_id, resolved_version_id, user["user_id"], normalized, None)
+    label = normalized.replace("_", " ").title()
+    message = f"{label} export queued (version {row.get('version_id')})"
+    return _render_flash(request, message, "success")
 
 
 @router.post("/dashboard/jobs", response_class=HTMLResponse)
