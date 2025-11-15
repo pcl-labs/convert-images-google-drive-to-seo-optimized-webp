@@ -48,6 +48,7 @@ async def root():
         "environment": settings.environment,
         "endpoints": {
             "auth": "/auth/github/start",
+            "documents_drive": "/api/v1/documents/drive",
             "optimize": "/api/v1/optimize",
             "jobs": "/api/v1/jobs",
             "health": "/health",

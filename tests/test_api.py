@@ -35,7 +35,7 @@ def test_health_endpoint(client):
 def test_optimize_endpoint_requires_auth(client):
     """Test that optimize endpoint requires authentication."""
     response = client.post("/api/v1/optimize", json={
-        "drive_folder": "test-folder-id"
+        "document_id": "doc-test"
     })
     assert response.status_code in [401, 403]
 
@@ -114,4 +114,3 @@ def test_github_status_requires_auth(client):
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
-

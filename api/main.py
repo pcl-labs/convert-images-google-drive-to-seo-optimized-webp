@@ -138,9 +138,11 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 from .web import router as web_router
 from .public import router as public_router
 from .protected import router as protected_router
+from .steps import router as steps_router
 app.include_router(web_router)
 app.include_router(public_router)
 app.include_router(protected_router)
+app.include_router(steps_router)
 
 # Add middleware (order matters!)
 app.add_middleware(SecurityHeadersMiddleware)

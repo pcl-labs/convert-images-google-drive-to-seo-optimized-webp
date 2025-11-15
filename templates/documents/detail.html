@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="p-4 md:p-6 space-y-6">
+  <div class="flex items-center justify-between">
+    <div>
+      <p class="text-sm text-slate-500"><a href="/dashboard/documents" class="text-sky-400 hover:text-sky-300">&larr; Documents</a></p>
+      <h1 class="text-xl font-semibold text-white mt-1 break-all">Document {{ document.id }}</h1>
+      <p class="text-sm text-slate-400">Source: {{ document.source_label }} • Created {{ document.created_at or 'unknown' }}</p>
+    </div>
+    <div class="text-right">
+      <div class="text-xs uppercase text-slate-500">Origin</div>
+      <div class="text-sm text-slate-200 break-all max-w-xs md:max-w-md">{{ document.origin or 'None' }}</div>
+    </div>
+  </div>
+
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+    <div class="bg-slate-900/60 border border-slate-800 rounded-xl p-4">
+      <div class="text-sm font-semibold text-white mb-3">Metadata</div>
+      {% if metadata_items %}
+        <dl class="space-y-2 text-sm">
+          {% for key, value in metadata_items %}
+            <div class="flex flex-col">
+              <dt class="text-slate-500 uppercase text-xs tracking-wide">{{ key }}</dt>
+              <dd class="text-slate-200 break-words">{{ value }}</dd>
+            </div>
+          {% endfor %}
+        </dl>
+      {% else %}
+        <p class="text-sm text-slate-500">No metadata recorded.</p>
+      {% endif %}
+    </div>
+    <div class="bg-slate-900/60 border border-slate-800 rounded-xl p-4">
+      <div class="text-sm font-semibold text-white mb-3">Document Details</div>
+      <dl class="space-y-2 text-sm">
+        <div>
+          <dt class="text-slate-500 uppercase text-xs tracking-wide">Document ID</dt>
+          <dd class="text-slate-200 break-all">{{ document.id }}</dd>
+        </div>
+        <div>
+          <dt class="text-slate-500 uppercase text-xs tracking-wide">Source Type</dt>
+          <dd class="text-slate-200">{{ document.source_label }}</dd>
+        </div>
+        <div>
+          <dt class="text-slate-500 uppercase text-xs tracking-wide">Created</dt>
+          <dd class="text-slate-200">{{ document.created_at or 'Unknown' }}</dd>
+        </div>
+      </dl>
+    </div>
+  </div>
+
+  <div class="bg-slate-900/60 border border-slate-800 rounded-xl">
+    <div class="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
+      <div class="font-semibold text-white">Jobs using this document</div>
+      <a href="/dashboard/jobs" class="text-sm text-sky-400 hover:text-sky-300">View all jobs</a>
+    </div>
+    <div class="p-0 overflow-x-auto">
+      {% from 'components/data/table.html' import table with context %}
+      {% from 'components/elements/badge.html' import badge %}
+      {% call table(headers=["Job ID","Type","Status","Created","View"]) %}
+        {% for job in jobs %}
+          <tr>
+            <td class="px-3 py-2 md:px-4 md:py-3 whitespace-nowrap">{{ job.id }}</td>
+            <td class="px-3 py-2 md:px-4 md:py-3">{{ job.kind }}</td>
+            <td class="px-3 py-2 md:px-4 md:py-3">{{ badge(job.status_label, status=job.status) }}</td>
+            <td class="px-3 py-2 md:px-4 md:py-3">{{ job.created_at }}</td>
+            <td class="px-3 py-2 md:px-4 md:py-3">
+              <a href="/dashboard/jobs/{{ job.id }}" class="text-sky-400 hover:text-sky-300">View</a>
+            </td>
+          </tr>
+        {% else %}
+          <tr>
+            <td colspan="5" class="px-4 py-6 text-center text-slate-400">No jobs reference this document yet.</td>
+          </tr>
+        {% endfor %}
+      {% endcall %}
+    </div>
+  </div>
+</div>
+{% endblock %}

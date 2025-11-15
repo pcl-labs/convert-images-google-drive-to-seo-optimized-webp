@@ -3,6 +3,7 @@
     {% set section = path.split('/', 2)[2] if path.startswith('/dashboard') and path|length > 11 else '' %}
     <a href="/dashboard" class="flex items-center gap-2 px-3 py-2 rounded-md {{ 'bg-slate-900 text-white' if path == '/dashboard' else 'text-slate-200 hover:bg-slate-900' }}">Dashboard</a>
     <a href="/dashboard/jobs" class="flex items-center gap-2 px-3 py-2 rounded-md {{ 'bg-slate-900 text-white' if section.startswith('jobs') else 'text-slate-200 hover:bg-slate-900' }}">Jobs</a>
+    <a href="/dashboard/documents" class="flex items-center gap-2 px-3 py-2 rounded-md {{ 'bg-slate-900 text-white' if section.startswith('documents') else 'text-slate-200 hover:bg-slate-900' }}">Documents</a>
     <a href="/dashboard/activity" class="flex items-center gap-2 px-3 py-2 rounded-md {{ 'bg-slate-900 text-white' if section.startswith('activity') else 'text-slate-200 hover:bg-slate-900' }}">Activity</a>
     <a href="/dashboard/integrations" class="flex items-center gap-2 px-3 py-2 rounded-md {{ 'bg-slate-900 text-white' if section.startswith('integrations') else 'text-slate-200 hover:bg-slate-900' }}">Integrations</a>
     <a href="/dashboard/account" class="flex items-center gap-2 px-3 py-2 rounded-md {{ 'bg-slate-900 text-white' if section.startswith('account') else 'text-slate-200 hover:bg-slate-900' }}">Account</a>
