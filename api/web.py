@@ -563,7 +563,15 @@ async def dashboard_regenerate_section(
     if section_index < 0:
         return _render_flash(request, "Invalid section index", "error", status.HTTP_400_BAD_REQUEST)
     db, queue = ensure_services()
-    options = GenerateBlogOptions(section_index=section_index)
+    try:
+        options = GenerateBlogOptions(section_index=section_index)
+    except Exception as exc:
+        return _render_flash(
+            request,
+            f"Invalid options: {exc}",
+            "error",
+            status.HTTP_400_BAD_REQUEST,
+        )
     req_model = GenerateBlogRequest(document_id=document_id, options=options)
     try:
         await start_generate_blog_job(db, queue, user["user_id"], req_model)

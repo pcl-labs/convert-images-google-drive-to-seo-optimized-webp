@@ -97,8 +97,7 @@ class Database:
                     latest_version_id TEXT,
                     created_at TEXT NOT NULL DEFAULT (datetime('now')),
                     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-                    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
-                    FOREIGN KEY (latest_version_id) REFERENCES document_versions(version_id) ON DELETE SET NULL
+                    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
                 )
                 """
             )
