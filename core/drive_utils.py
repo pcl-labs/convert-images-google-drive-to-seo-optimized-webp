@@ -9,7 +9,7 @@ import time
 import logging
 import re
 from .extension_utils import normalize_extensions
-from .constants import DEFAULT_EXTENSIONS, GOOGLE_DRIVE_SCOPES
+from .constants import DEFAULT_EXTENSIONS, GOOGLE_OAUTH_SCOPES
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 # Supported image extensions (normalized)
 IMAGE_EXTENSIONS = set(f".{e}" for e in DEFAULT_EXTENSIONS)
 
-SCOPES = GOOGLE_DRIVE_SCOPES
+SCOPES = GOOGLE_OAUTH_SCOPES
 
 def get_drive_service():
     creds = None

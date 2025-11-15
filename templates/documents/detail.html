@@ -1,4 +1,6 @@
 {% extends "base.html" %}
+{% from 'components/elements/input.html' import input %}
+{% from 'components/elements/button.html' import button %}
 {% block content %}
 <div class="p-4 md:p-6 space-y-6">
   <div class="flex items-center justify-between">
@@ -51,25 +53,16 @@
     {% call card(title='Generate Blog Draft') %}
       <form class="space-y-3" hx-post="/dashboard/documents/{{ document.id }}/generate" hx-target="#doc-flash" hx-swap="innerHTML">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <label class="flex flex-col gap-1 text-sm text-content">
-          Tone
-          <input type="text" name="tone" value="informative" class="bg-card border border-border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary/60">
-        </label>
-        <div class="grid grid-cols-2 gap-2 text-sm text-content">
-          <label class="flex flex-col gap-1">
-            Max Sections
-            <input type="number" name="max_sections" min="1" max="12" value="5" class="bg-card border border-border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary/60">
-          </label>
-          <label class="flex flex-col gap-1">
-            Target Chapters
-            <input type="number" name="target_chapters" min="1" max="12" value="4" class="bg-card border border-border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary/60">
-          </label>
+        {{ input('tone', label='Tone', value='informative') }}
+        <div class="grid grid-cols-2 gap-2">
+          {{ input('max_sections', label='Max Sections', type='number', value='5', attrs='min="1" max="12"') }}
+          {{ input('target_chapters', label='Target Chapters', type='number', value='4', attrs='min="1" max="12"') }}
         </div>
         <label class="inline-flex items-center gap-2 text-sm text-content">
           <input type="checkbox" name="include_images" checked class="rounded border-border bg-card text-primary focus:ring-primary">
           Include image prompts
         </label>
-        <button type="submit" class="inline-flex items-center justify-center rounded-lg bg-primary text-primary-foreground px-3 py-2 text-sm font-medium hover:bg-primary/90 w-full">Queue Generation</button>
+        {{ button('Queue Generation', variant='primary', attrs='type="submit" class="w-full"') }}
       </form>
     {% endcall %}
     {% call card(title='Latest Draft Summary') %}
@@ -89,8 +82,8 @@
           </div>
         </dl>
         <div class="mt-4 flex flex-wrap gap-2">
-          <button type="button" class="text-sm px-3 py-1.5 rounded-md border border-border text-content hover:bg-surface/60" onclick="copyVersionContent('mdx-body')">Copy MDX</button>
-          <button type="button" class="text-sm px-3 py-1.5 rounded-md border border-border text-content hover:bg-surface/60" onclick="copyVersionContent('html-body')">Copy HTML</button>
+          {{ button('Copy MDX', variant='ghost', attrs='type="button" onclick="copyVersionContent(\'mdx-body\')"', extra_classes='text-sm px-3 py-1.5') }}
+          {{ button('Copy HTML', variant='ghost', attrs='type="button" onclick="copyVersionContent(\'html-body\')"', extra_classes='text-sm px-3 py-1.5') }}
           <a href="/dashboard/documents/{{ document.id }}/versions/{{ latest_version.version_id }}/download?format=mdx" class="text-sm px-3 py-1.5 rounded-md bg-card border border-border hover:bg-surface/60">Download MDX</a>
         </div>
       {% else %}
@@ -102,17 +95,17 @@
       <form class="space-y-2" hx-post="/dashboard/documents/{{ document.id }}/exports/google_docs" hx-target="#doc-flash" hx-swap="innerHTML">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <input type="hidden" name="version_id" value="{{ latest_version.version_id if latest_version }}">
-        <button type="submit" class="w-full inline-flex items-center justify-center rounded-lg bg-surface text-content px-3 py-2 text-sm border border-border hover:bg-surface/60" {% if not version_selectable %}disabled{% endif %}>Send to Google Docs</button>
+        {{ button('Send to Google Docs', variant='secondary', attrs='type="submit" class="w-full"' + (' disabled' if not version_selectable else '')) }}
       </form>
       <form class="space-y-2" hx-post="/dashboard/documents/{{ document.id }}/exports/zapier" hx-target="#doc-flash" hx-swap="innerHTML">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <input type="hidden" name="version_id" value="{{ latest_version.version_id if latest_version }}">
-        <button type="submit" class="w-full inline-flex items-center justify-center rounded-lg bg-surface text-content px-3 py-2 text-sm border border-border hover:bg-surface/60" {% if not version_selectable %}disabled{% endif %}>Send via Zapier</button>
+        {{ button('Send via Zapier', variant='secondary', attrs='type="submit" class="w-full"' + (' disabled' if not version_selectable else '')) }}
       </form>
       <form class="space-y-2" hx-post="/dashboard/documents/{{ document.id }}/exports/wordpress" hx-target="#doc-flash" hx-swap="innerHTML">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <input type="hidden" name="version_id" value="{{ latest_version.version_id if latest_version }}">
-        <button type="submit" class="w-full inline-flex items-center justify-center rounded-lg bg-surface text-content px-3 py-2 text-sm border border-border hover:bg-surface/60" {% if not version_selectable %}disabled{% endif %}>Queue WordPress Export</button>
+        {{ button('Queue WordPress Export', variant='secondary', attrs='type="submit" class="w-full"' + (' disabled' if not version_selectable else '')) }}
       </form>
     {% endcall %}
   </div>
@@ -131,7 +124,7 @@
             <td class="px-3 py-2 md:px-4 md:py-3">{{ version.title or 'Untitled' }}</td>
             <td class="px-3 py-2 md:px-4 md:py-3 text-contentMuted">{{ version.created_at }}</td>
             <td class="px-3 py-2 md:px-4 md:py-3 space-x-2">
-              <button class="text-primary text-sm hover:text-primary/80" hx-get="/dashboard/documents/{{ document.id }}/versions/{{ version.version_id }}" hx-target="#version-viewer" hx-swap="outerHTML">View</button>
+              <a class="text-primary text-sm hover:text-primary/80" hx-get="/dashboard/documents/{{ document.id }}/versions/{{ version.version_id }}" hx-target="#version-viewer" hx-swap="outerHTML" href="#">View</a>
               <a href="/dashboard/documents/{{ document.id }}/versions/{{ version.version_id }}/download?format=mdx" class="text-sm text-contentMuted hover:text-content">MDX</a>
               <a href="/dashboard/documents/{{ document.id }}/versions/{{ version.version_id }}/download?format=html" class="text-sm text-contentMuted hover:text-content">HTML</a>
             </td>

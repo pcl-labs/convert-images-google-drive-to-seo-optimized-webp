@@ -68,10 +68,15 @@ CREATE TABLE IF NOT EXISTS jobs (
     progress TEXT NOT NULL DEFAULT '{}', -- JSON string
     drive_folder TEXT,
     extensions TEXT, -- JSON array string
+    job_type TEXT NOT NULL DEFAULT 'optimize_drive',
+    document_id TEXT,
+    output TEXT,
+    payload TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     completed_at TEXT,
     error TEXT,
-    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+    FOREIGN KEY (document_id) REFERENCES documents(document_id)
 );
 
 -- Migration: Add CHECK constraint to jobs.status for existing databases
@@ -102,9 +107,12 @@ CREATE INDEX IF NOT EXISTS idx_api_keys_user_id ON api_keys(user_id);
 CREATE INDEX IF NOT EXISTS idx_api_keys_lookup_hash ON api_keys(lookup_hash);
 CREATE INDEX IF NOT EXISTS idx_users_github_id ON users(github_id);
 
--- Google OAuth tokens per user
-CREATE TABLE IF NOT EXISTS google_tokens (
-    user_id TEXT PRIMARY KEY,
+-- Google OAuth tokens per integration (Drive, YouTube, etc.)
+DROP TABLE IF EXISTS google_tokens;
+CREATE TABLE IF NOT EXISTS google_integration_tokens (
+    token_id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    integration TEXT NOT NULL,
     access_token TEXT,
     refresh_token TEXT,
     expiry TEXT,
@@ -112,10 +120,11 @@ CREATE TABLE IF NOT EXISTS google_tokens (
     scopes TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(user_id, integration),
     FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
 );
 
-CREATE INDEX IF NOT EXISTS idx_google_tokens_user_id ON google_tokens(user_id);
+CREATE INDEX IF NOT EXISTS idx_google_tokens_user_integration ON google_integration_tokens(user_id, integration);
 
 -- Phase 1: Content normalization and unified job types
 -- Create documents table

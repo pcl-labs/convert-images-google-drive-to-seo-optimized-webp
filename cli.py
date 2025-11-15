@@ -1,5 +1,5 @@
 """
-Main CLI entry point for Google Drive Image Optimizer.
+Main CLI entry point for Quill.
 """
 
 import argparse
@@ -178,7 +178,7 @@ def safe_remove_directory(dir_path):
         return False
 
 def main():
-    parser = argparse.ArgumentParser(description="Google Drive Image Optimizer CLI")
+    parser = argparse.ArgumentParser(description="Quill CLI")
     parser.add_argument('--drive-folder', required=False, help='Google Drive folder ID or share link')
     parser.add_argument('--upload-dir', help='Local directory of images to upload')
     parser.add_argument('--output-dir', default='optimized', help='Directory to save optimized images')
@@ -383,7 +383,7 @@ def main():
         print(f"Removed optimized directory: {output_dir}")
     
     print("Cleanup complete.")
-    print("\nThank you for using Google Drive Image Optimizer!")
+    print("\nThank you for using Quill!")
     
     # Exit with error code if there were failures
     if failed or failed_uploads or (uploaded == [] and len(optimized) > 0):

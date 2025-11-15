@@ -42,10 +42,14 @@ def _build_github_oauth_response(request: Request, auth_url: str, state: str) ->
 
 @router.get("/api", tags=["Public"]) 
 async def root():
+    # Determine queue mode for debugging
+    queue_mode = "inline" if settings.use_inline_queue else ("workers-binding" if settings.queue else ("api" if settings.cf_api_token else "none"))
+    
     return {
         "name": settings.app_name,
         "version": settings.app_version,
         "environment": settings.environment,
+        "queue_mode": queue_mode,
         "endpoints": {
             "auth": "/auth/github/start",
             "documents_drive": "/api/v1/documents/drive",

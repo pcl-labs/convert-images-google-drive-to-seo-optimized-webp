@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     )
     
     # Application
-    app_name: str = "Google Drive Image Optimizer API"
+    app_name: str = "Quill API"
     app_version: str = "1.0.0"
     environment: str = Field(default="development")
     debug: bool = Field(default=False)
@@ -61,6 +61,13 @@ class Settings(BaseSettings):
     queue_name: str = Field(default="image-optimization-queue")
     dead_letter_queue_name: str = Field(default="image-optimization-dlq")
     
+    # Cloudflare Queue Configuration
+    use_inline_queue: bool = Field(default=True)  # Use in-memory queue for local dev
+    cf_account_id: Optional[str] = None  # Cloudflare account ID
+    cf_api_token: Optional[str] = None  # Cloudflare API token (for Queue API access)
+    cf_queue_name: Optional[str] = None  # Cloudflare queue name (e.g., "quill-jobs")
+    cf_queue_dlq: Optional[str] = None  # Cloudflare dead letter queue name (e.g., "quill-dlq")
+    
     # Job Configuration
     max_job_retries: int = 3
     job_timeout_seconds: int = 3600  # 1 hour
@@ -68,12 +75,7 @@ class Settings(BaseSettings):
     # CORS - accept string or list, will be converted to list
     cors_origins: Union[str, list[str]] = Field(default="http://localhost:8000")
 
-    # Phase 2: Transcripts/ASR
-    enable_ytdlp_audio: bool = Field(default=True)
-    asr_engine: str = Field(default="faster_whisper")  # faster_whisper|whisper|provider
-    whisper_model_size: str = Field(default="small.en")
-    asr_device: str = Field(default="cpu")  # cpu|cuda|auto
-    asr_max_duration_min: int = Field(default=60)
+    # Transcript Configuration
     transcript_langs: Union[str, list[str]] = Field(default="en,en-US,en-GB")
     
     @field_validator("encryption_key")
@@ -95,22 +97,39 @@ class Settings(BaseSettings):
         if (self.environment or "").lower() == "production" and not self.encryption_key:
             raise ValueError("ENCRYPTION_KEY is required in production (provide a base64 URL-safe 32-byte key)")
         return self
-
-    @field_validator("asr_engine")
-    @classmethod
-    def validate_asr_engine(cls, v: str) -> str:
-        allowed = {"faster_whisper", "whisper", "provider"}
-        if v not in allowed:
-            raise ValueError(f"asr_engine must be one of {sorted(allowed)}")
-        return v
-
-    @field_validator("asr_device")
-    @classmethod
-    def validate_asr_device(cls, v: str) -> str:
-        allowed = {"cpu", "cuda", "auto"}
-        if v not in allowed:
-            raise ValueError(f"asr_device must be one of {sorted(allowed)}")
-        return v
+    
+    @model_validator(mode="after")
+    def validate_queue_configuration(self):
+        """Validate queue configuration based on environment."""
+        is_production = (self.environment or "").lower() == "production"
+        
+        # In production, require real Cloudflare bindings (not inline queue)
+        if is_production and self.use_inline_queue:
+            raise ValueError(
+                "USE_INLINE_QUEUE=true is not allowed in production. "
+                "Production must use real Cloudflare Queue bindings. "
+                "Set USE_INLINE_QUEUE=false and ensure queue bindings are configured in wrangler.toml"
+            )
+        
+        # If using Cloudflare Queue API (not inline), require API credentials
+        if not self.use_inline_queue:
+            if not self.cf_account_id:
+                raise ValueError(
+                    "CF_ACCOUNT_ID is required when USE_INLINE_QUEUE=false. "
+                    "Get your account ID with: wrangler whoami"
+                )
+            if not self.cf_api_token:
+                raise ValueError(
+                    "CF_API_TOKEN is required when USE_INLINE_QUEUE=false. "
+                    "Create an API token in Cloudflare dashboard: https://dash.cloudflare.com/profile/api-tokens"
+                )
+            if not self.cf_queue_name:
+                raise ValueError(
+                    "CF_QUEUE_NAME is required when USE_INLINE_QUEUE=false. "
+                    "Set to your Cloudflare queue name (e.g., 'quill-jobs')"
+                )
+        
+        return self
 
     @model_validator(mode="after")
     def parse_transcript_langs(self):

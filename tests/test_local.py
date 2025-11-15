@@ -152,7 +152,7 @@ def test_google_oauth_start_requires_auth():
     """Test that Google OAuth start endpoint redirects or errors."""
     try:
         response = requests.get(
-            f"{BASE_URL}/auth/google/start", allow_redirects=False, timeout=TIMEOUT_SECONDS
+            f"{BASE_URL}/auth/google/start?integration=drive", allow_redirects=False, timeout=TIMEOUT_SECONDS
         )
     except requests.exceptions.Timeout:
         pytest.skip(f"Google OAuth start timed out after {TIMEOUT_SECONDS}s")

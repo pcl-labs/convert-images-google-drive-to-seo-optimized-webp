@@ -36,6 +36,7 @@ def authed_client():
     token = generate_jwt_token(user_id=user_id)
     client.cookies.set("access_token", token)
 
+    client.test_user_id = user_id
     return client
 
 
@@ -48,7 +49,32 @@ def test_ingest_text_authed(authed_client):
     assert data.get("job_id")
 
 
-def test_ingest_youtube_authed(authed_client):
+def test_ingest_youtube_authed(authed_client, monkeypatch):
+    fake_service = object()
+    monkeypatch.setattr("api.protected.build_youtube_service_for_user", AsyncMock(return_value=fake_service))
+
+    metadata_bundle = {
+        "frontmatter": {"title": "Sample Video", "slug": "sample-video"},
+        "metadata": {
+            "title": "Sample Video",
+            "description": "Demo",
+            "duration_seconds": 120,
+            "channel_title": "Channel",
+            "channel_id": "chan123",
+            "published_at": "2024-01-01T00:00:00Z",
+            "thumbnails": {},
+            "category_id": "24",
+            "tags": ["demo"],
+        },
+    }
+
+    def _fake_fetch(service, video_id):
+        assert service is fake_service
+        assert video_id == "abc12345678"
+        return metadata_bundle
+
+    monkeypatch.setattr("api.protected.fetch_video_metadata", _fake_fetch)
+
     # Use a simple valid-looking short URL pattern matched by regex
     resp = authed_client.post("/ingest/youtube", json={"url": "https://youtu.be/abc12345678"})
     assert resp.status_code in [200, 201]

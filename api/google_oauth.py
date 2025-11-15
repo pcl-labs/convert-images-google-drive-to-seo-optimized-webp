@@ -1,28 +1,49 @@
 """
 Google OAuth utilities: authorization URL generation, code exchange, and building
-per-user Google Drive clients from stored tokens.
+per-user Google Drive/YouTube clients from stored tokens.
 """
-from typing import Optional
-from datetime import timezone
 import asyncio
 import json
+from datetime import timezone
+from typing import List, Optional
 
+from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
-from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
+
+from core.constants import GOOGLE_INTEGRATION_SCOPES
 
 from .config import settings
 from .database import (
     Database,
-    get_google_tokens,
-    upsert_google_tokens,
-    update_google_tokens_expiry,
+    get_google_token,
+    update_google_token_expiry,
+    upsert_google_token,
 )
-from core.constants import GOOGLE_DRIVE_SCOPES
+
+AVAILABLE_GOOGLE_INTEGRATIONS = set(GOOGLE_INTEGRATION_SCOPES.keys())
 
 
-def get_google_oauth_url(state: str, redirect_uri: str) -> str:
+def _normalize_integration(value: Optional[str]) -> str:
+    if not value:
+        raise ValueError("Google integration is required")
+    key = value.lower()
+    if key not in AVAILABLE_GOOGLE_INTEGRATIONS:
+        raise ValueError(f"Unsupported Google integration '{value}'")
+    return key
+
+
+def _scopes_for_integration(integration: str) -> List[str]:
+    key = _normalize_integration(integration)
+    return GOOGLE_INTEGRATION_SCOPES[key]
+
+
+def normalize_google_integration(value: Optional[str]) -> str:
+    return _normalize_integration(value)
+
+
+def get_google_oauth_url(state: str, redirect_uri: str, *, integration: str) -> str:
     """Build the Google OAuth consent URL using env-based client config.
     
     Args:
@@ -41,19 +62,26 @@ def get_google_oauth_url(state: str, redirect_uri: str) -> str:
                 "redirect_uris": [redirect_uri],
             }
         },
-        scopes=GOOGLE_DRIVE_SCOPES,
+        scopes=_scopes_for_integration(integration),
     )
     flow.redirect_uri = redirect_uri
     auth_url, _ = flow.authorization_url(
         access_type="offline",
-        include_granted_scopes=True,
+        include_granted_scopes="true",
         state=state,
         prompt="consent",
     )
     return auth_url
 
 
-async def exchange_google_code(db: Database, user_id: str, code: str, redirect_uri: str) -> None:
+async def exchange_google_code(
+    db: Database,
+    user_id: str,
+    code: str,
+    redirect_uri: str,
+    *,
+    integration: str,
+) -> None:
     """Exchange OAuth code for tokens and store them for the user.
     
     Args:
@@ -74,7 +102,7 @@ async def exchange_google_code(db: Database, user_id: str, code: str, redirect_u
                 "redirect_uris": [redirect_uri],
             }
         },
-        scopes=GOOGLE_DRIVE_SCOPES,
+        scopes=_scopes_for_integration(integration),
     )
     flow.redirect_uri = redirect_uri
     try:
@@ -86,9 +114,10 @@ async def exchange_google_code(db: Database, user_id: str, code: str, redirect_u
     if creds.expiry:
         expiry_iso = creds.expiry.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
     scopes_str = " ".join(creds.scopes or [])
-    await upsert_google_tokens(
+    await upsert_google_token(
         db,
         user_id=user_id,
+        integration=integration,
         access_token=creds.token,
         refresh_token=getattr(creds, "refresh_token", None),
         expiry=expiry_iso,
@@ -97,31 +126,44 @@ async def exchange_google_code(db: Database, user_id: str, code: str, redirect_u
     )
 
 
-async def build_drive_service_for_user(db: Database, user_id: str):
-    """Build a Google Drive v3 service for the given user using stored tokens.
-    Refresh tokens if expired and persist updated access token/expiry.
-    """
-    token_row = await get_google_tokens(db, user_id)
-    if not token_row:
-        raise ValueError("Google account not linked for this user")
-
-    raw_scopes = token_row.get("scopes")
-    parsed_scopes = None
+def parse_google_scope_list(raw_scopes: Optional[object]) -> List[str]:
+    """Normalize scopes stored as json/text/list into a list of strings."""
+    if not raw_scopes:
+        return []
     if isinstance(raw_scopes, list):
-        parsed_scopes = [str(s) for s in raw_scopes]
-    elif isinstance(raw_scopes, str):
-        s = raw_scopes.strip()
-        if s:
-            try:
-                maybe = json.loads(s)
-                if isinstance(maybe, list):
-                    parsed_scopes = [str(x) for x in maybe]
-                else:
-                    parsed_scopes = [tok for tok in s.replace(",", " ").split() if tok]
-            except json.JSONDecodeError:
-                parsed_scopes = [tok for tok in s.replace(",", " ").split() if tok]
-    if not parsed_scopes:
-        parsed_scopes = list(GOOGLE_DRIVE_SCOPES)
+        return [str(scope).strip() for scope in raw_scopes if str(scope).strip()]
+    scope_text = str(raw_scopes).strip()
+    if not scope_text:
+        return []
+    try:
+        maybe = json.loads(scope_text)
+        if isinstance(maybe, list):
+            return [str(scope).strip() for scope in maybe if str(scope).strip()]
+    except json.JSONDecodeError:
+        pass
+    normalized = [token.strip() for token in scope_text.replace(",", " ").split() if token.strip()]
+    return normalized
+
+
+async def _build_google_service_for_user(
+    db: Database,
+    user_id: str,
+    *,
+    integration: str,
+    missing_scope_message: str,
+    service_name: str,
+    service_version: str,
+):
+    """Shared helper that loads/refreshes user creds and returns a Google API client."""
+    integration_key = _normalize_integration(integration)
+    token_row = await get_google_token(db, user_id, integration_key)
+    if not token_row:
+        raise ValueError("Google account not linked for this integration")
+
+    scopes = parse_google_scope_list(token_row.get("scopes"))
+    required_scopes = _scopes_for_integration(integration_key)
+    if not all(scope in scopes for scope in required_scopes):
+        raise ValueError(missing_scope_message)
 
     creds = Credentials(
         token=token_row.get("access_token"),
@@ -129,7 +171,7 @@ async def build_drive_service_for_user(db: Database, user_id: str):
         token_uri="https://oauth2.googleapis.com/token",
         client_id=settings.google_client_id,
         client_secret=settings.google_client_secret,
-        scopes=parsed_scopes,
+        scopes=scopes,
     )
 
     if not creds.valid:
@@ -145,5 +187,28 @@ async def build_drive_service_for_user(db: Database, user_id: str):
         else:
             raise ValueError("Google credentials invalid and no refresh token available")
 
-    service = build("drive", "v3", credentials=creds)
-    return service
+    return build(service_name, service_version, credentials=creds)
+
+
+async def build_drive_service_for_user(db: Database, user_id: str):
+    """Build a Google Drive v3 service for the given user using stored tokens."""
+    return await _build_google_service_for_user(
+        db,
+        user_id,
+        integration="drive",
+        missing_scope_message="Google account missing Drive access; please reconnect",
+        service_name="drive",
+        service_version="v3",
+    )
+
+
+async def build_youtube_service_for_user(db: Database, user_id: str):
+    """Build a YouTube Data API client for the given user."""
+    return await _build_google_service_for_user(
+        db,
+        user_id,
+        integration="youtube",
+        missing_scope_message="Google account missing YouTube access; please reconnect",
+        service_name="youtube",
+        service_version="v3",
+    )

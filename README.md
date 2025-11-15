@@ -27,11 +27,11 @@ cd convert-images-google-drive-to-seo-optimized-webp
 pip install -r requirements.txt
 ```
 
-3. Set up Google Drive API:
+3. Set up Google Drive + YouTube Data APIs:
    - Go to [Google Cloud Console](https://console.cloud.google.com/)
    - Create a new project or select existing one
-   - Enable the Google Drive API
-   - Create credentials (OAuth 2.0 Client ID)
+   - Enable both the **Google Drive API** and the **YouTube Data API v3** on the same project
+   - Create OAuth 2.0 credentials (web application) and configure the consent screen to include Drive + YouTube read-only scopes
    - Download the credentials and save as `credentials.json` in the project root
 
 ## Usage
@@ -70,8 +70,11 @@ uvicorn api.main:app --reload --host 0.0.0.0 --port 8000
 
 The API will be available at `http://localhost:8000`
 
-**Note:** Before starting the API server, ensure you have set the required environment variable:
-- `JWT_SECRET_KEY` - Secret key for JWT token generation (required). You can set this in a `.env` file or export it in your shell.
+**Note:** Before starting the API server, ensure you have set the required environment variables (see Environment Variables section below). At minimum, you need:
+- `JWT_SECRET_KEY` - Secret key for JWT token generation (required)
+
+For local development with queue processing, also set:
+- `USE_INLINE_QUEUE=true` (default) - Enables in-memory queue for local dev
 
 #### API Endpoints
 
@@ -89,7 +92,7 @@ The API will be available at `http://localhost:8000`
 
 *Protected (require authentication):*
 - `GET /auth/github/status` - GitHub link status
-- `GET /auth/google/start` - Initiate Google OAuth flow (link Google Drive)
+- `GET /auth/google/start?integration=drive|youtube` - Initiate Google OAuth flow for a specific integration (Drive, YouTube, Gmail)
 - `GET /auth/google/callback` - Google OAuth callback
 - `GET /auth/google/status` - Google link status
 - `GET /auth/providers/status` - Unified provider status (GitHub + Google)
@@ -100,7 +103,7 @@ The API will be available at `http://localhost:8000`
 - `POST /api/v1/documents/drive` - Register a Drive folder as a document
 - `POST /api/v1/optimize` - Start an optimization job for a document
 - `POST /ingest/text` - Ingest text content
-- `POST /ingest/youtube` - Ingest YouTube video transcript
+- `POST /ingest/youtube` - Ingest YouTube video transcript (requires Google account linked with Drive + YouTube scopes; failures bubble up as descriptive 4xx errors—no fallback scraping)
 - `GET /api/v1/jobs/{job_id}` - Get job status
 - `GET /api/v1/jobs` - List recent jobs
 - `DELETE /api/v1/jobs/{job_id}` - Cancel a job
@@ -111,6 +114,22 @@ The API will be available at `http://localhost:8000`
 
 **Admin Endpoints (require authentication):**
 - `GET /api/v1/stats` - Get API statistics
+
+#### Running the Queue Consumer (Local Development)
+
+For local development with `USE_INLINE_QUEUE=true`, you need to run the queue consumer in a separate terminal to process jobs:
+
+```bash
+# Start the queue consumer in inline mode
+python workers/consumer.py --inline
+
+# Optional: Adjust poll interval (default: 1.0 seconds)
+python workers/consumer.py --inline --poll-interval 0.5
+```
+
+The consumer will poll the in-memory queue and process jobs as they arrive. Make sure your `.env` has `USE_INLINE_QUEUE=true` (the default).
+
+**Note:** In production (Cloudflare Workers), the consumer runs automatically via queue bindings configured in `wrangler.toml`.
 
 #### Example: Start an Optimization Job
 
@@ -147,6 +166,8 @@ Response:
 }
 ```
 
+The job will be queued and processed by the worker consumer running in the other terminal.
+
 #### Example: Check Job Status
 
 ```bash
@@ -157,11 +178,22 @@ curl -H "Authorization: Bearer YOUR_JWT_TOKEN" \
 **Note:** Most endpoints require authentication. You can authenticate via:
 1. GitHub OAuth: Visit `/auth/github/start` to start the OAuth flow
 2. API Key: Use `POST /auth/keys` to generate an API key (requires GitHub auth first)
-3. Google OAuth (link account for Drive access): Visit `/auth/google/start` after authenticating with GitHub
+3. Google OAuth (link integrations):
+   - Visit `/auth/google/start?integration=drive` to enable Drive/Doc workflows.
+   - Visit `/auth/google/start?integration=youtube` to enable YouTube ingestion.
 
 #### Interactive API Documentation
 
 Visit `http://localhost:8000/docs` in your browser for interactive API testing.
+
+### YouTube ingestion requirements
+
+- Use the **same** Google OAuth client (configured above) with both the Drive API and YouTube Data API enabled. Each integration requests only the scopes it needs, so no additional client IDs are required.
+- Link your Google account after logging in:
+  - `/auth/google/start?integration=drive` enables Drive-backed documents.
+  - `/auth/google/start?integration=youtube` enables YouTube ingestion.
+- During ingestion the API fetches metadata (title, description, duration, thumbnails, etc.) from the YouTube Data API and stores it with the document. If Google revokes access or the API denies the request, the job will fail up front with a descriptive error instead of silently falling back to unofficial scraping.
+- Transcripts are still retrieved from captions, but the authoritative duration + channel metadata always comes from the official API.
 
 ### Command Line Arguments
 
@@ -260,20 +292,32 @@ pytest tests/test_local.py -v
 
 Set in `.env` or your shell as needed:
 
+**Required:**
 - `JWT_SECRET_KEY` (required) - Secret key for JWT token generation and encryption key derivation
+- `ENCRYPTION_KEY` (required in production) - Base64 URL-safe 32-byte Fernet key for encrypting sensitive data
+
+**OAuth (optional):**
 - `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_REDIRECT_URI`
 - `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`
+
+**Application Settings:**
 - `ENVIRONMENT` (optional, default: "development") - Environment name (development/production)
 - `RATE_LIMIT_PER_MINUTE` (optional, default: 60) - Per-minute rate limit
 - `RATE_LIMIT_PER_HOUR` (optional, default: 1000) - Per-hour rate limit
 
-**Phase 2: Transcripts/ASR** (optional):
-- `ENABLE_YTDLP_AUDIO` (default: true) - Enable yt-dlp audio extraction
-- `ASR_ENGINE` (default: "faster_whisper") - ASR engine: faster_whisper|whisper|provider
-- `WHISPER_MODEL_SIZE` (default: "small.en") - Whisper model size
-- `ASR_DEVICE` (default: "cpu") - Device: cpu|cuda|auto
-- `ASR_MAX_DURATION_MIN` (default: 60) - Maximum duration in minutes
-- `TRANSCRIPT_LANGS` (default: "en,en-US,en-GB") - Comma-separated language codes
+**Cloudflare Queue Configuration (for local development):**
+- `USE_INLINE_QUEUE` (default: true) - Use in-memory queue for local dev. Set to `false` for production to use Cloudflare Queues
+- `CF_ACCOUNT_ID` - Cloudflare account ID (get with: `wrangler whoami`)
+- `CF_API_TOKEN` - Cloudflare API token with Queues:Edit permission (create in dashboard)
+- `CF_QUEUE_NAME` (default: "quill-jobs") - Cloudflare queue name
+- `CF_QUEUE_DLQ` (default: "quill-dlq") - Cloudflare dead letter queue name
+
+**Note:** For local development, set `USE_INLINE_QUEUE=true` (default). The queue will run in-memory and you can process jobs locally using `python workers/consumer.py --inline`.
+
+For production, set `USE_INLINE_QUEUE=false` and provide `CF_ACCOUNT_ID`, `CF_API_TOKEN`, and `CF_QUEUE_NAME`. See `docs/DEPLOYMENT.md` for detailed setup instructions.
+
+**Transcripts (optional):**
+- `TRANSCRIPT_LANGS` (default: "en,en-US,en-GB") - Comma-separated language codes for YouTube transcript fetching
 
 ## Dependencies
 
