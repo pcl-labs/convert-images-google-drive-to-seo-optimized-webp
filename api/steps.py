@@ -4,6 +4,8 @@ import hashlib
 import json
 import uuid
 from typing import Any, Dict, List, Optional
+import asyncio
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
@@ -132,17 +134,24 @@ async def transcript_fetch(request: Request, payload: TranscriptFetchRequest, us
 
     text = result.get("text") or ""
     if payload.document_id:
-        await _load_document_text(db, user["user_id"], payload.document_id)
+        doc = await _load_document_text(db, user["user_id"], payload.document_id)
+        existing_meta_raw = doc.get("metadata")
+        try:
+            existing_meta = json.loads(existing_meta_raw) if isinstance(existing_meta_raw, str) else (existing_meta_raw or {})
+        except Exception:
+            existing_meta = {}
+        new_meta = {
+            **(existing_meta or {}),
+            "source": "youtube",
+            "lang": result.get("lang"),
+            "duration_s": result.get("duration_s"),
+        }
         await update_document(
             db,
             payload.document_id,
             {
                 "raw_text": text,
-                "metadata": {
-                    "source": "youtube",
-                    "lang": result.get("lang"),
-                    "duration_s": result.get("duration_s"),
-                },
+                "metadata": new_meta,
             },
         )
 
@@ -179,7 +188,17 @@ async def outline_generate(request: Request, payload: OutlineGenerateRequest, us
     if payload.document_id:
         doc = await _load_document_text(db, user["user_id"], payload.document_id)
         source_text = source_text or (doc.get("raw_text") or "")
-    outline = generate_outline(source_text or "", payload.options.get("max_sections", 5))
+    # Validate non-empty input
+    if not source_text or not str(source_text).strip():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Source text is required to generate outline")
+    max_sections = 5
+    try:
+        if isinstance(payload.options, dict):
+            max_sections = int(payload.options.get("max_sections", 5))
+    except Exception:
+        max_sections = 5
+    # Run in a worker thread to avoid blocking event loop
+    outline = await asyncio.to_thread(generate_outline, source_text, max_sections)
     response_body = {"outline": outline, "document_id": payload.document_id}
     if payload.job_id:
         await record_usage_event(
@@ -207,7 +226,9 @@ async def chapters_organize(request: Request, payload: ChaptersOrganizeRequest, 
     if payload.document_id:
         doc = await _load_document_text(db, user["user_id"], payload.document_id)
         source_text = source_text or (doc.get("raw_text") or "")
-    chapters = organize_chapters(source_text or "")
+    if not source_text or not str(source_text).strip():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Source text is required to organize chapters")
+    chapters = await asyncio.to_thread(organize_chapters, source_text)
     response_body = {"chapters": chapters, "document_id": payload.document_id}
     if payload.job_id:
         await record_usage_event(
@@ -236,20 +257,33 @@ async def blog_compose(request: Request, payload: BlogComposeRequest, user: dict
     if payload.document_id and not (outline or chapters):
         doc = await _load_document_text(db, user["user_id"], payload.document_id)
         text = doc.get("raw_text") or ""
-        outline = generate_outline(text, 5)
-        chapters = organize_chapters(text)
+        if not text or not text.strip():
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Document has no text to compose from")
+        # Run outline and chapters generation concurrently in threads
+        outline_task = asyncio.to_thread(generate_outline, text, 5)
+        chapters_task = asyncio.to_thread(organize_chapters, text)
+        outline, chapters = await asyncio.gather(outline_task, chapters_task)
     chapters = chapters or [{"title": item.get("title"), "summary": item.get("summary")} for item in (outline or [])]
-    composed = compose_blog(chapters, tone=payload.tone)
+    composed = await asyncio.to_thread(compose_blog, chapters, tone=payload.tone)
     if payload.document_id:
+        # Merge metadata to avoid dropping existing fields
+        doc = await _load_document_text(db, user["user_id"], payload.document_id)
+        existing_meta_raw = doc.get("metadata")
+        try:
+            existing_meta = json.loads(existing_meta_raw) if isinstance(existing_meta_raw, str) else (existing_meta_raw or {})
+        except Exception:
+            existing_meta = {}
+        merged_meta = {**(existing_meta or {})}
+        merged_meta.update({
+            "last_composed": datetime.now(timezone.utc).isoformat(),
+            "tone": payload.tone,
+            "title": default_title_from_outline(outline or chapters or []),
+        })
         await update_document(
             db,
             payload.document_id,
             {
-                "metadata": {
-                    "last_composed": uuid.uuid4().hex,
-                    "tone": payload.tone,
-                    "title": default_title_from_outline(outline or chapters or []),
-                }
+                "metadata": merged_meta,
             },
         )
     response_body = {"document_id": payload.document_id, **composed}

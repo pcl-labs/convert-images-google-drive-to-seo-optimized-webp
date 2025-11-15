@@ -63,12 +63,20 @@ async def enqueue_job_with_guard(
                 payload = request
                 if hasattr(request, "model_dump"):
                     payload = request.model_dump()
-                elif isinstance(request, dict):
-                    payload = request
                 else:
                     payload = getattr(request, "__dict__", {})
                 if not isinstance(payload, dict):
                     payload = {}
+                if not payload:
+                    logger.warning(
+                        "enqueue_payload_empty",
+                        extra={
+                            "job_id": job_id,
+                            "user_id": user_id,
+                            "request_type": type(request).__name__,
+                            "request_repr": repr(request)[:500],
+                        },
+                    )
                 payload = {**payload}
                 if 'job_id' not in payload:
                     payload['job_id'] = job_id

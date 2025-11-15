@@ -95,8 +95,8 @@ Create folders
 mkdir -p static/favicon static/og
 ```
 
-Prepare source logo (SVG preferred)
-- Place your logo as `assets/quill-logo.svg` (or `assets/quill-logo.png`).
+Prepare source logo
+- Place your logo as `assets/quill-logo.png` (SVG support varies by tool; PNG recommended for `pwa-asset-generator`).
 
 Option A: Generate icons with pwa-asset-generator
 ```bash
@@ -116,6 +116,11 @@ Option B: Manual assets
 # convert assets/quill-logo.png -resize 32x32  static/favicon/favicon-32x32.png
 # convert assets/quill-logo.png -resize 16x16  static/favicon/favicon-16x16.png
 ```
+
+Option C: Use an online icon generator
+- Upload a 1024x1024 PNG logo.
+- Download the generated favicon set (and manifest if provided).
+- Place images under `static/favicon` and ensure `static/site.webmanifest` references them.
 
 Add an OG image placeholder (1200x630 recommended)
 ```bash

@@ -162,3 +162,13 @@ CREATE TABLE IF NOT EXISTS step_invocations (
 );
 
 CREATE INDEX IF NOT EXISTS idx_step_invocations_user ON step_invocations(user_id, created_at DESC);
+-- Support duplicate detection and fast lookup by request hash per user
+CREATE INDEX IF NOT EXISTS idx_step_invocations_user_hash ON step_invocations(user_id, request_hash);
+
+-- Retention plan: step_invocations are ephemeral and should not be retained long-term.
+-- Operational guidance:
+-- - Set up a scheduled cleanup (cron/worker) to delete rows older than 24–48 hours.
+--   Example (SQLite/D1): DELETE FROM step_invocations WHERE created_at < datetime('now','-48 hours');
+-- - Service layer should sanitize response_body to avoid storing PII/secrets.
+--   Only non-sensitive metadata should be stored. Keys such as email, tokens, passwords,
+--   api_key, authorization, secret, client_secret must be redacted or omitted.
