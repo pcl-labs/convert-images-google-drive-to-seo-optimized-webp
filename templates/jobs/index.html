@@ -37,17 +37,17 @@
     {% set queued = stats.pending or stats.queued or 0 %}
     {% set running = stats.processing or stats.running or 0 %}
     {% set completed = stats.completed or 0 %}
-    <div class="surface rounded-xl p-4">
+    <div class="bg-surface-muted rounded-xl p-4">
       <p class="text-xs uppercase tracking-wide text-contentMuted">Queued</p>
       <p class="mt-2 text-2xl font-semibold text-content">{{ queued }}</p>
       <p class="text-xs text-contentMuted mt-1">Awaiting worker pickup</p>
     </div>
-    <div class="surface rounded-xl p-4">
+    <div class="bg-surface-muted rounded-xl p-4">
       <p class="text-xs uppercase tracking-wide text-contentMuted">Running</p>
       <p class="mt-2 text-2xl font-semibold text-content">{{ running }}</p>
       <p class="text-xs text-contentMuted mt-1">Actively optimizing</p>
     </div>
-    <div class="surface rounded-xl p-4">
+    <div class="bg-surface-muted rounded-xl p-4">
       <p class="text-xs uppercase tracking-wide text-contentMuted">Completed</p>
       <p class="mt-2 text-2xl font-semibold text-content">{{ completed }}</p>
       <p class="text-xs text-contentMuted mt-1">Finished in the last 30 days</p>
