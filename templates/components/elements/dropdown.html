@@ -11,7 +11,7 @@
 <div x-data="{ open:false, toggle(){ this.open=!this.open }, close(){ this.open=false } }" class="relative">
   <div>{{ trigger_html | safe }}</div>
   <div x-cloak x-show="open" @click.away="close()" x-transition.origin.top.{{ 'right' if align=='right' else 'left' }}
-       class="absolute {{ align_class }} mt-2 {{ width_class }} bg-slate-900/60 border border-slate-800 rounded-xl shadow-lg backdrop-blur {{ panel_class }}">
+       class="absolute {{ align_class }} mt-2 {{ width_class }} surface rounded-lg shadow-lg backdrop-blur {{ panel_class }}">
     <div x-ref="panel">
       {{ caller() }}
     </div>

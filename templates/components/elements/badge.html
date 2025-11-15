@@ -1,11 +1,11 @@
 {% macro badge(text, status="default") %}
   {% set colors = {
-    'running': 'bg-green-500/10 text-green-400 ring-1 ring-inset ring-green-500/30',
-    'queued': 'bg-slate-500/10 text-slate-300 ring-1 ring-inset ring-slate-500/30',
-    'completed': 'bg-emerald-500/10 text-emerald-400 ring-1 ring-inset ring-emerald-500/30',
-    'failed': 'bg-rose-500/10 text-rose-400 ring-1 ring-inset ring-rose-500/30',
-    'disconnected': 'bg-yellow-500/10 text-yellow-400 ring-1 ring-inset ring-yellow-500/30',
-    'default': 'bg-slate-500/10 text-slate-300 ring-1 ring-inset ring-slate-500/30'
+    'running': 'bg-accent/10 text-accent ring-1 ring-inset ring-accent/30',
+    'queued': 'bg-contentMuted/10 text-contentMuted ring-1 ring-inset ring-contentMuted/30',
+    'completed': 'bg-accent/10 text-accent ring-1 ring-inset ring-accent/30',
+    'failed': 'bg-destructive/10 text-destructive ring-1 ring-inset ring-destructive/30',
+    'disconnected': 'bg-warning/10 text-warning ring-1 ring-inset ring-warning/30',
+    'default': 'bg-contentMuted/10 text-contentMuted ring-1 ring-inset ring-contentMuted/30'
   } %}
-  <span class="inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium {{ colors.get(status, colors['default']) }}">{{ text }}</span>
+  <span class="badge {{ colors.get(status, colors['default']) }}">{{ text }}</span>
 {% endmacro %}

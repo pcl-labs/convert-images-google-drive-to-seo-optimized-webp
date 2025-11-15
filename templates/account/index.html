@@ -3,39 +3,37 @@
 {% block content %}
 <div class="p-4 md:p-6 space-y-6">
   <div class="space-y-1">
-    <h1 class="text-xl font-semibold text-white">Account</h1>
-    <p class="text-sm text-slate-400">Your profile information</p>
+    <h1 class="text-xl font-semibold text-content">Account</h1>
+    <p class="text-sm text-contentMuted">Your profile information</p>
   </div>
 
-  <div class="bg-slate-900/60 border border-slate-800 rounded-xl">
-    <div class="px-4 py-3 border-b border-slate-800 font-semibold text-white">Profile</div>
-    <div class="p-4 grid grid-cols-1 md:grid-cols-2 gap-4 text-slate-200">
+  {% from 'components/elements/card.html' import card %}
+  {% call card(title='Profile') %}
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-content">
       <div>
-        <div class="text-slate-400 text-sm">User ID</div>
+        <div class="text-contentMuted text-sm">User ID</div>
         <div class="font-mono break-all">{{ user.user_id }}</div>
       </div>
       <div>
-        <div class="text-slate-400 text-sm">GitHub ID</div>
+        <div class="text-contentMuted text-sm">GitHub ID</div>
         <div class="font-mono break-all">{{ user.github_id or '-' }}</div>
       </div>
       <div>
-        <div class="text-slate-400 text-sm">Email</div>
+        <div class="text-contentMuted text-sm">Email</div>
         <div class="font-mono break-all">{{ user.email or '-' }}</div>
       </div>
       <div>
-        <div class="text-slate-400 text-sm">Created</div>
+        <div class="text-contentMuted text-sm">Created</div>
         <div>{{ user.created_at or '-' }}</div>
       </div>
     </div>
-  </div>
+  {% endcall %}
 
   <div class="flex justify-end">
     <form method="post" action="/auth/logout">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-      <button type="submit" class="inline-flex items-center gap-2 rounded-md bg-slate-800/80 border border-slate-700 px-3 py-2 text-sm text-slate-200 hover:bg-slate-800">
-        <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15 3h4a2 2 0 012 2v14a2 2 0 01-2 2h-4"/><path stroke-linecap="round" stroke-linejoin="round" d="M10 17l5-5-5-5M15 12H3"/></svg>
-        <span>Log out</span>
-      </button>
+      {% from 'components/elements/button.html' import button %}
+      {{ button('Log out', variant='secondary', attrs='type="submit"', extra_classes='inline-flex items-center gap-2') }}
     </form>
   </div>
 </div>

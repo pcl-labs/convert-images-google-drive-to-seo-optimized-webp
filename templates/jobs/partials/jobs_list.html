@@ -6,19 +6,19 @@
     {% for job in jobs %}
       <tr>
         <td class="px-3 py-2 md:px-4 md:py-3 whitespace-nowrap">{{ job.id }}</td>
-        <td class="px-3 py-2 md:px-4 md:py-3 text-sm text-slate-400 break-all">{{ job.document_id or '—' }}</td>
+        <td class="px-3 py-2 md:px-4 md:py-3 text-sm text-contentMuted break-all">{{ job.document_id or '—' }}</td>
         <td class="px-3 py-2 md:px-4 md:py-3">{{ job.kind }}</td>
         <td class="px-3 py-2 md:px-4 md:py-3">{{ badge(job.status_label, status=job.status) }}</td>
         <td class="px-3 py-2 md:px-4 md:py-3">{{ job.created_at }}</td>
         <td class="px-3 py-2 md:px-4 md:py-3">
-          <a href="/dashboard/jobs/{{ job.id }}" class="text-sky-400 hover:text-sky-300">View</a>
+          <a href="/dashboard/jobs/{{ job.id }}" class="text-primary hover:text-primary/80">View</a>
         </td>
         <td class="px-3 py-2 md:px-4 md:py-3">
           {{ button(
             'Retry',
             variant='ghost',
             with_spinner=True,
-            extra_classes='text-slate-300 hover:text-white',
+            extra_classes='text-contentMuted hover:text-content',
             attrs='hx-post="/dashboard/jobs/' ~ job.id ~ '/retry" hx-headers="{&quot;X-CSRF-Token&quot;:&quot;{{ csrf_token }}&quot;}" hx-swap="none" hx-on:htmx:afterOnLoad="window.dispatchEvent(new CustomEvent(\'toast\',{detail:{type:\'success\',text:\'Job retried\'}}))" hx-on:htmx:responseError="window.dispatchEvent(new CustomEvent(\'toast\',{detail:{type:\'error\',text:\'Retry failed\'}}))"'
           ) }}
         </td>
@@ -27,14 +27,14 @@
             'Cancel',
             variant='ghost',
             with_spinner=True,
-            extra_classes='text-rose-400 hover:text-rose-300',
+            extra_classes='text-destructive hover:text-destructive/80',
             attrs='hx-delete="/dashboard/jobs/' ~ job.id ~ '" hx-headers="{&quot;X-CSRF-Token&quot;:&quot;{{ csrf_token }}&quot;}" hx-swap="none" hx-on:htmx:afterOnLoad="window.dispatchEvent(new CustomEvent(\'toast\',{detail:{type:\'success\',text:\'Job cancelled\'}}))" hx-on:htmx:responseError="window.dispatchEvent(new CustomEvent(\'toast\',{detail:{type:\'error\',text:\'Cancel failed\'}}))"'
           ) }}
         </td>
       </tr>
     {% else %}
       <tr>
-        <td colspan="8" class="px-4 py-6 text-center text-slate-400">No jobs found</td>
+        <td colspan="8" class="px-4 py-6 text-center text-contentMuted">No jobs found</td>
       </tr>
     {% endfor %}
   {% endcall %}
