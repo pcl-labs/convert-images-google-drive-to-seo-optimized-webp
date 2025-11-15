@@ -57,16 +57,14 @@ class Settings(BaseSettings):
     dlq: Optional[object] = None  # Dead letter queue binding (DLQ)
     kv_namespace: Optional[object] = None  # Optional KV for caching
     
-    # Queue Configuration
-    queue_name: str = Field(default="image-optimization-queue")
-    dead_letter_queue_name: str = Field(default="image-optimization-dlq")
-    
-    # Cloudflare Queue Configuration
+    # Queue Configuration (Cloudflare)
+    # - use_inline_queue=true: bypass Cloudflare Queues (worker polls DB)
+    # - use_inline_queue=false: use Cloudflare Workers bindings if provided, otherwise HTTP API via cf_* fields
     use_inline_queue: bool = Field(default=True)  # Use in-memory queue for local dev
-    cf_account_id: Optional[str] = None  # Cloudflare account ID
-    cf_api_token: Optional[str] = None  # Cloudflare API token (for Queue API access)
-    cf_queue_name: Optional[str] = None  # Cloudflare queue name (e.g., "quill-jobs")
-    cf_queue_dlq: Optional[str] = None  # Cloudflare dead letter queue name (e.g., "quill-dlq")
+    cf_account_id: Optional[str] = None  # Cloudflare account ID (required when use_inline_queue=false)
+    cf_api_token: Optional[str] = None  # Cloudflare API token for Queue HTTP API (required when use_inline_queue=false)
+    cf_queue_name: Optional[str] = None  # Primary Cloudflare queue name used by the app
+    cf_queue_dlq: Optional[str] = None  # Optional Cloudflare dead letter queue name
     
     # Job Configuration
     max_job_retries: int = 3

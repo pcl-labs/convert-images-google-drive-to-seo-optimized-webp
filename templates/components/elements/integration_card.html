@@ -3,7 +3,8 @@
   {% set state = data or {} %}
   {% set status_label = state.status_label or ('Connected' if state.connected else 'Disconnected') %}
   {% set status_hint = state.status_hint or '' %}
-  {% set connect_url = state.connect_url or '/auth/google/start' %}
+  {% set integration_key = state.key or s.key %}
+  {% set connect_url = state.connect_url or ('/auth/' ~ integration_key ~ '/start') %}
   {% set reconnect_url = state.reconnect_url or connect_url %}
   <div class="surface rounded-md px-4 py-4 transition-colors hover:bg-surfaceMuted/50">
     <div class="flex flex-col gap-3">

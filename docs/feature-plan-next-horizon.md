@@ -13,7 +13,18 @@ Note: Deployed on Cloudflare; queue producer implemented with bindings configure
 You’re working in the repo `convert-image-webp-optimizer-google-drive`. Complete the following tasks end-to-end:
 
 1. **Cloudflare Queue Integration**
-   - [Implemented — validation pending]
+   - a) End-to-end queue message routing validated from producer to consumer.
+     - Blocks release: Yes
+     - Verification: Integration test sends a job through `QueueProducer` and verifies consumption and processing by the worker; log trace confirms enqueue → receive → handle. CI job must pass.
+   - b) Retry and backoff behavior verified under failure conditions.
+     - Blocks release: Yes
+     - Verification: Simulate consumer failure; confirm retries up to configured `max_job_retries` with backoff intervals, and final DLQ placement when applicable. Logs and metrics reflect attempts and outcome.
+   - c) Metrics and alerting emitted for queue failures.
+     - Blocks release: No (required before production rollout)
+     - Verification: Structured logs for failures present; Workers Analytics (or Grafana) metrics increment on enqueue failure and DLQ send; alert configured for error rate threshold as per `docs/DEPLOYMENT.md`.
+   - d) API client initialization guards in place (no malformed URLs, DLQ optional).
+     - Blocks release: Yes
+     - Verification: Unit tests assert `cf_account_id` is required when `use_inline_queue=false`, and that both main/DLQ API clients are skipped if missing. Tests in `tests/test_config_queue.py` must pass in CI.
 
 2. **API Docs + Logging**
    - Add logging around queue send failures with actionable error messages, including instructions pointing to `docs/DEPLOYMENT.md`.

@@ -139,13 +139,17 @@ async def lifespan(app: FastAPI):
         
         # Step 4: Cleanup queue producer
         if queue_producer is not None:
-            try:
-                # Close HTTP clients if using Cloudflare Queue API
-                if hasattr(queue_producer, 'close'):
+            # Attempt to close HTTP clients via queue_producer.close(), if available
+            if hasattr(queue_producer, 'close'):
+                try:
                     await queue_producer.close()
                     app_logger.info("Queue producer HTTP clients closed")
-                # Check if the underlying queue object has a close method
-                elif hasattr(queue_producer, 'queue') and queue_producer.queue is not None:
+                except Exception as e:
+                    app_logger.error(f"Error in queue_producer.close(): {e}", exc_info=True)
+
+            # Independently attempt to cleanup the underlying queue object
+            try:
+                if hasattr(queue_producer, 'queue') and queue_producer.queue is not None:
                     queue_obj = queue_producer.queue
                     # Check for common close/stop method names
                     for method_name in ['close', 'stop', 'cleanup', 'shutdown']:
@@ -157,10 +161,10 @@ async def lifespan(app: FastAPI):
                                 method()
                             app_logger.info(f"Queue {method_name} called successfully")
                             break
-                app_logger.info("Queue producer closed")
             except Exception as e:
-                app_logger.error(f"Error closing queue producer: {e}", exc_info=True)
+                app_logger.error(f"Error cleaning up underlying queue object: {e}", exc_info=True)
             finally:
+                app_logger.info("Queue producer closed")
                 queue_producer = None
         
         app_logger.info("Shutdown cleanup completed")
