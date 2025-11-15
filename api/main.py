@@ -142,7 +142,9 @@ async def lifespan(app: FastAPI):
             # Attempt to close HTTP clients via queue_producer.close(), if available
             if hasattr(queue_producer, 'close'):
                 try:
-                    await queue_producer.close()
+                    result = queue_producer.close()
+                    if inspect.isawaitable(result) or asyncio.iscoroutine(result):
+                        await result
                     app_logger.info("Queue producer HTTP clients closed")
                 except Exception as e:
                     app_logger.error(f"Error in queue_producer.close(): {e}", exc_info=True)
