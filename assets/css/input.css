@@ -40,7 +40,7 @@
   .dark {
     /* Inherit same for now; later adjust for alternate dark themes */
   }
-  html, body { @apply bg-bg text-content; }
+  html, body { background-color: var(--bg); color: var(--content); }
 }
 
 @layer components {
@@ -53,8 +53,11 @@
   .btn-primary { @apply btn; background-color: var(--primary); color: var(--primary-contrast); }
   .btn-primary:hover { filter: brightness(1.05); }
   .btn-secondary { @apply btn; background-color: var(--surface-muted); color: var(--content); border: 1px solid var(--border); }
+  .btn-secondary:hover { filter: brightness(1.05); }
   .btn-destructive { @apply btn; background-color: var(--destructive); color: var(--destructive-contrast); }
+  .btn-destructive:hover { filter: brightness(1.05); }
   .btn-ghost { @apply btn; background-color: transparent; color: var(--content); border: 1px solid transparent; }
+  .btn-ghost:hover { background-color: rgba(255, 255, 255, 0.04); border-color: var(--border); }
 
   /* Inputs */
   .field { 
@@ -89,3 +92,4 @@
   /* Badges */
   .badge { @apply inline-flex items-center; border-radius: var(--radius-md); padding: 0.125rem 0.5rem; font-size: 0.75rem; font-weight: 500; border: 1px solid var(--border); }
 }
+

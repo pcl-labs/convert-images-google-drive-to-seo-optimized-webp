@@ -26,9 +26,7 @@
       </div>
       <form class="space-y-3" hx-post="/dashboard/documents/drive" hx-target="#documents-table" hx-swap="outerHTML">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-        {% from 'components/elements/input.html' import input %}
         {{ input('drive_source', label='Drive folder link or ID', placeholder='https://drive.google.com/drive/folders/...', attrs='required' + (' disabled' if not google_connected else '')) }}
-        {% from 'components/elements/button.html' import button %}
         {{ button('Register Document', variant='primary', attrs='type="submit" class="w-full"' + (' disabled' if not google_connected else '')) }}
       </form>
     {% endcall %}
