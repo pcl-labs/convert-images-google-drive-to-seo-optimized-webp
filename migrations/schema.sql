@@ -126,6 +126,9 @@ CREATE TABLE IF NOT EXISTS documents (
     source_ref TEXT,
     raw_text TEXT,
     metadata TEXT,
+    content_format TEXT,
+    frontmatter TEXT,
+    latest_version_id TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
@@ -133,6 +136,45 @@ CREATE TABLE IF NOT EXISTS documents (
 
 CREATE INDEX IF NOT EXISTS idx_documents_user ON documents(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_documents_source ON documents(source_type, source_ref);
+
+-- Document versions table for immutable snapshots
+CREATE TABLE IF NOT EXISTS document_versions (
+    version_id TEXT PRIMARY KEY,
+    document_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    content_format TEXT NOT NULL,
+    frontmatter TEXT,
+    body_mdx TEXT,
+    body_html TEXT,
+    outline TEXT,
+    chapters TEXT,
+    sections TEXT,
+    assets TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (document_id) REFERENCES documents(document_id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_document_versions_document ON document_versions(document_id, version DESC);
+
+-- Document export requests (preparing for connectors)
+CREATE TABLE IF NOT EXISTS document_exports (
+    export_id TEXT PRIMARY KEY,
+    document_id TEXT NOT NULL,
+    version_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    target TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'queued',
+    payload TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (document_id) REFERENCES documents(document_id) ON DELETE CASCADE,
+    FOREIGN KEY (version_id) REFERENCES document_versions(version_id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_document_exports_document ON document_exports(document_id, created_at DESC);
 
 -- Phase 2: Usage metering
 CREATE TABLE IF NOT EXISTS usage_events (

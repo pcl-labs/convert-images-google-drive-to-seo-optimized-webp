@@ -122,6 +122,9 @@ class Document(BaseModel):
     source_ref: Optional[str] = None
     raw_text: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
+    content_format: Optional[str] = None
+    frontmatter: Optional[Dict[str, Any]] = None
+    latest_version_id: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
@@ -165,6 +168,62 @@ class OptimizeDocumentRequest(BaseModel):
         if self.overwrite and self.skip_existing:
             raise ValueError("'overwrite' and 'skip_existing' cannot both be True")
         return self
+
+
+class GenerateBlogOptions(BaseModel):
+    tone: str = Field(default="informative", min_length=3, max_length=40)
+    max_sections: int = Field(default=5, ge=1, le=12)
+    target_chapters: int = Field(default=4, ge=1, le=12)
+    include_images: bool = Field(default=True)
+    section_index: Optional[int] = Field(default=None, ge=0, le=50)
+
+
+class GenerateBlogRequest(BaseModel):
+    document_id: str = Field(..., min_length=5, max_length=100)
+    options: GenerateBlogOptions = Field(default_factory=GenerateBlogOptions)
+
+
+class DocumentVersionSummary(BaseModel):
+    version_id: str
+    document_id: str
+    version: int
+    content_format: str
+    frontmatter: Optional[Dict[str, Any]] = None
+    created_at: datetime
+
+
+class DocumentVersionDetail(DocumentVersionSummary):
+    body_mdx: Optional[str] = None
+    body_html: Optional[str] = None
+    outline: Optional[List[Dict[str, Any]]] = None
+    chapters: Optional[List[Dict[str, Any]]] = None
+    sections: Optional[List[Dict[str, Any]]] = None
+    assets: Optional[Dict[str, Any]] = None
+
+
+class DocumentVersionList(BaseModel):
+    versions: List[DocumentVersionSummary]
+
+
+class ExportTarget(str, Enum):
+    google_docs = "google_docs"
+    zapier = "zapier"
+    wordpress = "wordpress"
+
+
+class DocumentExportRequest(BaseModel):
+    target: ExportTarget
+    version_id: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+
+class DocumentExportResponse(BaseModel):
+    export_id: str
+    status: str
+    target: ExportTarget
+    version_id: str
+    document_id: str
+    created_at: datetime
 
 
 class IngestYouTubeRequest(BaseModel):

@@ -6,7 +6,7 @@
 <div class="min-h-screen flex items-center justify-center px-4 py-12">
   <div class="w-full max-w-md surface rounded-xl p-6">
     <div class="flex items-center justify-center gap-2 mb-4">
-      <div class="h-8 w-8 rounded-md bg-primary"></div>
+      <img src="{{ url_for('static', path='logos/quill-logo.png') }}" alt="Quill" class="h-8 w-8 rounded-md object-cover" />
       <div class="text-content font-semibold">Quill</div>
     </div>
     <h1 class="text-lg font-semibold text-content text-center">{{ 'Create your account' if is_signup else 'Sign in' }}</h1>

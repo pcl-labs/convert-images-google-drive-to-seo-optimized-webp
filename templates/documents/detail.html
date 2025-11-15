@@ -13,6 +13,8 @@
     </div>
   </div>
 
+  <div id="doc-flash" class="space-y-2"></div>
+
   <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
     {% from 'components/elements/card.html' import card %}
     {% call card(title='Metadata') %}
@@ -29,23 +31,119 @@
         <p class="text-sm text-contentMuted">No metadata recorded.</p>
       {% endif %}
     {% endcall %}
-    {% call card(title='Document Details') %}
-      <dl class="space-y-2 text-sm">
-        <div>
-          <dt class="text-contentMuted uppercase text-xs tracking-wide">Document ID</dt>
-          <dd class="text-content break-all">{{ document.id }}</dd>
-        </div>
-        <div>
-          <dt class="text-contentMuted uppercase text-xs tracking-wide">Source Type</dt>
-          <dd class="text-content">{{ document.source_label }}</dd>
-        </div>
-        <div>
-          <dt class="text-contentMuted uppercase text-xs tracking-wide">Created</dt>
-          <dd class="text-content">{{ document.created_at or 'Unknown' }}</dd>
-        </div>
-      </dl>
+    {% call card(title='Frontmatter') %}
+      {% if frontmatter_items %}
+        <dl class="space-y-2 text-sm">
+          {% for key, value in frontmatter_items %}
+            <div class="flex flex-col">
+              <dt class="text-contentMuted uppercase text-xs tracking-wide">{{ key }}</dt>
+              <dd class="text-content break-words">{{ value }}</dd>
+            </div>
+          {% endfor %}
+        </dl>
+      {% else %}
+        <p class="text-sm text-contentMuted">No frontmatter recorded yet.</p>
+      {% endif %}
     {% endcall %}
   </div>
+
+  <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+    {% call card(title='Generate Blog Draft') %}
+      <form class="space-y-3" hx-post="/dashboard/documents/{{ document.id }}/generate" hx-target="#doc-flash" hx-swap="innerHTML">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label class="flex flex-col gap-1 text-sm text-content">
+          Tone
+          <input type="text" name="tone" value="informative" class="bg-card border border-border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary/60">
+        </label>
+        <div class="grid grid-cols-2 gap-2 text-sm text-content">
+          <label class="flex flex-col gap-1">
+            Max Sections
+            <input type="number" name="max_sections" min="1" max="12" value="5" class="bg-card border border-border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary/60">
+          </label>
+          <label class="flex flex-col gap-1">
+            Target Chapters
+            <input type="number" name="target_chapters" min="1" max="12" value="4" class="bg-card border border-border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary/60">
+          </label>
+        </div>
+        <label class="inline-flex items-center gap-2 text-sm text-content">
+          <input type="checkbox" name="include_images" checked class="rounded border-border bg-card text-primary focus:ring-primary">
+          Include image prompts
+        </label>
+        <button type="submit" class="inline-flex items-center justify-center rounded-lg bg-primary text-primary-foreground px-3 py-2 text-sm font-medium hover:bg-primary/90 w-full">Queue Generation</button>
+      </form>
+    {% endcall %}
+    {% call card(title='Latest Draft Summary') %}
+      {% if latest_version %}
+        <dl class="space-y-2 text-sm">
+          <div>
+            <dt class="text-contentMuted uppercase text-xs tracking-wide">Version</dt>
+            <dd class="text-content">v{{ latest_version.version }} &middot; {{ latest_version.created_at }}</dd>
+          </div>
+          <div>
+            <dt class="text-contentMuted uppercase text-xs tracking-wide">Title</dt>
+            <dd class="text-content">{{ latest_version.title or 'Untitled Draft' }}</dd>
+          </div>
+          <div>
+            <dt class="text-contentMuted uppercase text-xs tracking-wide">Slug</dt>
+            <dd class="text-content">{{ latest_version.frontmatter.slug or '—' }}</dd>
+          </div>
+        </dl>
+        <div class="mt-4 flex flex-wrap gap-2">
+          <button type="button" class="text-sm px-3 py-1.5 rounded-md border border-border text-content hover:bg-surface/60" onclick="copyVersionContent('mdx-body')">Copy MDX</button>
+          <button type="button" class="text-sm px-3 py-1.5 rounded-md border border-border text-content hover:bg-surface/60" onclick="copyVersionContent('html-body')">Copy HTML</button>
+          <a href="/dashboard/documents/{{ document.id }}/versions/{{ latest_version.version_id }}/download?format=mdx" class="text-sm px-3 py-1.5 rounded-md bg-card border border-border hover:bg-surface/60">Download MDX</a>
+        </div>
+      {% else %}
+        <p class="text-sm text-contentMuted">No blog draft generated yet. Kick off the pipeline to create the first version.</p>
+      {% endif %}
+    {% endcall %}
+    {% call card(title='Exports & Integrations') %}
+      {% set version_selectable = latest_version is not none %}
+      <form class="space-y-2" hx-post="/dashboard/documents/{{ document.id }}/exports/google_docs" hx-target="#doc-flash" hx-swap="innerHTML">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="version_id" value="{{ latest_version.version_id if latest_version }}">
+        <button type="submit" class="w-full inline-flex items-center justify-center rounded-lg bg-surface text-content px-3 py-2 text-sm border border-border hover:bg-surface/60" {% if not version_selectable %}disabled{% endif %}>Send to Google Docs</button>
+      </form>
+      <form class="space-y-2" hx-post="/dashboard/documents/{{ document.id }}/exports/zapier" hx-target="#doc-flash" hx-swap="innerHTML">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="version_id" value="{{ latest_version.version_id if latest_version }}">
+        <button type="submit" class="w-full inline-flex items-center justify-center rounded-lg bg-surface text-content px-3 py-2 text-sm border border-border hover:bg-surface/60" {% if not version_selectable %}disabled{% endif %}>Send via Zapier</button>
+      </form>
+      <form class="space-y-2" hx-post="/dashboard/documents/{{ document.id }}/exports/wordpress" hx-target="#doc-flash" hx-swap="innerHTML">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="version_id" value="{{ latest_version.version_id if latest_version }}">
+        <button type="submit" class="w-full inline-flex items-center justify-center rounded-lg bg-surface text-content px-3 py-2 text-sm border border-border hover:bg-surface/60" {% if not version_selectable %}disabled{% endif %}>Queue WordPress Export</button>
+      </form>
+    {% endcall %}
+  </div>
+
+  {% call card(title='Draft Preview') %}
+    {% include "documents/partials/version_viewer.html" %}
+  {% endcall %}
+
+  {% call card(title='Versions', actions='') %}
+    <div class="p-0 overflow-x-auto">
+      {% from 'components/data/table.html' import table with context %}
+      {% call table(headers=["Version","Title","Created","Actions"]) %}
+        {% for version in versions %}
+          <tr>
+            <td class="px-3 py-2 md:px-4 md:py-3">v{{ version.version }}</td>
+            <td class="px-3 py-2 md:px-4 md:py-3">{{ version.title or 'Untitled' }}</td>
+            <td class="px-3 py-2 md:px-4 md:py-3 text-contentMuted">{{ version.created_at }}</td>
+            <td class="px-3 py-2 md:px-4 md:py-3 space-x-2">
+              <button class="text-primary text-sm hover:text-primary/80" hx-get="/dashboard/documents/{{ document.id }}/versions/{{ version.version_id }}" hx-target="#version-viewer" hx-swap="outerHTML">View</button>
+              <a href="/dashboard/documents/{{ document.id }}/versions/{{ version.version_id }}/download?format=mdx" class="text-sm text-contentMuted hover:text-content">MDX</a>
+              <a href="/dashboard/documents/{{ document.id }}/versions/{{ version.version_id }}/download?format=html" class="text-sm text-contentMuted hover:text-content">HTML</a>
+            </td>
+          </tr>
+        {% else %}
+          <tr>
+            <td colspan="4" class="px-4 py-6 text-center text-contentMuted">No versions yet.</td>
+          </tr>
+        {% endfor %}
+      {% endcall %}
+    </div>
+  {% endcall %}
 
   {% call card(title='Jobs using this document', actions='<a href="/dashboard/jobs" class="text-sm text-primary hover:text-primary/80">View all jobs</a>') %}
     <div class="p-0 overflow-x-auto">
@@ -71,4 +169,26 @@
     </div>
   {% endcall %}
 </div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+  function copyVersionContent(targetId) {
+    const el = document.getElementById(targetId);
+    if (!el) return;
+    const text = el.tagName === 'TEXTAREA' ? el.value : el.textContent;
+    navigator.clipboard.writeText(text).catch(() => {});
+  }
+  function switchVersionTab(tabKey) {
+    document.querySelectorAll('[data-version-tab]').forEach((btn) => {
+      btn.classList.toggle('bg-surface', btn.dataset.versionTab === tabKey);
+    });
+    document.querySelectorAll('[data-version-panel]').forEach((panel) => {
+      panel.classList.toggle('hidden', panel.dataset.versionPanel !== tabKey);
+    });
+  }
+  document.addEventListener('DOMContentLoaded', () => {
+    switchVersionTab('outline');
+  });
+</script>
 {% endblock %}
