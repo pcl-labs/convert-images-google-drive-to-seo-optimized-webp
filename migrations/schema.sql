@@ -139,7 +139,7 @@ CREATE TABLE IF NOT EXISTS usage_events (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
     job_id TEXT NOT NULL,
-    event_type TEXT NOT NULL CHECK (event_type IN ('download','transcribe','persist')),
+    event_type TEXT NOT NULL CHECK (event_type IN ('download','transcribe','persist','outline','chapters','compose')),
     metrics TEXT, -- JSON
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
@@ -148,3 +148,17 @@ CREATE TABLE IF NOT EXISTS usage_events (
 
 CREATE INDEX IF NOT EXISTS idx_usage_events_user_created ON usage_events(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_usage_events_job ON usage_events(job_id, created_at DESC);
+
+-- Idempotent step invocations (Phase 2.5)
+CREATE TABLE IF NOT EXISTS step_invocations (
+    idempotency_key TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    step_type TEXT NOT NULL,
+    request_hash TEXT NOT NULL,
+    response_body TEXT NOT NULL,
+    status_code INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (idempotency_key, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_step_invocations_user ON step_invocations(user_id, created_at DESC);

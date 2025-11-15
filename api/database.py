@@ -98,6 +98,22 @@ class Database:
             )
             cur.execute("CREATE INDEX IF NOT EXISTS idx_documents_user ON documents(user_id, created_at DESC)")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_documents_source ON documents(source_type, source_ref)")
+            # Idempotent step invocations
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS step_invocations (
+                    idempotency_key TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    step_type TEXT NOT NULL,
+                    request_hash TEXT NOT NULL,
+                    response_body TEXT NOT NULL,
+                    status_code INTEGER NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    PRIMARY KEY (idempotency_key, user_id)
+                )
+                """
+            )
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_step_invocations_user ON step_invocations(user_id, created_at DESC)")
 
             # Ensure jobs columns exist
             cur.execute("PRAGMA table_info('jobs')")
@@ -643,6 +659,56 @@ async def get_job_stats(db: Database, user_id: Optional[str] = None) -> Dict[str
         "processing": 0
     }
 
+async def list_jobs_by_document(
+    db: Database,
+    user_id: str,
+    document_id: str,
+    limit: int = 50,
+) -> List[Dict[str, Any]]:
+    """Return recent jobs for a given document."""
+    if limit < 1 or limit > 100:
+        limit = 50
+    rows = await db.execute_all(
+        """
+        SELECT * FROM jobs
+        WHERE user_id = ? AND document_id = ?
+        ORDER BY created_at DESC
+        LIMIT ?
+        """,
+        (user_id, document_id, limit),
+    )
+    return [dict(row) for row in rows] if rows else []
+
+
+async def list_documents(
+    db: Database,
+    user_id: str,
+    page: int = 1,
+    page_size: int = 20,
+) -> tuple[List[Dict[str, Any]], int]:
+    """List documents for a user with pagination."""
+    if page < 1:
+        page = 1
+    if page_size < 1 or page_size > 100:
+        page_size = 20
+    offset = (page - 1) * page_size
+    count_row = await db.execute(
+        "SELECT COUNT(*) as total FROM documents WHERE user_id = ?",
+        (user_id,),
+    )
+    total = dict(count_row).get("total", 0) if count_row else 0
+    rows = await db.execute_all(
+        """
+        SELECT * FROM documents
+        WHERE user_id = ?
+        ORDER BY created_at DESC
+        LIMIT ? OFFSET ?
+        """,
+        (user_id, page_size, offset),
+    )
+    docs = [dict(row) for row in rows] if rows else []
+    return docs, total
+
 # Documents operations
 async def create_document(
     db: Database,
@@ -704,6 +770,45 @@ async def get_user_count(db: Database) -> int:
     query = "SELECT COUNT(*) as total FROM users"
     result = await db.execute(query, ())
     return dict(result).get("total", 0) if result else 0
+
+
+async def get_step_invocation(
+    db: Database,
+    user_id: str,
+    idempotency_key: str,
+) -> Optional[Dict[str, Any]]:
+    """Fetch stored step invocation response."""
+    row = await db.execute(
+        "SELECT * FROM step_invocations WHERE idempotency_key = ? AND user_id = ?",
+        (idempotency_key, user_id),
+    )
+    return dict(row) if row else None
+
+
+async def save_step_invocation(
+    db: Database,
+    user_id: str,
+    idempotency_key: str,
+    step_type: str,
+    request_hash: str,
+    response_body: Dict[str, Any],
+    status_code: int,
+) -> None:
+    """Persist step invocation response for idempotency."""
+    await db.execute(
+        """
+        INSERT INTO step_invocations (idempotency_key, user_id, step_type, request_hash, response_body, status_code)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            idempotency_key,
+            user_id,
+            step_type,
+            request_hash,
+            json.dumps(response_body),
+            int(status_code),
+        ),
+    )
 
 
 # Notifications & Events schema and operations
@@ -954,4 +1059,3 @@ def map_job_status_to_notification(job: Dict[str, Any]) -> Dict[str, Any] | None
         return {"level": "error", "text": f"Job {job_id} {st}"}
     # Suppress non-terminal info-level updates by default
     return None
-

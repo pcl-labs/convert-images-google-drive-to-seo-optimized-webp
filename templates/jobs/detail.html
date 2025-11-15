@@ -24,7 +24,7 @@
       <div class="p-4 space-y-2 text-slate-200">
         <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
           <div><span class="text-slate-400 text-sm">Type</span><div class="font-medium">{{ job.kind or job.type }}</div></div>
-          <div><span class="text-slate-400 text-sm">Input</span><div class="font-medium break-all">{{ job.input or job.drive_folder or job.youtube_url }}</div></div>
+          <div><span class="text-slate-400 text-sm">Document</span><div class="font-medium break-all">{{ job.document_id or '-' }}</div></div>
           <div><span class="text-slate-400 text-sm">Owner</span><div class="font-medium">{{ job.user or '-' }}</div></div>
           <div><span class="text-slate-400 text-sm">Updated</span><div class="font-medium">{{ job.updated_at or '-' }}</div></div>
         </div>

@@ -1,0 +1,25 @@
+<div id="documents-table" class="p-0 overflow-x-auto">
+  {% if flash %}
+    {% from 'components/elements/alert.html' import alert %}
+    <div class="px-4 pt-4">
+      {{ alert(kind='success' if flash.status == 'success' else 'error', text=flash.message, dismissible=True) }}
+    </div>
+  {% endif %}
+  {% from 'components/data/table.html' import table with context %}
+  {% call table(headers=["Document ID","Source","Origin","Created"]) %}
+    {% for document in documents %}
+      <tr>
+        <td class="px-3 py-2 md:px-4 md:py-3 text-sm text-slate-200 break-all">
+          <a href="/dashboard/documents/{{ document.id }}" class="text-sky-400 hover:text-sky-300">{{ document.id }}</a>
+        </td>
+        <td class="px-3 py-2 md:px-4 md:py-3">{{ document.source_label }}</td>
+        <td class="px-3 py-2 md:px-4 md:py-3 text-slate-400 break-all">{{ document.origin or '—' }}</td>
+        <td class="px-3 py-2 md:px-4 md:py-3 text-slate-400">{{ document.created_at }}</td>
+      </tr>
+    {% else %}
+      <tr>
+        <td colspan="4" class="px-4 py-6 text-center text-slate-400">No documents yet</td>
+      </tr>
+    {% endfor %}
+  {% endcall %}
+</div>

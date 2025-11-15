@@ -97,7 +97,8 @@ The API will be available at `http://localhost:8000`
 - `POST /auth/keys` - Generate API key
 
 **Job Endpoints (require authentication):**
-- `POST /api/v1/optimize` - Start an optimization job
+- `POST /api/v1/documents/drive` - Register a Drive folder as a document
+- `POST /api/v1/optimize` - Start an optimization job for a document
 - `POST /ingest/text` - Ingest text content
 - `POST /ingest/youtube` - Ingest YouTube video transcript
 - `GET /api/v1/jobs/{job_id}` - Get job status
@@ -114,11 +115,18 @@ The API will be available at `http://localhost:8000`
 #### Example: Start an Optimization Job
 
 ```bash
+# Create a Drive-backed document
+curl -X POST "http://localhost:8000/api/v1/documents/drive" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_JWT_TOKEN" \
+  -d '{"drive_source":"https://drive.google.com/drive/folders/YOUR_FOLDER"}'
+
+# Use the returned document_id to kick off optimization
 curl -X POST "http://localhost:8000/api/v1/optimize" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer YOUR_JWT_TOKEN" \
   -d '{
-    "drive_folder": "YOUR_GOOGLE_DRIVE_FOLDER_ID_OR_LINK",
+    "document_id": "DOCUMENT_ID_FROM_PREVIOUS_STEP",
     "extensions": ["jpg", "jpeg", "png"],
     "cleanup_originals": false
   }'
