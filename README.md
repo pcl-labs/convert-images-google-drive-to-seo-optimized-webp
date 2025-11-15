@@ -1,6 +1,6 @@
-# Google Drive Image Optimizer
+# Quill
 
-A Python tool that automatically downloads images from Google Drive, optimizes them to WebP format with SEO-friendly filenames, and uploads them back to the same folder while optionally deleting the originals.
+Create SEO Ranking blogs from YouTube. Ship fast, flexible, and SEO-optimized blogs with AI assist out of box. Quill brings the best of the LLM ecosystem.
 
 ## Features
 
