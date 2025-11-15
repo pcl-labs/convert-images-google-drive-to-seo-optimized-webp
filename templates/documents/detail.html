@@ -115,7 +115,7 @@
   {% call card(title='Versions', actions='') %}
     <div class="space-y-3">
       {% for version in versions %}
-        <article class="border border-border rounded-lg p-4 space-y-3">
+        <article class="surface rounded-lg p-4 space-y-3">
           <div class="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
             <div>
               <p class="text-sm font-semibold text-content">v{{ version.version }} &middot; {{ version.title or 'Untitled' }}</p>
@@ -138,7 +138,7 @@
     <div class="space-y-3">
       {% from 'components/elements/badge.html' import badge %}
       {% for job in jobs %}
-        <article class="border border-border rounded-lg p-4 space-y-3">
+        <article class="surface rounded-lg p-4 space-y-3">
           <div class="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
             <div class="space-y-1">
               <p class="font-mono text-xs text-contentMuted break-all">{{ job.id }}</p>
