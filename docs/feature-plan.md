@@ -170,3 +170,4 @@ Think in 5 layers:
   - Observability: structured logs with job_id, step, duration_ms.
   - **Cloudflare TODO:** once the dashboard is updated, wire the real Workers Queue + bindings (we're still running locally).
   - **LLM/Training data plan:** decide how to spend Cloudflare Workers AI credits vs. external providers, and persist sanitized document/usage data (e.g., in D1/R2) for future fine-tuning.
+  - Idempotency cache retention (future PR): schedule periodic cleanup of `step_invocations` (e.g., delete rows older than 24–48h) to limit storage/PII exposure. Ensure index on `(user_id, request_hash)` for fast duplicate detection. Service layer must sanitize or allowlist `response_body` fields to avoid PII; consider redaction/encryption if needed.

@@ -117,12 +117,23 @@ def _drive_folder_from_document(doc: dict) -> str:
     return folder_id
 
 async def create_drive_document_for_user(db, user_id: str, drive_source: str) -> Document:
+    # Import locally to avoid hard dependency issues if google client is absent in some envs
+    try:
+        from googleapiclient.errors import HttpError  # type: ignore
+    except Exception:
+        HttpError = Exception  # type: ignore
+
     try:
         service = await build_drive_service_for_user(db, user_id)  # type: ignore
         folder_id = extract_folder_id_from_input(drive_source, service=service)
-    except Exception:
-        logger.error("Failed to prepare Drive service or extract folder id", exc_info=True)
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Google not linked or folder not accessible")
+    except (ValueError, HttpError) as e:
+        logger.error("drive_folder_prepare_error", exc_info=True, extra={"user_id": user_id, "drive_source": drive_source})
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Google not linked or folder not accessible") from None
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("drive_folder_unexpected_error", exc_info=True, extra={"user_id": user_id, "drive_source": drive_source})
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to create Drive document") from None
     document_id = str(uuid.uuid4())
     doc = await create_document(
         db,

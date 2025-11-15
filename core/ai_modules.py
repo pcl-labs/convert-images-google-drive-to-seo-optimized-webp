@@ -15,6 +15,13 @@ def generate_outline(text: str, max_sections: int = 5) -> List[Dict[str, str]]:
     clean = _coerce_text(text)
     if not clean:
         return []
+    # Ensure positive section count
+    try:
+        max_sections = int(max_sections)
+    except Exception:
+        max_sections = 5
+    if max_sections < 1:
+        max_sections = 1
     paragraphs = [p.strip() for p in clean.split("\n") if p.strip()]
     if not paragraphs:
         paragraphs = [clean]
@@ -35,6 +42,13 @@ def organize_chapters(text: str, target_chapters: int = 4) -> List[Dict[str, str
     clean = _coerce_text(text)
     if not clean:
         return []
+    # Ensure positive chapters target
+    try:
+        target_chapters = int(target_chapters)
+    except Exception:
+        target_chapters = 4
+    if target_chapters <= 0:
+        target_chapters = 1
     sentences = [s.strip() for s in clean.replace("!", ".").replace("?", ".").split(".") if s.strip()]
     per_chapter = max(1, len(sentences) // target_chapters)
     chapters: List[Dict[str, str]] = []
