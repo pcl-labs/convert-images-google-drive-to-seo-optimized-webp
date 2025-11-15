@@ -15,7 +15,7 @@ This guide covers deploying the production-ready FastAPI application to Cloudfla
 
 ```bash
 # Create the database
-wrangler d1 create image-optimizer-db
+wrangler d1 create quill-db
 
 # Note the database_id from the output and update wrangler.toml
 ```
@@ -25,7 +25,7 @@ Update `wrangler.toml` with the database_id:
 ```toml
 [[d1_databases]]
 binding = "DB"
-database_name = "image-optimizer-db"
+database_name = "quill-db"
 database_id = "YOUR_DATABASE_ID_HERE"
 ```
 
@@ -33,17 +33,17 @@ database_id = "YOUR_DATABASE_ID_HERE"
 
 ```bash
 # Run the schema migration
-wrangler d1 execute image-optimizer-db --file=migrations/schema.sql
+wrangler d1 execute quill-db --file=migrations/schema.sql
 ```
 
 ### 3. Create Queues
 
 ```bash
 # Create the main queue
-wrangler queues create image-optimization-queue
+wrangler queues create quill-queue
 
 # Create the dead letter queue
-wrangler queues create image-optimization-dlq
+wrangler queues create quill-dlq
 ```
 
 ### 4. Set Secrets
@@ -112,7 +112,7 @@ For local development with Wrangler:
 wrangler dev
 
 # Run database migrations locally
-wrangler d1 execute image-optimizer-db --local --file=migrations/schema.sql
+wrangler d1 execute quill-db --local --file=migrations/schema.sql
 ```
 
 ## Testing
