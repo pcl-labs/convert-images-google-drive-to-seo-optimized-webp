@@ -5,7 +5,7 @@ per-user Google Drive/YouTube clients from stored tokens.
 import asyncio
 import json
 import logging
-from datetime import timezone
+from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 
 import httpx
@@ -131,6 +131,18 @@ async def exchange_google_code(
     
     # Create credentials from manually obtained token
     scopes_list = token_json.get("scope", "").split() if isinstance(token_json.get("scope"), str) else (token_json.get("scope") or [])
+
+    # Compute expiry from expires_in when present
+    expires_in_raw = token_json.get("expires_in")
+    expiry_dt = None
+    try:
+        if expires_in_raw is not None:
+            expires_in_int = int(expires_in_raw)
+            if expires_in_int > 0:
+                expiry_dt = datetime.now(timezone.utc) + timedelta(seconds=expires_in_int)
+    except Exception:
+        expiry_dt = None
+
     creds = Credentials(
         token=token_json.get("access_token"),
         refresh_token=token_json.get("refresh_token"),
@@ -138,6 +150,7 @@ async def exchange_google_code(
         client_id=settings.google_client_id,
         client_secret=settings.google_client_secret,
         scopes=scopes_list,
+        expiry=expiry_dt,
     )
     expiry_iso = None
     if creds.expiry:
@@ -231,7 +244,7 @@ async def _build_google_service_for_user(
             expiry_iso = None
             if creds.expiry:
                 expiry_iso = creds.expiry.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
-            await update_google_tokens_expiry(db, user_id, creds.token, expiry_iso)
+            await update_google_token_expiry(db, user_id, integration_key, creds.token, expiry_iso)
         else:
             raise ValueError("Google credentials invalid and no refresh token available")
 

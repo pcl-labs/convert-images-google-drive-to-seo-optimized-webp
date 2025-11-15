@@ -955,6 +955,14 @@ async def update_document(
     document_id: str,
     updates: Dict[str, Any],
 ) -> None:
+    """Update document fields. All updates are applied atomically.
+    
+    Args:
+        db: Database instance
+        document_id: Document ID to update
+        updates: Dictionary of field updates. Allowed fields: source_type, source_ref, 
+                 raw_text, metadata, content_format, frontmatter, latest_version_id
+    """
     allowed = {"source_type", "source_ref", "raw_text", "metadata", "content_format", "frontmatter", "latest_version_id"}
     fields = []
     params: list[Any] = []
@@ -964,12 +972,15 @@ async def update_document(
             if k in {"metadata", "frontmatter"} and v is not None:
                 params.append(json.dumps(v))
             else:
+                # Include None and empty strings - don't filter them out
                 params.append(v)
     if not fields:
         return
+    # Use SQLite-compatible datetime (works for both D1 and SQLite)
     fields.append("updated_at = datetime('now')")
     params.append(document_id)
-    await db.execute(f"UPDATE documents SET {', '.join(fields)} WHERE document_id = ?", tuple(params))
+    query = f"UPDATE documents SET {', '.join(fields)} WHERE document_id = ?"
+    await db.execute(query, tuple(params))
 
 
 async def create_document_version(
