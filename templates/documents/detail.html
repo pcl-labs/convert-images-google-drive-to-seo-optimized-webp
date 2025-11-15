@@ -180,12 +180,56 @@
     navigator.clipboard.writeText(text).catch(() => {});
   }
   function switchVersionTab(tabKey) {
-    document.querySelectorAll('[data-version-tab]').forEach((btn) => {
-      btn.classList.toggle('bg-surface', btn.dataset.versionTab === tabKey);
+    const tabs = ['outline', 'mdx', 'html'];
+    tabs.forEach((key) => {
+      const btn = document.querySelector(`[data-version-tab="${key}"]`);
+      const panel = document.querySelector(`[data-version-panel="${key}"]`);
+      const isActive = key === tabKey;
+      
+      if (btn) {
+        btn.setAttribute('aria-selected', isActive);
+        btn.setAttribute('tabindex', isActive ? '0' : '-1');
+        btn.classList.toggle('bg-surface', isActive);
+      }
+      
+      if (panel) {
+        panel.classList.toggle('hidden', !isActive);
+      }
     });
-    document.querySelectorAll('[data-version-panel]').forEach((panel) => {
-      panel.classList.toggle('hidden', panel.dataset.versionPanel !== tabKey);
-    });
+  }
+  
+  function handleVersionTabKeydown(event, currentTab) {
+    const tabs = ['outline', 'mdx', 'html'];
+    const currentIndex = tabs.indexOf(currentTab);
+    let targetIndex = currentIndex;
+    
+    switch (event.key) {
+      case 'ArrowLeft':
+        event.preventDefault();
+        targetIndex = currentIndex > 0 ? currentIndex - 1 : tabs.length - 1;
+        break;
+      case 'ArrowRight':
+        event.preventDefault();
+        targetIndex = currentIndex < tabs.length - 1 ? currentIndex + 1 : 0;
+        break;
+      case 'Home':
+        event.preventDefault();
+        targetIndex = 0;
+        break;
+      case 'End':
+        event.preventDefault();
+        targetIndex = tabs.length - 1;
+        break;
+      default:
+        return; // Let other keys work normally
+    }
+    
+    const targetTab = tabs[targetIndex];
+    switchVersionTab(targetTab);
+    const targetButton = document.querySelector(`[data-version-tab="${targetTab}"]`);
+    if (targetButton) {
+      targetButton.focus();
+    }
   }
   document.addEventListener('DOMContentLoaded', () => {
     switchVersionTab('outline');

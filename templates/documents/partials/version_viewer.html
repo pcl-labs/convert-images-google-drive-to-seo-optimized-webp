@@ -8,16 +8,16 @@
           <p class="text-content font-semibold">v{{ version.version }} &middot; {{ version.title or 'Untitled Draft' }}</p>
           <p class="text-contentMuted text-xs">{{ version.created_at }}</p>
         </div>
-        <div class="flex gap-2 text-xs">
-          <button type="button" class="px-3 py-1.5 rounded-md border border-border text-content" onclick="switchVersionTab('outline')" data-version-tab="outline">Outline</button>
-          <button type="button" class="px-3 py-1.5 rounded-md border border-border text-content" onclick="switchVersionTab('mdx')" data-version-tab="mdx">MDX</button>
-          <button type="button" class="px-3 py-1.5 rounded-md border border-border text-content" onclick="switchVersionTab('html')" data-version-tab="html">HTML</button>
+        <div class="flex gap-2 text-xs" role="tablist" aria-label="Version content tabs">
+          <button id="outline-tab" type="button" role="tab" aria-controls="outline-panel" aria-selected="true" tabindex="0" class="px-3 py-1.5 rounded-md border border-border text-content" onclick="switchVersionTab('outline')" data-version-tab="outline" onkeydown="handleVersionTabKeydown(event, 'outline')">Outline</button>
+          <button id="mdx-tab" type="button" role="tab" aria-controls="mdx-panel" aria-selected="false" tabindex="-1" class="px-3 py-1.5 rounded-md border border-border text-content" onclick="switchVersionTab('mdx')" data-version-tab="mdx" onkeydown="handleVersionTabKeydown(event, 'mdx')">MDX</button>
+          <button id="html-tab" type="button" role="tab" aria-controls="html-panel" aria-selected="false" tabindex="-1" class="px-3 py-1.5 rounded-md border border-border text-content" onclick="switchVersionTab('html')" data-version-tab="html" onkeydown="handleVersionTabKeydown(event, 'html')">HTML</button>
         </div>
       </div>
 
       <div class="border border-border rounded-lg">
         <div class="p-4 space-y-4">
-          <div data-version-panel="outline">
+          <div id="outline-panel" role="tabpanel" aria-labelledby="outline-tab" data-version-panel="outline">
             {% if version.outline %}
               <ol class="list-decimal list-inside space-y-2 text-sm text-content">
                 {% for item in version.outline %}
@@ -31,14 +31,14 @@
               <p class="text-sm text-contentMuted">No outline available for this version.</p>
             {% endif %}
           </div>
-          <div class="hidden space-y-2" data-version-panel="mdx">
+          <div id="mdx-panel" role="tabpanel" aria-labelledby="mdx-tab" class="hidden space-y-2" data-version-panel="mdx">
             <div class="flex justify-end gap-2">
               <button type="button" class="text-xs px-2 py-1 rounded-md border border-border text-content" onclick="copyVersionContent('mdx-body')">Copy</button>
               <a href="/dashboard/documents/{{ document.id }}/versions/{{ version.version_id }}/download?format=mdx" class="text-xs px-2 py-1 rounded-md border border-border text-content hover:bg-surface/70">Download</a>
             </div>
             <pre id="mdx-body" class="bg-card border border-border rounded-lg text-xs text-content overflow-auto p-3 whitespace-pre-wrap">{{ version.body_mdx }}</pre>
           </div>
-          <div class="hidden space-y-2" data-version-panel="html">
+          <div id="html-panel" role="tabpanel" aria-labelledby="html-tab" class="hidden space-y-2" data-version-panel="html">
             <div class="flex justify-end gap-2">
               <button type="button" class="text-xs px-2 py-1 rounded-md border border-border text-content" onclick="copyVersionContent('html-body')">Copy</button>
               <a href="/dashboard/documents/{{ document.id }}/versions/{{ version.version_id }}/download?format=html" class="text-xs px-2 py-1 rounded-md border border-border text-content hover:bg-surface/70">Download</a>
@@ -80,8 +80,3 @@
     </div>
   {% endif %}
 </div>
-<script>
-  if (typeof switchVersionTab === 'function') {
-    switchVersionTab('outline');
-  }
-</script>

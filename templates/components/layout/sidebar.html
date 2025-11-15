@@ -1,4 +1,5 @@
 <aside x-data="{ open: false }" class="">
+  {% from 'components/elements/icon.html' import icon %}
   {% macro nav_links(path) %}
     {% set section = path.split('/', 2)[2] if path.startswith('/dashboard') and path|length > 11 else '' %}
     <a href="/dashboard" class="flex items-center gap-2 px-3 py-2 rounded-md {{ 'bg-surfaceMuted text-content' if path == '/dashboard' else 'text-content hover:bg-surfaceMuted' }}">Dashboard</a>
@@ -13,7 +14,7 @@
     <!-- Mobile header bar with menu button only -->
     <div class="sticky top-0 z-30 h-14 flex items-center justify-start px-3 bg-bg/80 border-b border-border backdrop-blur">
       <button @click="open = true" aria-label="Open menu" class="inline-flex items-center rounded-md bg-surfaceMuted/80 border border-border px-3 py-2 text-content hover:bg-surfaceMuted">
-        <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
+        {{ icon('menu', size='h-5 w-5') }}
         <span class="ml-2 text-sm">Menu</span>
       </button>
     </div>
@@ -22,7 +23,7 @@
       <div class="flex items-center justify-between mb-4">
         <div class="text-content font-semibold">Quill</div>
         <button @click="open=false" aria-label="Close menu" class="text-contentMuted hover:text-content">
-          <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+          {{ icon('close', size='h-5 w-5') }}
         </button>
       </div>
       <nav class="space-y-1">
@@ -50,7 +51,7 @@
     <div class="p-3 border-t border-border">
       <a href="/dashboard/account" class="block w-full">
         <div class="h-12 px-3 rounded-md flex items-center gap-3 text-contentMuted hover:bg-surfaceMuted/60">
-          <svg class="h-5 w-5 text-contentMuted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4h16v16H4z"/><path stroke-linecap="round" stroke-linejoin="round" d="M22 6l-10 7L2 6"/></svg>
+          {{ icon('email', size='h-5 w-5', class='text-contentMuted') }}
           <span class="text-sm truncate">{{ sidebar_email or 'Account' }}</span>
         </div>
       </a>

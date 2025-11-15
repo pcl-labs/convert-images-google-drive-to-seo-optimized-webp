@@ -177,6 +177,13 @@ class GenerateBlogOptions(BaseModel):
     include_images: bool = Field(default=True)
     section_index: Optional[int] = Field(default=None, ge=0, le=50)
 
+    @model_validator(mode="after")
+    def validate_section_index_bounds(self):
+        if self.section_index is not None:
+            if self.section_index < 0 or self.section_index >= self.max_sections:
+                raise ValueError("section_index must be >= 0 and < max_sections")
+        return self
+
 
 class GenerateBlogRequest(BaseModel):
     document_id: str = Field(..., min_length=5, max_length=100)
@@ -186,7 +193,7 @@ class GenerateBlogRequest(BaseModel):
 class DocumentVersionSummary(BaseModel):
     version_id: str
     document_id: str
-    version: int
+    version: int = Field(ge=0)
     content_format: str
     frontmatter: Optional[Dict[str, Any]] = None
     created_at: datetime

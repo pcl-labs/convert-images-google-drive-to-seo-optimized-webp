@@ -96,7 +96,9 @@ class Database:
                     frontmatter TEXT,
                     latest_version_id TEXT,
                     created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+                    FOREIGN KEY (latest_version_id) REFERENCES document_versions(version_id) ON DELETE SET NULL
                 )
                 """
             )
@@ -128,11 +130,17 @@ class Database:
                     assets TEXT,
                     created_at TEXT NOT NULL DEFAULT (datetime('now')),
                     FOREIGN KEY (document_id) REFERENCES documents(document_id) ON DELETE CASCADE,
-                    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+                    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+                    UNIQUE(document_id, version)
                 )
                 """
             )
             cur.execute("CREATE INDEX IF NOT EXISTS idx_document_versions_document ON document_versions(document_id, version DESC)")
+            # Also ensure unique index in case table was created earlier without the constraint
+            try:
+                cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS unique_document_version ON document_versions(document_id, version)")
+            except Exception:
+                pass
             # Document exports table
             cur.execute(
                 """
@@ -142,7 +150,7 @@ class Database:
                     version_id TEXT NOT NULL,
                     user_id TEXT NOT NULL,
                     target TEXT NOT NULL,
-                    status TEXT NOT NULL DEFAULT 'queued',
+                    status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued','pending','processing','completed','failed','cancelled')),
                     payload TEXT,
                     created_at TEXT NOT NULL DEFAULT (datetime('now')),
                     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -153,6 +161,62 @@ class Database:
                 """
             )
             cur.execute("CREATE INDEX IF NOT EXISTS idx_document_exports_document ON document_exports(document_id, created_at DESC)")
+            # Triggers for document_exports status and updated_at maintenance
+            cur.execute(
+                """
+                CREATE TRIGGER IF NOT EXISTS check_document_export_status 
+                BEFORE INSERT ON document_exports
+                WHEN NEW.status NOT IN ('queued','pending','processing','completed','failed','cancelled')
+                BEGIN
+                    SELECT RAISE(ABORT, 'Invalid status value for document_exports.');
+                END;
+                """
+            )
+            cur.execute(
+                """
+                CREATE TRIGGER IF NOT EXISTS check_document_export_status_update
+                BEFORE UPDATE ON document_exports
+                WHEN NEW.status NOT IN ('queued','pending','processing','completed','failed','cancelled')
+                BEGIN
+                    SELECT RAISE(ABORT, 'Invalid status value for document_exports.');
+                END;
+                """
+            )
+            cur.execute(
+                """
+                CREATE TRIGGER IF NOT EXISTS document_exports_set_updated_at
+                AFTER UPDATE ON document_exports
+                BEGIN
+                    UPDATE document_exports SET updated_at = datetime('now') WHERE export_id = OLD.export_id;
+                END;
+                """
+            )
+
+            # Triggers to validate documents.latest_version_id refers to existing document_versions
+            cur.execute(
+                """
+                CREATE TRIGGER IF NOT EXISTS documents_check_latest_version_id_insert
+                BEFORE INSERT ON documents
+                WHEN NEW.latest_version_id IS NOT NULL AND NOT EXISTS (
+                    SELECT 1 FROM document_versions dv WHERE dv.version_id = NEW.latest_version_id
+                )
+                BEGIN
+                    SELECT RAISE(ABORT, 'latest_version_id must reference an existing document version');
+                END;
+                """
+            )
+            cur.execute(
+                """
+                CREATE TRIGGER IF NOT EXISTS documents_check_latest_version_id_update
+                BEFORE UPDATE ON documents
+                WHEN NEW.latest_version_id IS NOT NULL AND NOT EXISTS (
+                    SELECT 1 FROM document_versions dv WHERE dv.version_id = NEW.latest_version_id
+                )
+                BEGIN
+                    SELECT RAISE(ABORT, 'latest_version_id must reference an existing document version');
+                END;
+                """
+            )
             # Idempotent step invocations
             cur.execute(
                 """
@@ -902,25 +966,24 @@ async def create_document_version(
     assets: Dict[str, Any],
 ) -> Dict[str, Any]:
     """Create immutable document version snapshot."""
-    next_row = await db.execute(
-        "SELECT COALESCE(MAX(version), 0) + 1 AS next_version FROM document_versions WHERE document_id = ?",
-        (document_id,),
-    )
-    next_version = int(dict(next_row).get("next_version", 1)) if next_row else 1
     version_id = str(uuid.uuid4())
     result = await db.execute(
         """
         INSERT INTO document_versions (
             version_id, document_id, user_id, version, content_format, frontmatter,
             body_mdx, body_html, outline, chapters, sections, assets
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (
+            ?, ?, ?,
+            COALESCE((SELECT MAX(version) FROM document_versions WHERE document_id = ?), 0) + 1,
+            ?, ?, ?, ?, ?, ?, ?, ?
+        )
         RETURNING *
         """,
         (
             version_id,
             document_id,
             user_id,
-            next_version,
+            document_id,
             content_format,
             json.dumps(frontmatter or {}),
             body_mdx,

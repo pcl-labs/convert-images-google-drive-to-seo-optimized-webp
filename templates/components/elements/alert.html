@@ -1,3 +1,4 @@
+{% from 'components/elements/icon.html' import icon %}
 {% macro alert(kind="info", text="", dismissible=True) %}
   {% set styles = {
     'info': 'bg-primary/10 text-primary ring-1 ring-primary/30',
@@ -8,7 +9,7 @@
     <div>{{ text|safe }}</div>
     {% if dismissible %}
     <button type="button" aria-label="Close alert" @click="show=false" class="absolute right-2 top-2 text-contentMuted hover:text-content">
-      <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+      {{ icon('close', size='h-4 w-4') }}
     </button>
     {% endif %}
   </div>
