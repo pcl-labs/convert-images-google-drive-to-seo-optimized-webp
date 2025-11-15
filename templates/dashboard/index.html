@@ -3,51 +3,42 @@
 {% block content %}
 <div class="p-4 md:p-6 space-y-6">
   <div class="space-y-1">
-    <h1 class="text-xl font-semibold text-white">Dashboard</h1>
-    <p class="text-sm text-slate-400">Overview and quick actions</p>
+    <h1 class="text-xl font-semibold text-content">Dashboard</h1>
+    <p class="text-sm text-contentMuted">Overview and quick actions</p>
   </div>
 
   <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-    <div class="bg-slate-800/50 border border-slate-700 rounded-xl p-4">
-      <div class="text-slate-400 text-sm">Queued</div>
-      <div class="mt-2 text-2xl font-semibold text-white">{{ stats.queued or 0 }}</div>
+    <div class="surface-muted rounded-xl p-4">
+      <div class="text-contentMuted text-sm">Queued</div>
+      <div class="mt-2 text-2xl font-semibold text-content">{{ stats.queued or 0 }}</div>
     </div>
-    <div class="bg-slate-800/50 border border-slate-700 rounded-xl p-4">
-      <div class="text-slate-400 text-sm">Running</div>
-      <div class="mt-2 text-2xl font-semibold text-white">{{ stats.running or 0 }}</div>
+    <div class="surface-muted rounded-xl p-4">
+      <div class="text-contentMuted text-sm">Running</div>
+      <div class="mt-2 text-2xl font-semibold text-content">{{ stats.running or 0 }}</div>
     </div>
-    <div class="bg-slate-800/50 border border-slate-700 rounded-xl p-4">
-      <div class="text-slate-400 text-sm">Completed</div>
-      <div class="mt-2 text-2xl font-semibold text-white">{{ stats.completed or 0 }}</div>
+    <div class="surface-muted rounded-xl p-4">
+      <div class="text-contentMuted text-sm">Completed</div>
+      <div class="mt-2 text-2xl font-semibold text-content">{{ stats.completed or 0 }}</div>
     </div>
   </div>
 
-  <div class="bg-slate-900/60 border border-slate-800 rounded-xl">
-      <div class="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
-        <div class="font-semibold text-white">Kick Off Optimization</div>
+  {% from 'components/elements/card.html' import card %}
+  {% call card(title="Kick Off Optimization") %}
+    <form hx-post="/dashboard/jobs" hx-target="#recent-jobs-table" hx-swap="outerHTML" class="space-y-3">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+      {% from 'components/elements/input.html' import input %}
+      {{ input('document_id', label='Document ID', placeholder='doc_123...', attrs='required') }}
+      <p class="text-xs text-contentMuted">
+        Need a document ID? <a href="/dashboard/documents" class="text-primary hover:text-primary/80">Use the Documents page</a> to register Drive folders, ingest YouTube videos, or paste raw text.
+      </p>
+      <div>
+        {% from 'components/elements/button.html' import button %}
+        {{ button('Create Job', variant='primary', attrs='type="submit"') }}
       </div>
-      <div class="p-4 space-y-3">
-        <form hx-post="/dashboard/jobs" hx-target="#recent-jobs-table" hx-swap="outerHTML">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-          <label class="block text-sm text-slate-300">Document ID</label>
-          <div class="mt-1 flex flex-col gap-2">
-            <input name="document_id" type="text" placeholder="doc_123..." class="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500" required>
-            <p class="text-xs text-slate-500">
-              Need a document ID? <a href="/dashboard/documents" class="text-sky-400 hover:text-sky-300">Use the Documents page</a> to register Drive folders, ingest YouTube videos, or paste raw text.
-            </p>
-          </div>
-          <div class="mt-2">
-            <button type="submit" class="inline-flex items-center justify-center rounded-lg bg-sky-600 hover:bg-sky-500 text-white px-3 py-2 text-sm font-medium">Create Job</button>
-          </div>
-        </form>
-      </div>
-    </div>
+    </form>
+  {% endcall %}
 
-  <div id="recent-jobs" class="bg-slate-900/60 border border-slate-800 rounded-xl">
-    <div class="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
-      <div class="font-semibold text-white">Recent Jobs</div>
-      <a href="/dashboard/jobs" class="text-sm text-sky-400 hover:text-sky-300">View all</a>
-    </div>
+  {% call card(title="Recent Jobs", actions='<a href="/dashboard/jobs" class="text-sm text-primary hover:text-primary/80">View all</a>') %}
     <div id="recent-jobs-table" class="p-0 overflow-x-auto">
       {% from 'components/data/table.html' import table with context %}
       {% call table(headers=["Job ID","Type","Status","Created","View"]) %}
@@ -61,28 +52,26 @@
             </td>
             <td class="px-3 py-2 md:px-4 md:py-3">{{ job.created_at }}</td>
             <td class="px-3 py-2 md:px-4 md:py-3">
-              <a href="/dashboard/jobs/{{ job.id }}" class="text-sky-400 hover:text-sky-300">View</a>
+              <a href="/dashboard/jobs/{{ job.id }}" class="text-primary hover:text-primary/80">View</a>
             </td>
           </tr>
         {% else %}
           <tr>
-            <td colspan="5" class="px-4 py-6 text-center text-slate-400">No recent jobs</td>
+            <td colspan="5" class="px-4 py-6 text-center text-contentMuted">No recent jobs</td>
           </tr>
         {% endfor %}
       {% endcall %}
     </div>
-  </div>
+  {% endcall %}
 
-  <div class="bg-slate-900/60 border border-slate-800 rounded-xl">
-    <div class="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
-      <div class="font-semibold text-white">Developer Docs</div>
+  {% call card(title="Developer Docs") %}
+    <div class="flex flex-wrap gap-3 text-sm">
+      {% from 'components/elements/button.html' import button %}
+      <a href="/docs" class="btn-secondary">Swagger UI</a>
+      <a href="/redoc" class="btn-secondary">ReDoc</a>
+      <a href="/openapi.json" class="btn-secondary">OpenAPI JSON</a>
+      <a href="/api" class="btn-secondary">API Index</a>
     </div>
-    <div class="p-4 flex flex-wrap gap-3 text-sm">
-      <a href="/docs" class="inline-flex items-center rounded-md px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700">Swagger UI</a>
-      <a href="/redoc" class="inline-flex items-center rounded-md px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700">ReDoc</a>
-      <a href="/openapi.json" class="inline-flex items-center rounded-md px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700">OpenAPI JSON</a>
-      <a href="/api" class="inline-flex items-center rounded-md px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700">API Index</a>
-    </div>
-  </div>
+  {% endcall %}
 </div>
 {% endblock %}

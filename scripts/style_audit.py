@@ -287,6 +287,51 @@ def analyze():
         if k not in ARBITRARY_ALLOWLIST:
             arbitrary_disallowed[k] = v
 
+    # Button uniformity check: find all button macro invocations and check variant usage
+    button_usage = defaultdict(lambda: Counter())  # file -> Counter(variants)
+    button_invocations_no_variant = []  # files with button() calls without explicit variant
+    # Find button macro calls - they can span multiple lines
+    button_call_pattern = re.compile(r"\{\{\s*button\s*\([^}]*\}\}", re.MULTILINE | re.DOTALL)
+    for path in iter_files():
+        try:
+            content = path.read_text(encoding="utf-8")
+        except Exception:
+            continue
+        rel = str(path.relative_to(ROOT))
+        # Find all button macro calls (handles multiline)
+        for match in button_call_pattern.finditer(content):
+            call_text = match.group(0)
+            # Check for variant parameter (named or positional)
+            variant_match = re.search(r"variant\s*=\s*['\"]([^'\"]+)['\"]", call_text)
+            if variant_match:
+                variant = variant_match.group(1)
+                button_usage[rel][variant] += 1
+            elif re.search(r"button\s*\([^,)]+,\s*['\"](primary|secondary|destructive|ghost)['\"]", call_text):
+                # Positional variant (second argument)
+                pos_match = re.search(r"['\"](primary|secondary|destructive|ghost)['\"]", call_text)
+                if pos_match:
+                    button_usage[rel][pos_match.group(1)] += 1
+            else:
+                # Button call without explicit variant (uses default 'primary')
+                snippet = call_text.replace('\n', ' ').strip()[:120]
+                button_invocations_no_variant.append((rel, snippet))
+
+    # Check for raw button elements that should use the macro
+    raw_buttons = []  # (file, line_number, snippet)
+    button_tag_re = re.compile(r"<button[^>]*>")
+    for path in iter_files():
+        try:
+            content = path.read_text(encoding="utf-8")
+            lines = content.splitlines()
+        except Exception:
+            continue
+        rel = str(path.relative_to(ROOT))
+        for i, line in enumerate(lines, 1):
+            if button_tag_re.search(line) and "{{ button(" not in line:
+                # Check if it's not a hidden input or other non-button element
+                if '<button' in line.lower() and 'type="hidden"' not in line.lower():
+                    raw_buttons.append((rel, i, line.strip()[:120]))
+
     return {
         "components": component_index,
         "util_counters": util_counters,
@@ -305,6 +350,9 @@ def analyze():
         "macro_file_map": macro_file_map,
         "variant_maps": variant_maps,
         "arbitrary_disallowed": arbitrary_disallowed,
+        "button_usage": {f: dict(c) for f, c in button_usage.items()},
+        "button_invocations_no_variant": button_invocations_no_variant,
+        "raw_buttons": raw_buttons,
     }
 
 
@@ -371,6 +419,39 @@ def render_markdown(report: dict) -> str:
             lines.append(f"  - {f} -> {sum(cnt.values())} calls: " + ", ".join(f"{m}:{n}" for m, n in cnt.most_common()))
     else:
         lines.append("- No macro invocations detected")
+    lines.append("")
+
+    # Button uniformity check
+    lines.append("## Button uniformity check")
+    button_usage = report.get("button_usage", {})
+    if button_usage:
+        total_buttons = sum(sum(c.values()) for c in button_usage.values())
+        variant_counts = Counter()
+        for file_usage in button_usage.values():
+            for variant, count in file_usage.items():
+                variant_counts[variant] += count
+        lines.append(f"- Total button macro calls: {total_buttons}")
+        lines.append("- Variant distribution:")
+        for variant, count in variant_counts.most_common():
+            lines.append(f"  - `{variant}`: {count}")
+        lines.append("- Button usage by file:")
+        for file, variants in sorted(button_usage.items()):
+            total = sum(variants.values())
+            lines.append(f"  - {file}: {total} button(s) - {', '.join(f'{v}:{c}' for v, c in variants.items())}")
+    else:
+        lines.append("- No button macro calls found")
+    
+    button_no_variant = report.get("button_invocations_no_variant", [])
+    if button_no_variant:
+        lines.append(f"- ⚠️  {len(button_no_variant)} button call(s) without explicit variant (using default 'primary'):")
+        for file, snippet in button_no_variant[:10]:
+            lines.append(f"  - {file}: {snippet}")
+    
+    raw_buttons = report.get("raw_buttons", [])
+    if raw_buttons:
+        lines.append(f"- ⚠️  {len(raw_buttons)} raw <button> element(s) found (should use button macro):")
+        for file, line_num, snippet in raw_buttons[:10]:
+            lines.append(f"  - {file}:{line_num}: {snippet}")
     lines.append("")
 
     # Variant drift check

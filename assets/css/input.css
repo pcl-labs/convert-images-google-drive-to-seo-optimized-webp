@@ -5,6 +5,87 @@
 @layer base {
   :root {
     color-scheme: dark;
+    /* Backgrounds */
+    --bg: #020617;            /* slate-950 */
+    --surface: #0f172a;       /* slate-900 - distinct from bg for cards */
+    --surface-muted: #1e293b; /* slate-800 - slightly lighter for muted surfaces */
+    --border: #1f2937;        /* slate-800 */
+    /* Text */
+    --content: #e2e8f0;       /* slate-200 */
+    --content-muted: #94a3b8; /* slate-400 */
+    /* Brand */
+    --primary: #0284c7;       /* sky-600 */
+    --primary-contrast: #ffffff;
+    --destructive: #e11d48;   /* rose-600 */
+    --destructive-contrast: #ffffff;
+    --accent: #22c55e;        /* green-500 */
+    --accent-contrast: #052e16;
+    --warning: #eab308;       /* yellow-500 */
+    --warning-contrast: #422006;
+    /* Focus ring */
+    --ring: #38bdf8;          /* sky-400 */
+    /* Radius */
+    --radius-xs: 0.25rem;
+    --radius-sm: 0.375rem;
+    --radius-md: 0.5rem;
+    --radius-lg: 0.75rem;
+    /* Shadows */
+    --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.2);
+    --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.25);
+    --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.3);
+    /* Typography */
+    --font-sans: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica Neue, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+    --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   }
-  html, body { @apply bg-slate-950 text-slate-200; }
+  .dark {
+    /* Inherit same for now; later adjust for alternate dark themes */
+  }
+  html, body { @apply bg-bg text-content; }
+}
+
+@layer components {
+  /* Containers */
+  .surface { background-color: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); box-shadow: var(--shadow-md); }
+  .surface-muted { background-color: var(--surface-muted); border: 1px solid var(--border); border-radius: var(--radius-md); }
+
+  /* Buttons */
+  .btn { @apply inline-flex items-center justify-center px-3 py-2 text-sm font-medium; border-radius: var(--radius-md); }
+  .btn-primary { @apply btn; background-color: var(--primary); color: var(--primary-contrast); }
+  .btn-primary:hover { filter: brightness(1.05); }
+  .btn-secondary { @apply btn; background-color: var(--surface-muted); color: var(--content); border: 1px solid var(--border); }
+  .btn-destructive { @apply btn; background-color: var(--destructive); color: var(--destructive-contrast); }
+  .btn-ghost { @apply btn; background-color: transparent; color: var(--content); border: 1px solid transparent; }
+
+  /* Inputs */
+  .field { 
+    background-color: var(--surface-muted); 
+    color: var(--content); 
+    border: 1px solid var(--border); 
+    border-radius: var(--radius-md); 
+    padding: 0.5rem 0.75rem; 
+    font-size: 0.875rem;
+    line-height: 1.5rem;
+    width: 100%;
+    transition: border-color 0.15s ease-in-out, box-shadow 0.15s ease-in-out;
+  }
+  .field::placeholder { 
+    color: var(--content-muted); 
+    opacity: 0.7;
+  }
+  .field:hover:not(:disabled) { 
+    border-color: var(--border);
+  }
+  .field:focus { 
+    outline: none; 
+    border-color: var(--ring);
+    box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.2);
+  }
+  .field:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    background-color: var(--surface-muted);
+  }
+
+  /* Badges */
+  .badge { @apply inline-flex items-center; border-radius: var(--radius-md); padding: 0.125rem 0.5rem; font-size: 0.75rem; font-weight: 500; border: 1px solid var(--border); }
 }

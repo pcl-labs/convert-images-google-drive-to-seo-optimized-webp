@@ -4,8 +4,8 @@
 <div class="p-4 md:p-6 space-y-6">
   <div class="flex items-center justify-between">
     <div>
-      <h1 class="text-xl font-semibold text-white">Job {{ job.id or job.job_id }}</h1>
-      <div class="mt-1 text-sm text-slate-400">Created {{ job.created_at }}</div>
+      <h1 class="text-xl font-semibold text-content">Job {{ job.id or job.job_id }}</h1>
+      <div class="mt-1 text-sm text-contentMuted">Created {{ job.created_at }}</div>
     </div>
     <div class="flex items-center gap-2">
       {% from 'components/elements/button.html' import button %}
@@ -15,81 +15,73 @@
   </div>
 
   <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-    <div class="md:col-span-2 bg-slate-900/60 border border-slate-800 rounded-xl">
-      <div class="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
-        <div class="font-semibold text-white">Metadata</div>
-        {% from 'components/elements/badge.html' import badge %}
-        <div>{{ badge(job.status_label or job.status, status=job.status) }}</div>
-      </div>
-      <div class="p-4 space-y-2 text-slate-200">
+    {% from 'components/elements/card.html' import card %}
+    {% from 'components/elements/badge.html' import badge %}
+    {% call card(title='Metadata', actions='<div>' + badge(job.status_label or job.status, status=job.status) + '</div>') %}
+      <div class="space-y-2 text-content">
         <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
-          <div><span class="text-slate-400 text-sm">Type</span><div class="font-medium">{{ job.kind or job.type }}</div></div>
-          <div><span class="text-slate-400 text-sm">Document</span><div class="font-medium break-all">{{ job.document_id or '-' }}</div></div>
-          <div><span class="text-slate-400 text-sm">Owner</span><div class="font-medium">{{ job.user or '-' }}</div></div>
-          <div><span class="text-slate-400 text-sm">Updated</span><div class="font-medium">{{ job.updated_at or '-' }}</div></div>
+          <div><span class="text-contentMuted text-sm">Type</span><div class="font-medium">{{ job.kind or job.type }}</div></div>
+          <div><span class="text-contentMuted text-sm">Document</span><div class="font-medium break-all">{{ job.document_id or '-' }}</div></div>
+          <div><span class="text-contentMuted text-sm">Owner</span><div class="font-medium">{{ job.user or '-' }}</div></div>
+          <div><span class="text-contentMuted text-sm">Updated</span><div class="font-medium">{{ job.updated_at or '-' }}</div></div>
         </div>
         {% if job.error %}
           {% from 'components/elements/alert.html' import alert %}
           <div class="mt-3">{{ alert('error', job.error) }}</div>
         {% endif %}
       </div>
-    </div>
+    {% endcall %}
 
-    <div class="bg-slate-900/60 border border-slate-800 rounded-xl">
-      <div class="px-4 py-3 border-b border-slate-800 font-semibold text-white">Status Timeline</div>
-      <ol class="p-4 space-y-3 text-sm">
+    {% call card(title='Status Timeline') %}
+      <ol class="space-y-3 text-sm">
         {% for e in job.events or [] %}
           <li class="flex items-start gap-2">
-            <div class="h-2 w-2 mt-1.5 rounded-full bg-sky-500"></div>
+            <div class="h-2 w-2 mt-1.5 rounded-full bg-primary"></div>
             <div>
-              <div class="text-slate-200">{{ e.message }}</div>
-              <div class="text-slate-500 text-xs">{{ e.ts }}</div>
+              <div class="text-content">{{ e.message }}</div>
+              <div class="text-contentMuted text-xs">{{ e.ts }}</div>
             </div>
           </li>
         {% else %}
-          <li class="text-slate-400">No events yet</li>
+          <li class="text-contentMuted">No events yet</li>
         {% endfor %}
       </ol>
-    </div>
+    {% endcall %}
   </div>
 
-  <div class="bg-slate-900/60 border border-slate-800 rounded-xl">
-    <div class="px-4 py-3 border-b border-slate-800 font-semibold text-white">Output</div>
+  {% call card(title='Output') %}
     <div id="job-status"
-         class="p-4 space-y-2"
+         class="space-y-2"
          data-status="{{ job.status }}"
          hx-get="/dashboard/jobs/{{ job.id or job.job_id }}"
          hx-trigger="every 2s[document.querySelector('#job-status') && document.querySelector('#job-status').dataset.status === 'processing']"
          hx-swap="outerHTML">
       {% if job.output %}
-        <pre class="whitespace-pre-wrap text-sm text-slate-300">{{ job.output }}</pre>
+        <pre class="whitespace-pre-wrap text-sm text-content">{{ job.output }}</pre>
       {% else %}
-        <p class="text-slate-400 text-sm">No output yet.</p>
+        <p class="text-contentMuted text-sm">No output yet.</p>
       {% endif %}
     </div>
-  </div>
+  {% endcall %}
 
-  <div class="bg-slate-900/60 border border-slate-800 rounded-xl">
-    <div class="px-4 py-3 border-b border-slate-800 font-semibold text-white">Recent Logs</div>
-    <div class="p-4">
-      {% set logs = (job.progress.recent_logs if job.progress and job.progress.recent_logs else []) %}
-      {% if logs and logs|length > 0 %}
-        <ul class="space-y-1 text-sm text-slate-300">
-          {% for line in logs|reverse %}
-            <li class="flex items-start gap-2">
-              <span class="mt-1.5 h-1.5 w-1.5 rounded-full bg-slate-500"></span>
-              <span class="break-words">{{ line }}</span>
-            </li>
-          {% endfor %}
-        </ul>
-      {% else %}
-        <p class="text-slate-400 text-sm">No recent logs yet.</p>
-      {% endif %}
-    </div>
-  </div>
+  {% call card(title='Recent Logs') %}
+    {% set logs = (job.progress.recent_logs if job.progress and job.progress.recent_logs else []) %}
+    {% if logs and logs|length > 0 %}
+      <ul class="space-y-1 text-sm text-content">
+        {% for line in logs|reverse %}
+          <li class="flex items-start gap-2">
+            <span class="mt-1.5 h-1.5 w-1.5 rounded-full bg-contentMuted"></span>
+            <span class="break-words">{{ line }}</span>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="text-contentMuted text-sm">No recent logs yet.</p>
+    {% endif %}
+  {% endcall %}
 
   <div>
-    <a href="/dashboard/jobs" class="text-sky-400 hover:text-sky-300">Back to Jobs</a>
+    <a href="/dashboard/jobs" class="text-primary hover:text-primary/80">Back to Jobs</a>
   </div>
 </div>
 {% endblock %}

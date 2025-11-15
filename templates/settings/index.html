@@ -3,19 +3,20 @@
 {% block content %}
 <div class="p-4 md:p-6 space-y-6">
   <div class="space-y-1">
-    <h1 class="text-xl font-semibold text-white">Settings</h1>
-    <p class="text-sm text-slate-400">Manage your account and API access</p>
+    <h1 class="text-xl font-semibold text-content">Settings</h1>
+    <p class="text-sm text-contentMuted">Manage your account and API access</p>
   </div>
 
-  <div class="bg-slate-900/60 border border-slate-800 rounded-xl">
-    <div class="px-4 py-3 border-b border-slate-800 font-semibold text-white">API Keys</div>
-    <div class="p-4 space-y-4">
+  {% from 'components/elements/card.html' import card %}
+  {% call card(title='API Keys') %}
+    <div class="space-y-4">
       <form hx-post="/dashboard/settings/api-key" hx-target="#api-key-result" hx-swap="innerHTML">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-        <button class="inline-flex items-center justify-center rounded-md bg-sky-600 hover:bg-sky-500 text-white px-3 py-2 text-sm">Generate API Key</button>
+        {% from 'components/elements/button.html' import button %}
+        {{ button('Generate API Key', variant='primary', attrs='type="submit"') }}
       </form>
       <div id="api-key-result" class="space-y-2"></div>
     </div>
-  </div>
+  {% endcall %}
 </div>
 {% endblock %}
