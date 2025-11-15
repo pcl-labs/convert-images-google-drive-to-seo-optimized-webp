@@ -129,8 +129,8 @@ def test_process_ingest_youtube_job_merges_metadata(monkeypatch):
             await create_user(db, user_id=user_id, github_id=None, email=f"{user_id}@example.com")
             
             # Store Google token for YouTube integration (with refresh token if available)
-            # Use explicit test scopes to avoid depending on another user's token
-            actual_scopes = "https://www.googleapis.com/auth/youtube https://www.googleapis.com/auth/youtube.readonly"
+            # Use explicit test scopes - youtube.force-ssl is required for captions API
+            actual_scopes = "https://www.googleapis.com/auth/youtube.force-ssl"
             
             await upsert_google_token(
                 db,

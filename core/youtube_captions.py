@@ -24,7 +24,8 @@ def _select_caption_track(items: List[Dict[str, Any]], langs: List[str]) -> Opti
         return 0
 
     best = None
-    best_score = -1
+    # Require a positive match score; start at 0 so only s > 0 selects
+    best_score = 0
     for it in items:
         s = score(it)
         if s > best_score:
