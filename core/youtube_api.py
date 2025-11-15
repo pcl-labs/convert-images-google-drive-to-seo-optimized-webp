@@ -78,15 +78,15 @@ def fetch_video_metadata(service, video_id: str) -> Dict[str, Any]:
     }
     metadata = {
         "video_id": video_id,
-        "title": snippet.get("title"),
-        "description": snippet.get("description"),
-        "channel_title": snippet.get("channelTitle"),
-        "channel_id": snippet.get("channelId"),
-        "published_at": snippet.get("publishedAt"),
-        "thumbnails": snippet.get("thumbnails"),
-        "category_id": snippet.get("categoryId"),
-        "tags": tags,
+        "title": snippet.get("title") or "Untitled",
+        "description": snippet.get("description") or "",
+        "channel_title": snippet.get("channelTitle") or "",
+        "channel_id": snippet.get("channelId") or "",
+        "published_at": snippet.get("publishedAt") or "",
+        "thumbnails": snippet.get("thumbnails") or {},
+        "category_id": snippet.get("categoryId") or "",
+        "tags": tags or [],
         "duration_seconds": duration_seconds,
-        "live_broadcast_content": snippet.get("liveBroadcastContent"),
+        "live_broadcast_content": snippet.get("liveBroadcastContent") or "",
     }
     return {"frontmatter": frontmatter, "metadata": metadata}

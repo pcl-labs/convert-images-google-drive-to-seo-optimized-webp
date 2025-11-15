@@ -1066,7 +1066,10 @@ async def run_inline_queue_consumer(poll_interval: float = 1.0, recover_pending:
             "job_type": job.get("job_type"),
             "document_id": job.get("document_id"),
         }
-        message.update(payload or {})
+        # Only merge payload fields that don't conflict with message structure
+        for key, value in (payload or {}).items():
+            if key not in ("job_id", "user_id", "job_type", "document_id"):
+                message[key] = value
         return message
 
     async def _process_jobs(jobs: List[Dict[str, Any]]):

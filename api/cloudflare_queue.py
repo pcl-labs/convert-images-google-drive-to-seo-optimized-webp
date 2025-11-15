@@ -85,12 +85,15 @@ class QueueProducer:
                     self._queue = settings.queue
                     logger.info("Using Cloudflare Workers queue binding")
                 elif settings.cf_api_token and settings.cf_queue_name:
-                    self._cf_queue_api = CloudflareQueueAPI(
-                        account_id=settings.cf_account_id or "",
-                        api_token=settings.cf_api_token,
-                        queue_name=settings.cf_queue_name,
-                    )
-                    logger.info("Initialized Cloudflare Queue API client")
+                    if settings.cf_account_id:
+                        self._cf_queue_api = CloudflareQueueAPI(
+                            account_id=settings.cf_account_id,
+                            api_token=settings.cf_api_token,
+                            queue_name=settings.cf_queue_name,
+                        )
+                        logger.info("Initialized Cloudflare Queue API client")
+                    else:
+                        logger.warning("cf_account_id missing; skipping CloudflareQueueAPI initialization")
                 else:
                     logger.warning("No queue binding/API configured; jobs will remain pending")
 
@@ -98,11 +101,14 @@ class QueueProducer:
                 if settings.dlq is not None:
                     self._dlq = settings.dlq
                 elif settings.cf_api_token and settings.cf_queue_dlq:
-                    self._cf_dlq_api = CloudflareQueueAPI(
-                        account_id=settings.cf_account_id or "",
-                        api_token=settings.cf_api_token,
-                        queue_name=settings.cf_queue_dlq,
-                    )
+                    if settings.cf_account_id:
+                        self._cf_dlq_api = CloudflareQueueAPI(
+                            account_id=settings.cf_account_id,
+                            api_token=settings.cf_api_token,
+                            queue_name=settings.cf_queue_dlq,
+                        )
+                    else:
+                        logger.warning("cf_account_id missing; skipping Cloudflare DLQ API initialization")
         self._initialized = True
 
     @property
