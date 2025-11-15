@@ -9,7 +9,7 @@ def _status_label(value: str) -> str:
     }
     return mapping.get(value, (value or "").title())
 
-from fastapi import APIRouter, Request, Depends, Form, HTTPException, status, BackgroundTasks
+from fastapi import APIRouter, Request, Depends, Form, HTTPException, status
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from starlette.templating import Jinja2Templates
 from starlette.responses import Response, StreamingResponse
@@ -21,11 +21,10 @@ import json
 import secrets
 import hmac
 
-from .models import OptimizeRequest, JobStatusEnum
+from .models import OptimizeDocumentRequest, JobStatusEnum, JobType
 from .deps import ensure_services, ensure_db, parse_job_progress, get_current_user
 from .auth import verify_jwt_token
 from .database import (
-    create_job,
     list_jobs,
     get_job_stats,
     get_google_tokens,
@@ -37,15 +36,23 @@ from .database import (
     mark_notification_seen,
     dismiss_notification,
     get_user_by_id,
+    list_documents,
+    list_jobs_by_document,
+    get_document,
 )
 from .auth import create_user_api_key
-from .protected import get_job_status as protected_get_job_status
-from workers.consumer import process_optimization_job
+from .protected import (
+    get_job_status as protected_get_job_status,
+    start_optimize_job,
+    create_drive_document_for_user,
+    start_ingest_youtube_job,
+    start_ingest_text_job,
+)
 from .config import settings
 from .notifications import notify_job
 from .notifications_stream import notifications_stream_response
 from .constants import COOKIE_OAUTH_STATE, COOKIE_GOOGLE_OAUTH_STATE
-from .utils import normalize_ui_status, enqueue_job_with_guard
+from .utils import normalize_ui_status
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +135,56 @@ def _render_auth_page(request: Request, view_mode: str) -> Response:
         is_secure = _is_secure_request(request)
         resp.set_cookie("csrf_token", csrf, httponly=True, samesite="lax", secure=is_secure)
     return resp
+
+
+def _document_to_view(doc: dict) -> dict:
+    metadata = doc.get("metadata")
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata)
+        except Exception:
+            metadata = {}
+    elif metadata is None:
+        metadata = {}
+    source_type = (doc.get("source_type") or "unknown").lower()
+    source_label = {
+        "drive": "Drive",
+        "drive_folder": "Drive",
+        "youtube": "YouTube",
+        "text": "Text",
+    }.get(source_type, source_type.title())
+    origin = doc.get("source_ref")
+    if source_type == "drive":
+        origin = metadata.get("input") or origin
+    elif source_type == "youtube":
+        origin = metadata.get("url") or origin
+    elif source_type == "text":
+        origin = metadata.get("title") or "Manual text"
+    return {
+        "id": doc.get("document_id"),
+        "source_type": source_type,
+        "source_label": source_label,
+        "origin": origin,
+        "metadata": metadata,
+        "created_at": doc.get("created_at"),
+    }
+
+
+async def _load_document_views(db, user_id: str, page: int = 1, page_size: int = 20) -> tuple[list[dict], int]:
+    docs, total = await list_documents(db, user_id, page=page, page_size=page_size)
+    return [_document_to_view(doc) for doc in docs], total
+
+
+async def _render_documents_partial(
+    request: Request,
+    db,
+    user: dict,
+    flash: Optional[dict] = None,
+    status_code: int = status.HTTP_200_OK,
+):
+    documents, _ = await _load_document_views(db, user["user_id"])
+    context = {"request": request, "documents": documents, "flash": flash}
+    return templates.TemplateResponse("documents/partials/list.html", context, status_code=status_code)
 
 
 @router.get("/api/notifications")
@@ -232,6 +289,7 @@ async def dashboard(request: Request, page: int = 1, user: dict = Depends(get_cu
         jt = (j.get("job_type") or "optimize_drive")
         return {
             "id": j.get("job_id"),
+            "document_id": j.get("document_id"),
             "kind": KIND_MAP.get(jt, jt.replace("_", " ").title()),
             "status": status,
             "status_label": _status_label(status),
@@ -259,11 +317,67 @@ async def dashboard(request: Request, page: int = 1, user: dict = Depends(get_cu
     return resp
 
 
+@router.get("/dashboard/documents", response_class=HTMLResponse)
+async def documents_page(request: Request, page: int = 1, user: dict = Depends(get_current_user)):
+    db = ensure_db()
+    csrf = _get_csrf_token(request)
+    documents, total = await _load_document_views(db, user["user_id"], page=page, page_size=20)
+    tokens = await get_google_tokens(db, user["user_id"])  # type: ignore
+    google_connected = bool(tokens)
+    context = {
+        "request": request,
+        "user": user,
+        "documents": documents,
+        "total_documents": total,
+        "csrf_token": csrf,
+        "google_connected": google_connected,
+        "page_title": "Documents",
+        "flash": None,
+    }
+    resp = templates.TemplateResponse("documents/index.html", context)
+    if not request.cookies.get("csrf_token"):
+        is_secure = _is_secure_request(request)
+        resp.set_cookie("csrf_token", csrf, httponly=True, samesite="lax", secure=is_secure)
+    return resp
+
+
+@router.get("/dashboard/documents/{document_id}", response_class=HTMLResponse)
+async def document_detail_page(document_id: str, request: Request, user: dict = Depends(get_current_user)):
+    db = ensure_db()
+    doc = await get_document(db, document_id, user_id=user["user_id"])
+    if not doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    doc_view = _document_to_view(doc)
+    metadata_items = list((doc_view.get("metadata") or {}).items())
+    jobs = await list_jobs_by_document(db, user["user_id"], document_id, limit=25)
+
+    def to_job_view(job: dict) -> dict:
+        status = job.get("status", "queued")
+        job_type = (job.get("job_type") or "optimize_drive")
+        return {
+            "id": job.get("job_id"),
+            "kind": KIND_MAP.get(job_type, job_type.replace("_", " ").title()),
+            "status": status,
+            "status_label": _status_label(status),
+            "created_at": job.get("created_at"),
+            "document_id": job.get("document_id"),
+        }
+
+    context = {
+        "request": request,
+        "user": user,
+        "document": doc_view,
+        "metadata_items": metadata_items,
+        "jobs": [to_job_view(j) for j in jobs],
+        "page_title": f"Document {document_id}",
+    }
+    return templates.TemplateResponse("documents/detail.html", context)
+
+
 @router.post("/dashboard/jobs", response_class=HTMLResponse)
 async def create_job_html(
     request: Request,
-    background_tasks: BackgroundTasks,
-    drive_url: str = Form(...),
+    document_id: str = Form(...),
     csrf_token: str = Form(...),
     user: dict = Depends(get_current_user),
 ):
@@ -271,69 +385,18 @@ async def create_job_html(
     if not cookie_token or cookie_token != csrf_token:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
 
-    db, queue = ensure_services()
+    db = ensure_db()
+    _, queue = ensure_services()
 
-    folder_input = (drive_url or "").strip()
-    if not folder_input:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Drive URL required")
+    doc_id = (document_id or "").strip()
+    if not doc_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Document ID required")
 
-    job_id = str(uuid.uuid4())
-
-    # Build request model allowing defaults to apply (including default extensions whitelist)
-    req_model = OptimizeRequest(drive_folder=folder_input)
-    extensions_list = req_model.extensions if req_model.extensions is not None else []
-
-    # Persist job with concrete extensions list (not None)
-    await create_job(db, job_id, user["user_id"], folder_input, extensions_list)
-    
-    # Unified enqueue logic with environment-aware guard
-    enqueued, enqueue_exception, should_fail = await enqueue_job_with_guard(
-        queue, job_id, user["user_id"], req_model, allow_inline_fallback=True
-    )
-    
-    if should_fail:
-        # Production: queue required, fail if unavailable
-        detail = "Queue unavailable or enqueue failed; background processing is required in production."
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=detail)
-    
-    # Development: allow inline fallback when queue missing or enqueue failed
-    if not enqueued:
-        try:
-            logger.info(
-                f"Using BackgroundTasks fallback for job {job_id}",
-                extra={
-                    "job_id": job_id,
-                    "user_id": user["user_id"],
-                    "event": "job.fallback_background_tasks",
-                    "environment": settings.environment,
-                    "fallback_type": "BackgroundTasks"
-                }
-            )
-            background_tasks.add_task(
-                process_optimization_job,
-                db=db,
-                job_id=job_id,
-                user_id=user["user_id"],
-                drive_folder=folder_input,
-                extensions=extensions_list,
-                overwrite=req_model.overwrite,
-                skip_existing=req_model.skip_existing,
-                cleanup_originals=req_model.cleanup_originals,
-                max_retries=req_model.max_retries,
-            )
-        except Exception as e:
-            logger.error(
-                f"Failed to schedule inline job {job_id}: {e}",
-                exc_info=True,
-                extra={
-                    "job_id": job_id,
-                    "user_id": user["user_id"],
-                    "event": "job.fallback_failed",
-                    "fallback_type": "BackgroundTasks",
-                    "error": str(e)
-                }
-            )
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to schedule job")
+    req_model = OptimizeDocumentRequest(document_id=doc_id)
+    try:
+        await start_optimize_job(db, queue, user["user_id"], doc_id, req_model)
+    except HTTPException as exc:
+        raise exc
 
     jobs_list, total = await list_jobs(db, user["user_id"], page=1, page_size=10, status=None)
 
@@ -342,6 +405,7 @@ async def create_job_html(
         status = j.get("status", "queued")
         return {
             "id": j.get("job_id"),
+            "document_id": j.get("document_id"),
             "kind": "Drive",
             "status": status,
             "status_label": _status_label(status),
@@ -352,6 +416,99 @@ async def create_job_html(
         "jobs/partials/jobs_list.html",
         {"request": request, "jobs": [to_view(j) for j in jobs_list]},
     )
+
+
+@router.post("/dashboard/documents/drive", response_class=HTMLResponse)
+async def create_drive_document_form(
+    request: Request,
+    drive_source: str = Form(...),
+    csrf_token: str = Form(...),
+    user: dict = Depends(get_current_user),
+):
+    cookie_token = request.cookies.get("csrf_token")
+    if not cookie_token or cookie_token != csrf_token:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
+    db = ensure_db()
+    source = (drive_source or "").strip()
+    if not source:
+        flash = {"status": "error", "message": "Drive folder URL or ID is required"}
+        return await _render_documents_partial(request, db, user, flash, status_code=status.HTTP_400_BAD_REQUEST)
+    try:
+        doc = await create_drive_document_for_user(db, user["user_id"], source)
+        flash = {"status": "success", "message": f"Registered document {doc.document_id}"}
+        return await _render_documents_partial(request, db, user, flash)
+    except HTTPException as exc:
+        flash = {"status": "error", "message": exc.detail or "Failed to register Drive folder"}
+        return await _render_documents_partial(request, db, user, flash, status_code=exc.status_code)
+    except Exception:
+        logger.exception("Failed to create Drive document via UI")
+        flash = {"status": "error", "message": "Unexpected error while registering Drive folder"}
+        return await _render_documents_partial(request, db, user, flash, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@router.post("/dashboard/documents/youtube", response_class=HTMLResponse)
+async def create_youtube_document_form(
+    request: Request,
+    youtube_url: str = Form(...),
+    csrf_token: str = Form(...),
+    user: dict = Depends(get_current_user),
+):
+    cookie_token = request.cookies.get("csrf_token")
+    if not cookie_token or cookie_token != csrf_token:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
+    db = ensure_db()
+    url = (youtube_url or "").strip()
+    if not url:
+        flash = {"status": "error", "message": "YouTube URL is required"}
+        return await _render_documents_partial(request, db, user, flash, status_code=status.HTTP_400_BAD_REQUEST)
+    _, queue = ensure_services()
+    try:
+        job = await start_ingest_youtube_job(db, queue, user["user_id"], url)
+        flash = {
+            "status": "success",
+            "message": f"YouTube ingest job {job.job_id} queued (doc {job.document_id})",
+        }
+        return await _render_documents_partial(request, db, user, flash)
+    except HTTPException as exc:
+        flash = {"status": "error", "message": exc.detail or "Failed to ingest YouTube video"}
+        return await _render_documents_partial(request, db, user, flash, status_code=exc.status_code)
+    except Exception:
+        logger.exception("Failed to queue YouTube ingest from UI")
+        flash = {"status": "error", "message": "Unexpected error while ingesting video"}
+        return await _render_documents_partial(request, db, user, flash, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@router.post("/dashboard/documents/text", response_class=HTMLResponse)
+async def create_text_document_form(
+    request: Request,
+    text_body: str = Form(...),
+    title: Optional[str] = Form(None),
+    csrf_token: str = Form(...),
+    user: dict = Depends(get_current_user),
+):
+    cookie_token = request.cookies.get("csrf_token")
+    if not cookie_token or cookie_token != csrf_token:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
+    db = ensure_db()
+    _, queue = ensure_services()
+    body = (text_body or "").strip()
+    if not body:
+        flash = {"status": "error", "message": "Text content is required"}
+        return await _render_documents_partial(request, db, user, flash, status_code=status.HTTP_400_BAD_REQUEST)
+    try:
+        job = await start_ingest_text_job(db, queue, user["user_id"], body, title)
+        flash = {
+            "status": "success",
+            "message": f"Text ingest job {job.job_id} queued (doc {job.document_id})",
+        }
+        return await _render_documents_partial(request, db, user, flash)
+    except HTTPException as exc:
+        flash = {"status": "error", "message": exc.detail or "Failed to ingest text"}
+        return await _render_documents_partial(request, db, user, flash, status_code=exc.status_code)
+    except Exception:
+        logger.exception("Failed to queue text ingest from UI")
+        flash = {"status": "error", "message": "Unexpected error while ingesting text"}
+        return await _render_documents_partial(request, db, user, flash, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @router.get("/dashboard/jobs/{job_id}", response_class=HTMLResponse)
@@ -367,7 +524,7 @@ async def job_detail_partial(job_id: str, request: Request, user: dict = Depends
             "status": data.status.value if hasattr(data.status, "value") else str(data.status),
             "status_label": _status_label(data.status.value if hasattr(data.status, "value") else str(data.status)),
             "error": data.error,
-            "drive_folder": data.drive_folder,
+            "document_id": data.document_id,
             "progress": progress,
             "created_at": data.created_at,
             "events": [],
@@ -415,6 +572,7 @@ async def jobs_page(request: Request, user: dict = Depends(get_current_user), pa
         jt = (j.get("job_type") or "optimize_drive")
         return {
             "id": j.get("job_id"),
+            "document_id": j.get("document_id"),
             "kind": KIND_MAP.get(jt, jt.replace("_", " ").title()),
             "status": st,
             "status_label": _status_label(st),
@@ -543,9 +701,33 @@ async def retry_job(job_id: str, request: Request, user: dict = Depends(get_curr
             extensions_list = extensions_raw
     except Exception:
         extensions_list = []
-    req_model = OptimizeRequest(drive_folder=job.get("drive_folder"), extensions=extensions_list)
+    job_type = job.get("job_type")
+    if job_type != JobType.OPTIMIZE_DRIVE.value:
+        return Response(
+            content="Retry is only supported for Drive optimization jobs right now.",
+            status_code=status.HTTP_400_BAD_REQUEST,
+            media_type="text/plain"
+        )
+    document_id = job.get("document_id")
+    if not document_id:
+        return Response(
+            content="Job is missing document reference and cannot be retried.",
+            status_code=status.HTTP_400_BAD_REQUEST,
+            media_type="text/plain"
+        )
+    payload = {
+        "job_id": job_id,
+        "user_id": user["user_id"],
+        "job_type": job_type,
+        "document_id": document_id,
+        "extensions": extensions_list,
+        "overwrite": False,
+        "skip_existing": True,
+        "cleanup_originals": False,
+        "max_retries": 3,
+    }
     enqueued, enqueue_exception, should_fail = await enqueue_job_with_guard(
-        queue, job_id, user["user_id"], req_model, allow_inline_fallback=False
+        queue, job_id, user["user_id"], payload, allow_inline_fallback=False
     )
     
     if should_fail:

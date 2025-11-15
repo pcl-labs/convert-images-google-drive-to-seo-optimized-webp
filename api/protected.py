@@ -4,11 +4,11 @@ from fastapi.responses import RedirectResponse
 from typing import Optional
 import uuid
 import secrets
+import json
 from datetime import datetime, timezone
 
 from .config import settings
 from .models import (
-    OptimizeRequest,
     JobStatus,
     JobProgress,
     JobListResponse,
@@ -19,9 +19,11 @@ from .models import (
     JobType,
     IngestYouTubeRequest,
     IngestTextRequest,
+    DriveDocumentRequest,
+    OptimizeDocumentRequest,
+    Document,
 )
 from .database import (
-    create_job,
     create_job_extended,
     get_job,
     list_jobs,
@@ -30,6 +32,7 @@ from .database import (
     get_google_tokens,
     get_user_by_id,
     create_document,
+    get_document,
 )
 from .notifications import notify_job
 from .auth import create_user_api_key
@@ -69,6 +72,165 @@ def _parse_db_datetime(value):
         except Exception:
             pass
     return datetime.now(timezone.utc)
+
+
+def _coerce_document_metadata(doc: dict) -> dict:
+    metadata = doc.get("metadata")
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata)
+        except Exception:
+            metadata = {}
+    if metadata is None:
+        metadata = {}
+    doc["metadata"] = metadata
+    return doc
+
+
+def _serialize_document(doc: dict) -> Document:
+    parsed = _coerce_document_metadata(dict(doc))
+    return Document(
+        document_id=parsed.get("document_id"),
+        user_id=parsed.get("user_id"),
+        source_type=parsed.get("source_type"),
+        source_ref=parsed.get("source_ref"),
+        raw_text=parsed.get("raw_text"),
+        metadata=parsed.get("metadata"),
+        created_at=_parse_db_datetime(parsed.get("created_at")),
+        updated_at=_parse_db_datetime(parsed.get("updated_at")),
+    )
+
+
+async def _load_document_for_user(db, document_id: str, user_id: str) -> dict:
+    doc = await get_document(db, document_id, user_id=user_id)
+    if not doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    return _coerce_document_metadata(doc)
+
+
+def _drive_folder_from_document(doc: dict) -> str:
+    if doc.get("source_type") not in {"drive", "drive_folder"}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Document is not backed by a Drive folder")
+    folder_id = doc.get("source_ref") or doc["metadata"].get("drive_folder_id")
+    if not folder_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Document is missing Drive folder metadata")
+    return folder_id
+
+async def create_drive_document_for_user(db, user_id: str, drive_source: str) -> Document:
+    # Import locally to avoid hard dependency issues if google client is absent in some envs
+    try:
+        from googleapiclient.errors import HttpError  # type: ignore
+    except Exception:
+        class _GoogleHttpError(Exception):
+            pass
+        HttpError = _GoogleHttpError  # type: ignore
+
+    try:
+        service = await build_drive_service_for_user(db, user_id)  # type: ignore
+        folder_id = extract_folder_id_from_input(drive_source, service=service)
+    except (ValueError, HttpError) as e:
+        logger.error("drive_folder_prepare_error", exc_info=True, extra={"user_id": user_id, "drive_source": drive_source})
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Google not linked or folder not accessible") from None
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("drive_folder_unexpected_error", exc_info=True, extra={"user_id": user_id, "drive_source": drive_source})
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to create Drive document") from None
+    document_id = str(uuid.uuid4())
+    doc = await create_document(
+        db,
+        document_id=document_id,
+        user_id=user_id,
+        source_type="drive",
+        source_ref=folder_id,
+        raw_text=None,
+        metadata={"input": drive_source},
+    )
+    return _serialize_document(doc)
+
+
+async def start_ingest_youtube_job(db, queue, user_id: str, url: str) -> JobStatus:
+    clean_url = (url or "").strip()
+    video_id = parse_youtube_video_id(clean_url)
+    if not video_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid YouTube URL")
+    job_id = str(uuid.uuid4())
+    document_id = str(uuid.uuid4())
+    await create_document(
+        db,
+        document_id,
+        user_id,
+        source_type="youtube",
+        source_ref=video_id,
+        raw_text=None,
+        metadata={"url": clean_url},
+    )
+    job_row = await create_job_extended(db, job_id, user_id, job_type=JobType.INGEST_YOUTUBE.value, document_id=document_id)
+    payload = {
+        "job_id": job_id,
+        "user_id": user_id,
+        "job_type": JobType.INGEST_YOUTUBE.value,
+        "document_id": document_id,
+        "youtube_video_id": video_id,
+    }
+    enqueued, enqueue_exception, should_fail = await enqueue_job_with_guard(queue, job_id, user_id, payload, allow_inline_fallback=False)
+    if should_fail:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Queue unavailable or enqueue failed; background processing is required in production.")
+    if not enqueued:
+        logger.warning(
+            "YouTube ingestion job created but not enqueued",
+            extra={"job_id": job_id, "document_id": document_id, "reason": "queue unavailable", "exception": str(enqueue_exception) if enqueue_exception else None},
+        )
+    progress = _parse_job_progress_model(progress_str=job_row.get("progress", "{}"))
+    return JobStatus(
+        job_id=job_id,
+        user_id=user_id,
+        status=JobStatusEnum.PENDING,
+        progress=progress,
+        created_at=_parse_db_datetime(job_row.get("created_at")),
+        job_type=JobType.INGEST_YOUTUBE.value,
+        document_id=document_id,
+    )
+
+
+async def start_ingest_text_job(db, queue, user_id: str, text: str, title: Optional[str] = None) -> JobStatus:
+    clean_text = (text or "").strip()
+    if not clean_text:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Text is required")
+    if len(clean_text) > MAX_TEXT_LENGTH:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Text must be at most {MAX_TEXT_LENGTH} characters")
+    job_id = str(uuid.uuid4())
+    document_id = str(uuid.uuid4())
+    metadata = {"title": title} if title else {}
+    await create_document(
+        db,
+        document_id,
+        user_id,
+        source_type="text",
+        source_ref=None,
+        raw_text=clean_text,
+        metadata=metadata,
+    )
+    job_row = await create_job_extended(db, job_id, user_id, job_type=JobType.INGEST_TEXT.value, document_id=document_id)
+    payload = {"job_id": job_id, "user_id": user_id, "job_type": JobType.INGEST_TEXT.value, "document_id": document_id}
+    enqueued, enqueue_exception, should_fail = await enqueue_job_with_guard(queue, job_id, user_id, payload, allow_inline_fallback=False)
+    if should_fail:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Queue unavailable or enqueue failed; background processing is required in production.")
+    if not enqueued:
+        logger.warning(
+            "Text ingestion job created but not enqueued",
+            extra={"job_id": job_id, "document_id": document_id, "reason": "queue unavailable", "exception": str(enqueue_exception) if enqueue_exception else None},
+        )
+    progress = _parse_job_progress_model(progress_str=job_row.get("progress", "{}"))
+    return JobStatus(
+        job_id=job_id,
+        user_id=user_id,
+        status=JobStatusEnum.PENDING,
+        progress=progress,
+        created_at=_parse_db_datetime(job_row.get("created_at")),
+        job_type=JobType.INGEST_TEXT.value,
+        document_id=document_id,
+    )
 
 
 @router.get("/auth/github/status", tags=["Authentication"])
@@ -227,89 +389,74 @@ async def create_api_key_endpoint(user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to create API key")
 
 
+@router.post("/api/v1/documents/drive", response_model=Document, tags=["Documents"])
+async def create_drive_document_endpoint(req: DriveDocumentRequest, user: dict = Depends(get_current_user)):
+    db = ensure_db()
+    return await create_drive_document_for_user(db, user["user_id"], req.drive_source)
+
+
+async def start_optimize_job(
+    db,
+    queue,
+    user_id: str,
+    document_id: str,
+    request: OptimizeDocumentRequest,
+) -> JobStatus:
+    doc = await _load_document_for_user(db, document_id, user_id)
+    folder_id = _drive_folder_from_document(doc)
+    job_id = str(uuid.uuid4())
+    job_row = await create_job_extended(
+        db,
+        job_id,
+        user_id,
+        job_type=JobType.OPTIMIZE_DRIVE.value,
+        document_id=document_id,
+        extensions=request.extensions or [],
+    )
+    payload = {
+        "job_id": job_id,
+        "user_id": user_id,
+        "job_type": JobType.OPTIMIZE_DRIVE.value,
+        "document_id": document_id,
+        "extensions": request.extensions or [],
+        "overwrite": request.overwrite,
+        "skip_existing": request.skip_existing,
+        "cleanup_originals": request.cleanup_originals,
+        "max_retries": request.max_retries,
+    }
+    enqueued, enqueue_exception, should_fail = await enqueue_job_with_guard(queue, job_id, user_id, payload, allow_inline_fallback=False)
+    if should_fail:
+        detail = "Queue unavailable or enqueue failed; background processing is required in production."
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=detail)
+    if not enqueued:
+        logger.warning(
+            f"Job {job_id} created but not enqueued. Job will remain in pending state.",
+            extra={
+                "job_id": job_id,
+                "event": "job.enqueue_failed",
+                "reason": "queue unavailable or enqueue failed",
+                "enqueue_exception": (str(enqueue_exception) if enqueue_exception else None),
+            },
+        )
+    progress = _parse_job_progress_model(progress_str=job_row.get("progress", "{}"))
+    return JobStatus(
+        job_id=job_id,
+        user_id=user_id,
+        status=JobStatusEnum.PENDING,
+        progress=progress,
+        created_at=_parse_db_datetime(job_row.get("created_at")),
+        job_type=JobType.OPTIMIZE_DRIVE.value,
+        document_id=document_id,
+    )
+
+
 @router.post("/api/v1/optimize", response_model=JobStatus, tags=["Jobs"])
-async def optimize_images(request: OptimizeRequest, user: dict = Depends(get_current_user)):
+async def optimize_images(request: OptimizeDocumentRequest, user: dict = Depends(get_current_user)):
     db = ensure_db()
     queue = ensure_services()[1]
-
     try:
-        service = await build_drive_service_for_user(db, user["user_id"])  # type: ignore
-        folder_id = extract_folder_id_from_input(request.drive_folder, service=service)
-    except Exception:
-        logger.error("Failed to prepare Drive service or extract folder id", exc_info=True)
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Google not linked or folder not accessible")
-
-    job_id = str(uuid.uuid4())
-    document_id = str(uuid.uuid4())
-    try:
-        # Create a document representing this Drive source
-        await create_document(
-            db,
-            document_id=document_id,
-            user_id=user["user_id"],
-            source_type="drive",
-            source_ref=folder_id,
-            raw_text=None,
-            metadata={"kind": "drive_folder"},
-        )
-        # Create extended job
-        job_data = await create_job_extended(
-            db,
-            job_id=job_id,
-            user_id=user["user_id"],
-            job_type=JobType.OPTIMIZE_DRIVE.value,
-            document_id=document_id,
-            drive_folder=folder_id,
-            extensions=request.extensions,
-        )
-        # Enqueue generic payload with job_type/document_id
-        enqueue_payload = {
-            "job_id": job_id,
-            "user_id": user["user_id"],
-            "job_type": JobType.OPTIMIZE_DRIVE.value,
-            "document_id": document_id,
-            "drive_folder": folder_id,
-            "extensions": request.extensions,
-            "overwrite": request.overwrite,
-            "skip_existing": request.skip_existing,
-            "cleanup_originals": request.cleanup_originals,
-            "max_retries": request.max_retries,
-        }
-        enqueued, enqueue_exception, should_fail = await enqueue_job_with_guard(queue, job_id, user["user_id"], enqueue_payload, allow_inline_fallback=False)
-        
-        if should_fail:
-            # Production: queue required, fail if unavailable
-            detail = "Queue unavailable or enqueue failed; background processing is required in production."
-            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=detail)
-        
-        # In development, if queue failed, we still return success but log warning
-        # (API endpoint doesn't have BackgroundTasks fallback, so job will remain pending)
-        if not enqueued:
-            # Log the enqueue exception if available for better diagnostics
-            logger.warning(
-                f"Job {job_id} created but not enqueued. Job will remain in pending state.",
-                extra={
-                    "job_id": job_id,
-                    "event": "job.enqueue_failed",
-                    "reason": "queue unavailable or enqueue failed",
-                    "enqueue_exception": (str(enqueue_exception) if enqueue_exception else None),
-                },
-            )
-        
-        logger.info(f"Created job {job_id} for user {user['user_id']}")
-        progress = _parse_job_progress_model(progress_str=job_data.get("progress", "{}"))
-        return JobStatus(
-            job_id=job_id,
-            user_id=user["user_id"],
-            status=JobStatusEnum.PENDING,
-            progress=progress,
-            created_at=_parse_db_datetime(job_data.get("created_at")),
-            drive_folder=(job_data.get("drive_folder") or folder_id),
-            job_type=JobType.OPTIMIZE_DRIVE.value,
-            document_id=document_id,
-        )
+        return await start_optimize_job(db, queue, user["user_id"], request.document_id, request)
     except HTTPException:
-        # Re-raise HTTP exceptions (like our 502 from should_fail)
         raise
     except Exception as e:
         logger.error(f"Failed to create job: {e}", exc_info=True)
@@ -331,7 +478,6 @@ async def get_job_status(job_id: str, user: dict = Depends(get_current_user)):
         created_at=_parse_db_datetime(job.get("created_at")),
         completed_at=_parse_db_datetime(job.get("completed_at")) if job.get("completed_at") else None,
         error=job.get("error"),
-        drive_folder=job.get("drive_folder"),
         job_type=job.get("job_type"),
         document_id=job.get("document_id"),
         output=(job.get("output") if isinstance(job.get("output"), dict) else None),
@@ -358,7 +504,6 @@ async def list_user_jobs(page: int = 1, page_size: int = 20, status_filter: Opti
                 created_at=_parse_db_datetime(job.get("created_at")),
                 completed_at=_parse_db_datetime(job.get("completed_at")) if job.get("completed_at") else None,
                 error=job.get("error"),
-                drive_folder=job.get("drive_folder"),
                 job_type=job.get("job_type"),
                 document_id=job.get("document_id"),
                 output=(job.get("output") if isinstance(job.get("output"), dict) else None),
@@ -371,61 +516,14 @@ async def list_user_jobs(page: int = 1, page_size: int = 20, status_filter: Opti
 async def ingest_youtube(req: IngestYouTubeRequest, user: dict = Depends(get_current_user)):
     db = ensure_db()
     queue = ensure_services()[1]
-    # extract video id using shared helper
-    url = (str(req.url) if req.url is not None else "").strip()
-    video_id = parse_youtube_video_id(url)
-    if not video_id:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid YouTube URL")
-    job_id = str(uuid.uuid4())
-    document_id = str(uuid.uuid4())
-    # create document
-    await create_document(db, document_id, user["user_id"], source_type="youtube", source_ref=video_id, raw_text=None, metadata={"url": url})
-    # create job
-    job_row = await create_job_extended(db, job_id, user["user_id"], job_type=JobType.INGEST_YOUTUBE.value, document_id=document_id)
-    # enqueue
-    payload = {"job_id": job_id, "user_id": user["user_id"], "job_type": JobType.INGEST_YOUTUBE.value, "document_id": document_id, "youtube_video_id": video_id}
-    enqueued, enqueue_exception, should_fail = await enqueue_job_with_guard(queue, job_id, user["user_id"], payload, allow_inline_fallback=False)
-    if should_fail:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Queue unavailable or enqueue failed; background processing is required in production.")
-    progress = _parse_job_progress_model(progress_str=job_row.get("progress", "{}"))
-    return JobStatus(
-        job_id=job_id,
-        user_id=user["user_id"],
-        status=JobStatusEnum.PENDING,
-        progress=progress,
-        created_at=_parse_db_datetime(job_row.get("created_at")),
-        job_type=JobType.INGEST_YOUTUBE.value,
-        document_id=document_id,
-    )
+    return await start_ingest_youtube_job(db, queue, user["user_id"], str(req.url))
 
 
 @router.post("/ingest/text", response_model=JobStatus, tags=["Ingestion"])
 async def ingest_text(req: IngestTextRequest, user: dict = Depends(get_current_user)):
     db = ensure_db()
     queue = ensure_services()[1]
-    text = (req.text or "").strip()
-    if not text:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Text is required")
-    if len(text) > MAX_TEXT_LENGTH:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Text must be at most {MAX_TEXT_LENGTH} characters")
-    job_id = str(uuid.uuid4())
-    document_id = str(uuid.uuid4())
-    await create_document(db, document_id, user["user_id"], source_type="text", source_ref=None, raw_text=text, metadata={"title": req.title} if req.title else {})
-    job_row = await create_job_extended(db, job_id, user["user_id"], job_type=JobType.INGEST_TEXT.value, document_id=document_id)
-    payload = {"job_id": job_id, "user_id": user["user_id"], "job_type": JobType.INGEST_TEXT.value, "document_id": document_id}
-    enqueued, enqueue_exception, should_fail = await enqueue_job_with_guard(queue, job_id, user["user_id"], payload, allow_inline_fallback=False)
-    if should_fail:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Queue unavailable or enqueue failed; background processing is required in production.")
-    progress = _parse_job_progress_model(progress_str=job_row.get("progress", "{}"))
-    return JobStatus(
-        job_id=job_id,
-        user_id=user["user_id"],
-        status=JobStatusEnum.PENDING,
-        progress=progress,
-        created_at=_parse_db_datetime(job_row.get("created_at")),
-        job_type=JobType.INGEST_TEXT.value,
-        document_id=document_id,
-    )
+    return await start_ingest_text_job(db, queue, user["user_id"], req.text, req.title)
 
 
 @router.delete("/api/v1/jobs/{job_id}", tags=["Jobs"])

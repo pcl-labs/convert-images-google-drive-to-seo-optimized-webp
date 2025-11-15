@@ -23,20 +23,25 @@
   </div>
 
   <div class="bg-slate-900/60 border border-slate-800 rounded-xl">
-    <div class="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
-      <div class="font-semibold text-white">Create Job</div>
+      <div class="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
+        <div class="font-semibold text-white">Kick Off Optimization</div>
+      </div>
+      <div class="p-4 space-y-3">
+        <form hx-post="/dashboard/jobs" hx-target="#recent-jobs-table" hx-swap="outerHTML">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+          <label class="block text-sm text-slate-300">Document ID</label>
+          <div class="mt-1 flex flex-col gap-2">
+            <input name="document_id" type="text" placeholder="doc_123..." class="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500" required>
+            <p class="text-xs text-slate-500">
+              Need a document ID? <a href="/dashboard/documents" class="text-sky-400 hover:text-sky-300">Use the Documents page</a> to register Drive folders, ingest YouTube videos, or paste raw text.
+            </p>
+          </div>
+          <div class="mt-2">
+            <button type="submit" class="inline-flex items-center justify-center rounded-lg bg-sky-600 hover:bg-sky-500 text-white px-3 py-2 text-sm font-medium">Create Job</button>
+          </div>
+        </form>
+      </div>
     </div>
-    <div class="p-4 space-y-3">
-      <form hx-post="/dashboard/jobs" hx-target="#recent-jobs-table" hx-swap="outerHTML">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-        <label class="block text-sm text-slate-300">YouTube URL or Drive Folder URL</label>
-        <div class="mt-1 flex gap-2">
-          <input name="drive_url" type="url" placeholder="https://..." class="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500" required>
-          <button type="submit" class="inline-flex items-center justify-center rounded-lg bg-sky-600 hover:bg-sky-500 text-white px-3 py-2 text-sm font-medium">Run</button>
-        </div>
-      </form>
-    </div>
-  </div>
 
   <div id="recent-jobs" class="bg-slate-900/60 border border-slate-800 rounded-xl">
     <div class="px-4 py-3 border-b border-slate-800 flex items-center justify-between">

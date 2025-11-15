@@ -2,10 +2,11 @@
   {% from 'components/data/table.html' import table with context %}
   {% from 'components/elements/badge.html' import badge %}
   {% from 'components/elements/button.html' import button %}
-  {% call table(headers=["Job ID","Type","Status","Created","View","Retry","Cancel"]) %}
+  {% call table(headers=["Job ID","Document","Type","Status","Created","View","Retry","Cancel"]) %}
     {% for job in jobs %}
       <tr>
         <td class="px-3 py-2 md:px-4 md:py-3 whitespace-nowrap">{{ job.id }}</td>
+        <td class="px-3 py-2 md:px-4 md:py-3 text-sm text-slate-400 break-all">{{ job.document_id or '—' }}</td>
         <td class="px-3 py-2 md:px-4 md:py-3">{{ job.kind }}</td>
         <td class="px-3 py-2 md:px-4 md:py-3">{{ badge(job.status_label, status=job.status) }}</td>
         <td class="px-3 py-2 md:px-4 md:py-3">{{ job.created_at }}</td>
@@ -33,7 +34,7 @@
       </tr>
     {% else %}
       <tr>
-        <td colspan="7" class="px-4 py-6 text-center text-slate-400">No jobs found</td>
+        <td colspan="8" class="px-4 py-6 text-center text-slate-400">No jobs found</td>
       </tr>
     {% endfor %}
   {% endcall %}

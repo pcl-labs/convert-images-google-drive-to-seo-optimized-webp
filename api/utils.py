@@ -34,7 +34,7 @@ async def enqueue_job_with_guard(
         queue: QueueProducer instance
         job_id: Job ID to enqueue
         user_id: User ID
-        request: OptimizeRequest instance
+        request: Payload dict or pydantic model
         allow_inline_fallback: If True, allows inline fallback in dev (for BackgroundTasks)
         
     Returns:
@@ -51,7 +51,7 @@ async def enqueue_job_with_guard(
     
     if queue_configured:
         try:
-            # Support either OptimizeRequest or generic dict payloads
+            # Support either dict payloads or objects with model_dump/__dict__
             if isinstance(request, dict):
                 payload = {**request}
                 if 'job_id' not in payload:
@@ -60,7 +60,29 @@ async def enqueue_job_with_guard(
                     payload['user_id'] = user_id
                 enqueued = await queue.send_generic(payload)
             else:
-                enqueued = await queue.send_job(job_id, user_id, request)
+                payload = request
+                if hasattr(request, "model_dump"):
+                    payload = request.model_dump()
+                else:
+                    payload = getattr(request, "__dict__", {})
+                if not isinstance(payload, dict):
+                    payload = {}
+                if not payload:
+                    logger.warning(
+                        "enqueue_payload_empty",
+                        extra={
+                            "job_id": job_id,
+                            "user_id": user_id,
+                            "request_type": type(request).__name__,
+                            "request_repr": repr(request)[:500],
+                        },
+                    )
+                payload = {**payload}
+                if 'job_id' not in payload:
+                    payload['job_id'] = job_id
+                if 'user_id' not in payload:
+                    payload['user_id'] = user_id
+                enqueued = await queue.send_generic(payload)
             if enqueued:
                 logger.info(
                     f"Job {job_id} enqueued successfully",

@@ -98,6 +98,27 @@ class Database:
             )
             cur.execute("CREATE INDEX IF NOT EXISTS idx_documents_user ON documents(user_id, created_at DESC)")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_documents_source ON documents(source_type, source_ref)")
+            # Idempotent step invocations
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS step_invocations (
+                    idempotency_key TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    step_type TEXT NOT NULL CHECK (step_type IN ('transcript.fetch','outline.generate','chapters.organize','blog.compose','document.persist')),
+                    request_hash TEXT NOT NULL,
+                    response_body TEXT NOT NULL,
+                    status_code INTEGER NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    PRIMARY KEY (idempotency_key, user_id),
+                    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+                )
+                """
+            )
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_step_invocations_user ON step_invocations(user_id, created_at DESC)")
+            # Support duplicate detection by request hash
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_step_invocations_user_hash ON step_invocations(user_id, request_hash)")
+            # Direct lookup by idempotency key
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_step_invocations_idempotency_key ON step_invocations(idempotency_key)")
 
             # Ensure jobs columns exist
             cur.execute("PRAGMA table_info('jobs')")
@@ -114,6 +135,60 @@ class Database:
         except Exception as e:
             # Log but do not fail startup; features may be degraded until migration applied
             logger.warning(f"Phase 1 schema ensure failed: {e}")
+
+    # Retention helper: delete step_invocations older than max_age_hours (default 48h)
+    async def cleanup_old_step_invocations(self, max_age_hours: int = 48) -> int:
+        """Delete step_invocations older than max_age_hours. Returns rows deleted.
+        For SQLite/D1 we use datetime('now','-N hours').
+        """
+        if max_age_hours <= 0:
+            max_age_hours = 48
+        query = "DELETE FROM step_invocations WHERE created_at < datetime('now', ?)"
+        cutoff_param = f"-{int(max_age_hours)} hours"
+        # execute() returns first row, so use batch with single statement to get an ack, then count via changes().
+        # For SQLite, we can fetch changes using a small helper.
+        if self.db and hasattr(self.db, "prepare"):
+            # D1 path: estimate deletions with a COUNT beforehand, then delete
+            count_query = "SELECT COUNT(*) as cnt FROM step_invocations WHERE created_at < datetime('now', ?)"
+            count_result = await self.execute(count_query, (cutoff_param,))
+            count = dict(count_result).get("cnt", 0) if count_result else 0
+            await self.execute(query, (cutoff_param,))
+            return int(count)
+        try:
+            def _delete_and_count():
+                conn = self._get_sqlite_connection()
+                try:
+                    cur = conn.cursor()
+                    cur.execute(query, (cutoff_param,))
+                    deleted = cur.rowcount if cur.rowcount is not None else 0
+                    if not conn.in_transaction:
+                        conn.commit()
+                    return deleted
+                finally:
+                    conn.close()
+            return await asyncio.to_thread(_delete_and_count)
+        except Exception as e:
+            logger.error(f"Cleanup old step_invocations failed: {e}")
+            return 0
+
+    # Basic sanitizer to prevent storing PII in response_body
+    def _sanitize_response_body(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Redact prohibited keys recursively to avoid storing PII/secrets in step_invocations.
+        This is a defense-in-depth measure; callers should avoid including PII.
+        """
+        prohibited_keys = {
+            "email", "access_token", "refresh_token", "token", "password",
+            "authorization", "api_key", "key", "secret", "client_secret",
+        }
+
+        def _sanitize(value):
+            if isinstance(value, dict):
+                return {k: ("[REDACTED]" if k.lower() in prohibited_keys else _sanitize(v)) for k, v in value.items()}
+            if isinstance(value, list):
+                return [_sanitize(v) for v in value]
+            return value
+
+        return _sanitize(dict(data or {}))
     
     async def execute(self, query: str, params: tuple = ()) -> Any:
         """Execute a query and return the first row (as dict-like)."""
@@ -643,6 +718,56 @@ async def get_job_stats(db: Database, user_id: Optional[str] = None) -> Dict[str
         "processing": 0
     }
 
+async def list_jobs_by_document(
+    db: Database,
+    user_id: str,
+    document_id: str,
+    limit: int = 50,
+) -> List[Dict[str, Any]]:
+    """Return recent jobs for a given document."""
+    if limit < 1 or limit > 100:
+        limit = 50
+    rows = await db.execute_all(
+        """
+        SELECT * FROM jobs
+        WHERE user_id = ? AND document_id = ?
+        ORDER BY created_at DESC
+        LIMIT ?
+        """,
+        (user_id, document_id, limit),
+    )
+    return [dict(row) for row in rows] if rows else []
+
+
+async def list_documents(
+    db: Database,
+    user_id: str,
+    page: int = 1,
+    page_size: int = 20,
+) -> tuple[List[Dict[str, Any]], int]:
+    """List documents for a user with pagination."""
+    if page < 1:
+        page = 1
+    if page_size < 1 or page_size > 100:
+        page_size = 20
+    offset = (page - 1) * page_size
+    count_row = await db.execute(
+        "SELECT COUNT(*) as total FROM documents WHERE user_id = ?",
+        (user_id,),
+    )
+    total = dict(count_row).get("total", 0) if count_row else 0
+    rows = await db.execute_all(
+        """
+        SELECT * FROM documents
+        WHERE user_id = ?
+        ORDER BY created_at DESC
+        LIMIT ? OFFSET ?
+        """,
+        (user_id, page_size, offset),
+    )
+    docs = [dict(row) for row in rows] if rows else []
+    return docs, total
+
 # Documents operations
 async def create_document(
     db: Database,
@@ -704,6 +829,58 @@ async def get_user_count(db: Database) -> int:
     query = "SELECT COUNT(*) as total FROM users"
     result = await db.execute(query, ())
     return dict(result).get("total", 0) if result else 0
+
+
+async def get_step_invocation(
+    db: Database,
+    user_id: str,
+    idempotency_key: str,
+) -> Optional[Dict[str, Any]]:
+    """Fetch stored step invocation response."""
+    row = await db.execute(
+        "SELECT * FROM step_invocations WHERE idempotency_key = ? AND user_id = ?",
+        (idempotency_key, user_id),
+    )
+    return dict(row) if row else None
+
+
+async def save_step_invocation(
+    db: Database,
+    user_id: str,
+    idempotency_key: str,
+    step_type: str,
+    request_hash: str,
+    response_body: Dict[str, Any],
+    status_code: int,
+) -> None:
+    """Persist step invocation response for idempotency."""
+    # Optional conflict detection: if an entry exists with a different request_hash, skip insert
+    existing = await get_step_invocation(db, user_id, idempotency_key)
+    if existing and existing.get("request_hash") != request_hash:
+        # Do not overwrite existing different request; service layer already handles 409
+        return
+
+    # Sanitize response body to avoid storing PII
+    if hasattr(db, "_sanitize_response_body") and callable(db._sanitize_response_body):
+        safe_body = db._sanitize_response_body(response_body)
+    else:
+        safe_body = response_body
+
+    # Idempotent insert: ignore if row already exists for (idempotency_key, user_id)
+    await db.execute(
+        """
+        INSERT OR IGNORE INTO step_invocations (idempotency_key, user_id, step_type, request_hash, response_body, status_code)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            idempotency_key,
+            user_id,
+            step_type,
+            request_hash,
+            json.dumps(safe_body),
+            int(status_code),
+        ),
+    )
 
 
 # Notifications & Events schema and operations
@@ -954,4 +1131,3 @@ def map_job_status_to_notification(job: Dict[str, Any]) -> Dict[str, Any] | None
         return {"level": "error", "text": f"Job {job_id} {st}"}
     # Suppress non-terminal info-level updates by default
     return None
-
