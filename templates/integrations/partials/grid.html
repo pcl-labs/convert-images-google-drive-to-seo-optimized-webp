@@ -11,7 +11,7 @@
       {% set ns = namespace(any_connected=false) %}
       {% for key, s in services_meta.items() %}
         {% set data = integrations.get(key) %}
-        {% if data and data.connected %}
+        {% if data and (data.connected or data.needs_reconnect) %}
           {% set ns.any_connected = true %}
           {% set card = {
             'key': s.key,
@@ -36,7 +36,7 @@
     <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
       {% for key, s in services_meta.items() %}
         {% set data = integrations.get(key) %}
-        {% if not (data and data.connected) %}
+        {% if not (data and (data.connected or data.needs_reconnect)) %}
           <a href="/dashboard/integrations/{{ s.key }}" class="surface rounded-md p-4 hover:bg-surfaceMuted/50 transition-colors flex items-center gap-3">
             <div class="h-10 w-10 rounded-md bg-surfaceMuted border border-border p-2.5">
               {{ integration_icon(s.key) }}

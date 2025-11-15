@@ -12,7 +12,7 @@
       <div>
         {% from 'components/elements/button.html' import button %}
         {{ button('Create Job', variant='primary', attrs='type="submit"') }}
-        <a href="/auth/google/start" class="btn-secondary">Link Google</a>
+        <a href="/auth/google/start?integration=drive&redirect=/dashboard" class="btn-secondary">Link Google</a>
       </div>
     </form>
   </section>

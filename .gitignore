@@ -80,3 +80,5 @@ static/css/app.css
 
 # Local SQLite database
 dev.db
+.queue.json
+.queue.json.lock

@@ -17,9 +17,17 @@ Filename Format Requirement:
 """
 
 import os
+import sys
+from pathlib import Path
+
+# Add project root to Python path for imports
+project_root = Path(__file__).parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
 import re
 import json
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import asyncio
 import functools
 import textwrap
@@ -42,9 +50,11 @@ from api.database import (
     record_usage_event,
     get_document,
     create_document_version,
+    get_job,
 )
 from api.config import settings
-from core.transcripts import fetch_transcript_with_fallback
+from api.google_oauth import build_youtube_service_for_user
+from core.youtube_captions import fetch_captions_text, YouTubeCaptionsError
 from core.ai_modules import (
     generate_outline,
     organize_chapters,
@@ -549,50 +559,73 @@ async def process_ingest_youtube_job(
     user_id: str,
     document_id: str,
     youtube_video_id: str,
+    job_payload: Optional[Dict[str, Any]] = None,
 ):
-    """Phase 2: fetch transcript (captions or ASR), update document, record usage, complete job."""
+    """Fetch transcript, merge stored metadata, persist document contents, and record usage."""
     try:
         await update_job_status(db, job_id, "processing", progress=make_progress("ingesting_youtube"))
 
-        # Prepare config
+        job_payload = job_payload or {}
+
+        def _normalize_duration(value: Any) -> Optional[int]:
+            try:
+                if value is None:
+                    return None
+                return int(float(value))
+            except (TypeError, ValueError):
+                return None
+
+        payload_metadata = job_payload.get("metadata") or {}
+        payload_frontmatter = job_payload.get("frontmatter") or {}
+        # Prefer authoritative API duration if provided in job payload/metadata; transcript duration is a fallback.
+        payload_duration = _normalize_duration(job_payload.get("duration_s") or payload_metadata.get("duration_seconds"))
+
+        document = await get_document(db, document_id, user_id=user_id)
+        if not document:
+            raise ValueError("Document not found")
+        doc_metadata = _parse_document_metadata(document)
+        frontmatter = document.get("frontmatter")
+        if isinstance(frontmatter, str):
+            try:
+                frontmatter = json.loads(frontmatter)
+            except Exception:
+                frontmatter = {}
+        if not isinstance(frontmatter, dict):
+            frontmatter = {}
+
+        # Prepare config and fetch captions via official YouTube API
         langs_raw = settings.transcript_langs
         if isinstance(langs_raw, str):
             langs = [s.strip() for s in langs_raw.split(",") if s.strip()]
         else:
             langs = langs_raw or ["en"]
-        # Fetch transcript with fallback
-        result = await asyncio.to_thread(
-            fetch_transcript_with_fallback,
-            youtube_video_id,
-            langs,
-        )
-
-        if not result.get("success"):
-            # Record usage if any metrics present
+        try:
+            yt_service = await build_youtube_service_for_user(db, user_id)  # type: ignore
+        except ValueError as exc:
+            await update_job_status(db, job_id, "failed", error=str(exc))
+            return
+        try:
+            cap = await asyncio.to_thread(fetch_captions_text, yt_service, youtube_video_id, langs)
+        except YouTubeCaptionsError as exc:
+            await update_job_status(db, job_id, "failed", error=str(exc))
             try:
-                await record_usage_event(
-                    db,
-                    user_id,
-                    job_id,
-                    "transcribe",
-                    {
-                        "engine": "captions",
-                        "duration_s": result.get("duration_s"),
-                    },
-                )
+                await notify_job(db, user_id=user_id, job_id=job_id, level="error", text="YouTube ingestion failed: captions unavailable")
             except Exception:
                 pass
-            await update_job_status(db, job_id, "failed", error=str(result.get("error") or "transcript_failed"))
+            return
+        if not cap.get("success"):
+            await update_job_status(db, job_id, "failed", error=str(cap.get("error") or "captions_unavailable"))
             try:
-                await notify_job(db, user_id=user_id, job_id=job_id, level="error", text="YouTube ingestion failed: transcript unavailable")
+                await notify_job(db, user_id=user_id, job_id=job_id, level="error", text="YouTube ingestion failed: captions unavailable")
             except Exception:
                 pass
             return
 
-        text = (result.get("text") or "").strip()
-        source = result.get("source") or "unknown"
-        lang = result.get("lang") or "en"
-        duration_s = result.get("duration_s")
+        text = (cap.get("text") or "").strip()
+        source = cap.get("source") or "captions"
+        lang = cap.get("lang") or "en"
+        # Duration: authoritative API value provided in job payload/metadata
+        duration_s = payload_duration
 
         # Validate required fields
         if duration_s is None:
@@ -604,13 +637,7 @@ async def process_ingest_youtube_job(
                 pass
             return
 
-        # Record usage events
-        bytes_downloaded = result.get("bytes_downloaded")
-        if bytes_downloaded:
-            try:
-                await record_usage_event(db, user_id, job_id, "download", {"bytes_downloaded": int(bytes_downloaded), "duration_s": duration_s})
-            except Exception:
-                pass
+        # Record usage events (transcribe only; no external downloads here)
         try:
             await record_usage_event(
                 db,
@@ -618,26 +645,57 @@ async def process_ingest_youtube_job(
                 job_id,
                 "transcribe",
                 {
-                    "engine": "captions",
+                    "engine": "captions_api",
                     "duration_s": duration_s,
                 },
             )
         except Exception:
             pass
 
-        # Update document with transcript
+        # Merge metadata/frontmatter
+        now_iso = datetime.now(timezone.utc).isoformat()
+        video_meta = {}
+        if isinstance(doc_metadata.get("youtube"), dict):
+            video_meta.update(doc_metadata["youtube"])
+        if isinstance(payload_metadata, dict):
+            video_meta.update(payload_metadata)
+        video_meta["duration_seconds"] = duration_s
+        video_meta.setdefault("video_id", youtube_video_id)
+        video_meta.setdefault("fetched_at", now_iso)
+
+        doc_metadata["source"] = "youtube"
+        doc_metadata["video_id"] = youtube_video_id
+        doc_metadata["lang"] = lang
+        doc_metadata["chars"] = len(text)
+        doc_metadata["updated_at"] = now_iso
+        doc_metadata["transcript_source"] = source
+        doc_metadata["youtube"] = video_meta
+        doc_metadata.setdefault("url", payload_metadata.get("url"))
+        doc_metadata.setdefault("title", payload_metadata.get("title") or frontmatter.get("title"))
+
+        transcript_meta = {
+            "source": source,
+            "lang": lang,
+            "chars": len(text),
+            "duration_s": duration_s,
+            "fetched_at": now_iso,
+        }
+        doc_metadata["transcript"] = transcript_meta
+        doc_metadata["latest_ingest_job_id"] = job_id
+
+        frontmatter = {**frontmatter, **(payload_frontmatter if isinstance(payload_frontmatter, dict) else {})}
+        if "title" not in frontmatter and payload_metadata.get("title"):
+            frontmatter["title"] = payload_metadata.get("title")
+
+        # Update document with transcript and metadata
         await update_document(
             db,
             document_id,
             {
                 "raw_text": text,
-                "metadata": {
-                    "source": "youtube",
-                    "video_id": youtube_video_id,
-                    "transcript_source": source,
-                    "lang": lang,
-                    "chars": len(text),
-                },
+                "metadata": doc_metadata,
+                "frontmatter": frontmatter,
+                "content_format": "youtube",
             },
         )
 
@@ -645,7 +703,11 @@ async def process_ingest_youtube_job(
         out = {
             "document_id": document_id,
             "youtube_video_id": youtube_video_id,
-            "transcript": {"source": source, "lang": lang, "chars": len(text)},
+            "transcript": transcript_meta,
+            "metadata": {
+                "frontmatter": frontmatter,
+                "youtube": video_meta,
+            },
         }
         await set_job_output(db, job_id, out)
 
@@ -864,10 +926,23 @@ async def handle_queue_message(message: Dict[str, Any], db: Database):
     
     job_type = message.get("job_type")
     app_logger.info(f"Processing queue message for job {job_id} type={job_type}")
+
+    job_row = await get_job(db, job_id, user_id)
+    payload_data: Dict[str, Any] = {}
+    if job_row:
+        payload_raw = job_row.get("payload")
+        if isinstance(payload_raw, str):
+            try:
+                payload_data = json.loads(payload_raw)
+            except Exception:
+                payload_data = {}
+        elif isinstance(payload_raw, dict):
+            payload_data = payload_raw
+
     try:
         if job_type == "ingest_youtube":
-            document_id = message.get("document_id")
-            video_id = message.get("youtube_video_id")
+            document_id = message.get("document_id") or (job_row.get("document_id") if job_row else None)
+            video_id = message.get("youtube_video_id") or payload_data.get("youtube_video_id")
             if not document_id or not video_id:
                 app_logger.error("YouTube ingestion message missing document_id or youtube_video_id")
                 try:
@@ -879,9 +954,9 @@ async def handle_queue_message(message: Dict[str, Any], db: Database):
                 except Exception:
                     pass
                 return
-            await process_ingest_youtube_job(db, job_id, user_id, document_id, video_id)
+            await process_ingest_youtube_job(db, job_id, user_id, document_id, video_id, payload_data)
         elif job_type == "ingest_text":
-            document_id = message.get("document_id")
+            document_id = message.get("document_id") or (job_row.get("document_id") if job_row else None)
             if not document_id:
                 app_logger.error("Text ingestion message missing document_id")
                 try:
@@ -895,7 +970,7 @@ async def handle_queue_message(message: Dict[str, Any], db: Database):
                 return
             await process_ingest_text_job(db, job_id, user_id, document_id)
         elif job_type == "optimize_drive":
-            document_id = message.get("document_id")
+            document_id = message.get("document_id") or (job_row.get("document_id") if job_row else None)
             if not document_id:
                 app_logger.error("Optimize job missing document_id")
                 try:
@@ -925,14 +1000,14 @@ async def handle_queue_message(message: Dict[str, Any], db: Database):
                 job_id=job_id,
                 user_id=user_id,
                 drive_folder=drive_folder,
-                extensions=message.get("extensions", []),
-                overwrite=message.get("overwrite", False),
-                skip_existing=message.get("skip_existing", True),
-                cleanup_originals=message.get("cleanup_originals", False),
-                max_retries=message.get("max_retries", 3)
+                extensions=message.get("extensions") or payload_data.get("extensions") or [],
+                overwrite=message.get("overwrite", payload_data.get("overwrite", False)),
+                skip_existing=message.get("skip_existing", payload_data.get("skip_existing", True)),
+                cleanup_originals=message.get("cleanup_originals", payload_data.get("cleanup_originals", False)),
+                max_retries=message.get("max_retries", payload_data.get("max_retries", 3)),
             )
         elif job_type == "generate_blog":
-            document_id = message.get("document_id")
+            document_id = message.get("document_id") or (job_row.get("document_id") if job_row else None)
             if not document_id:
                 app_logger.error("Generate blog job missing document_id")
                 try:
@@ -949,11 +1024,103 @@ async def handle_queue_message(message: Dict[str, Any], db: Database):
                 job_id,
                 user_id,
                 document_id,
-                message.get("options") or {},
+                message.get("options") or payload_data.get("options") or {},
             )
         else:
             app_logger.error(f"Unknown job_type '{job_type}' for job {job_id}")
     except Exception as e:
         app_logger.error(f"Failed to process job {job_id}: {e}", exc_info=True)
-        # The job status is already updated to failed in respective processors
         raise
+
+
+async def run_inline_queue_consumer(poll_interval: float = 1.0, recover_pending: bool = True):
+    """Inline consumer that polls the DB for pending jobs."""
+    from api.config import settings
+    from api.database import get_pending_jobs
+
+    app_logger.info("Starting inline queue consumer (DB polling)")
+    db = Database(db=settings.d1_database)
+
+    async def _build_message(job: Dict[str, Any]) -> Dict[str, Any]:
+        payload = job.get("payload")
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except Exception:
+                payload = {}
+        elif not isinstance(payload, dict):
+            payload = {}
+        message = {
+            "job_id": job.get("job_id"),
+            "user_id": job.get("user_id"),
+            "job_type": job.get("job_type"),
+            "document_id": job.get("document_id"),
+        }
+        # Only merge payload fields that don't conflict with message structure
+        for key, value in (payload or {}).items():
+            if key not in ("job_id", "user_id", "job_type", "document_id"):
+                message[key] = value
+        return message
+
+    async def _process_jobs(jobs: List[Dict[str, Any]]):
+        for job in jobs:
+            try:
+                msg = await _build_message(job)
+                await handle_queue_message(msg, db)
+            except Exception:
+                app_logger.exception("Inline consumer error", extra={"job_id": job.get("job_id")})
+
+    if recover_pending:
+        pending = await get_pending_jobs(db, limit=50)
+        app_logger.info(f"Recovered {len(pending)} jobs on startup")
+        await _process_jobs(pending)
+
+    try:
+        while True:
+            jobs = await get_pending_jobs(db, limit=10)
+            if not jobs:
+                await asyncio.sleep(poll_interval)
+                continue
+            await _process_jobs(jobs)
+    except KeyboardInterrupt:
+        app_logger.info("Inline consumer interrupted; exiting")
+
+
+def main():
+    """CLI entry point for worker consumer."""
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Cloudflare Worker Queue Consumer")
+    parser.add_argument(
+        "--inline",
+        action="store_true",
+        help="Run in inline queue mode (for local development with USE_INLINE_QUEUE=true)"
+    )
+    parser.add_argument(
+        "--poll-interval",
+        type=float,
+        default=1.0,
+        help="Poll interval in seconds for inline queue mode (default: 1.0)"
+    )
+    parser.add_argument(
+        "--no-recover",
+        action="store_true",
+        help="Skip recovering pending jobs from database on startup"
+    )
+    
+    args = parser.parse_args()
+    
+    if args.inline:
+        # Run inline queue consumer
+        asyncio.run(run_inline_queue_consumer(
+            poll_interval=args.poll_interval,
+            recover_pending=not args.no_recover
+        ))
+    else:
+        parser.print_help()
+        print("\nNote: For Cloudflare Workers deployment, the consumer runs automatically via queue bindings.")
+        print("For local development, use: python workers/consumer.py --inline")
+
+
+if __name__ == "__main__":
+    main()

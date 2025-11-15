@@ -1,19 +1,26 @@
 {% macro integration_card(s, data, csrf_token) %}
   {% from 'components/elements/integration_icon.html' import integration_icon %}
+  {% set state = data or {} %}
+  {% set status_label = state.status_label or ('Connected' if state.connected else 'Disconnected') %}
+  {% set status_hint = state.status_hint or '' %}
+  {% set integration_key = state.key or s.key %}
+  {% set connect_url = state.connect_url or ('/auth/' ~ integration_key ~ '/start') %}
+  {% set reconnect_url = state.reconnect_url or connect_url %}
   <div class="surface rounded-md px-4 py-4 transition-colors hover:bg-surfaceMuted/50">
-    <div class="flex items-start justify-between gap-4">
-      <div class="flex items-start gap-3 min-w-0">
-        <div class="h-11 w-11 rounded-md bg-surfaceMuted border border-border shrink-0 p-2.5">
-          {{ integration_icon(s.key) }}
+    <div class="flex flex-col gap-3">
+      <div class="flex items-start justify-between gap-4">
+        <div class="flex items-start gap-3 min-w-0">
+          <div class="h-11 w-11 rounded-md bg-surfaceMuted border border-border shrink-0 p-2.5">
+            {{ integration_icon(s.key) }}
+          </div>
+          <a href="/dashboard/integrations/{{ s.key }}" class="min-w-0 group">
+            <div class="text-content font-semibold truncate group-hover:underline">{{ s.name }}</div>
+            <div class="text-sm text-contentMuted leading-relaxed line-clamp-2">{{ s.subtitle or s.description }}</div>
+          </a>
         </div>
-        <a href="/dashboard/integrations/{{ s.key }}" class="min-w-0 group">
-          <div class="text-content font-semibold truncate group-hover:underline">{{ s.name }}</div>
-          <div class="text-sm text-contentMuted leading-relaxed line-clamp-2">{{ s.subtitle or s.description }}</div>
-        </a>
-      </div>
-      <div class="flex items-center gap-2 shrink-0">
+        <div class="flex items-center gap-2 shrink-0">
         {% from 'components/elements/button.html' import button %}
-        {% if data and data.connected %}
+        {% if state.connected %}
           {% if s.key == 'drive' %}
             <div x-data="{ submit(){ $refs.form && $refs.form.submit() } }" @open-drive-disconnect.window="submit()">
               <form x-ref="form" method="post" action="/dashboard/integrations/drive/disconnect">
@@ -21,15 +28,30 @@
                 {{ button('Disconnect', variant='destructive', attrs='type="button" @click="$dispatch(\'open-drive-disconnect\')"') }}
               </form>
             </div>
+          {% elif state.can_disconnect %}
+            <form method="post" action="/dashboard/integrations/{{ s.key }}/disconnect">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+              {{ button('Disconnect', variant='destructive', attrs='type="submit"') }}
+            </form>
           {% else %}
             {{ button('Connected', variant='secondary', attrs='disabled', extra_classes='opacity-60 cursor-not-allowed') }}
           {% endif %}
-        {% else %}
-          {% if s.key == 'drive' %}
-            <a href="/auth/google/start" class="btn-primary">Connect</a>
+          {% elif state.needs_reconnect %}
+            <a href="{{ reconnect_url }}" class="btn-primary">Reconnect</a>
           {% else %}
-            {{ button('In roadmap', variant='secondary', attrs='disabled', extra_classes='opacity-60 cursor-not-allowed') }}
+            {% if s.key in ['drive', 'youtube'] %}
+              <a href="{{ connect_url }}" class="btn-primary">Connect</a>
+            {% else %}
+              {{ button('In roadmap', variant='secondary', attrs='disabled', extra_classes='opacity-60 cursor-not-allowed') }}
+            {% endif %}
           {% endif %}
+        </div>
+      </div>
+      <div class="text-xs text-contentMuted">
+        <span class="font-semibold text-content">{{ status_label }}</span>
+        {% if status_hint %} &mdash; <span>{{ status_hint }}</span>{% endif %}
+        {% if state.missing_scopes %}
+          <div class="text-amber-500 mt-1">Missing scopes: {{ state.missing_scopes | join(', ') }}</div>
         {% endif %}
       </div>
     </div>

@@ -12,6 +12,4 @@ cryptography
 passlib[bcrypt]
 httpx
 pydantic-settings
-pytest 
-youtube-transcript-api
-yt-dlp
+pytest

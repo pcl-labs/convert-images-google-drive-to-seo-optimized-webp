@@ -3,6 +3,7 @@ Configuration management for the application.
 """
 
 import base64
+import os
 from typing import Optional, Union
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -16,9 +17,16 @@ class Settings(BaseSettings):
         case_sensitive=False,
         extra="ignore"  # Ignore extra fields from .env
     )
+
+    @classmethod
+    def settings_customise_sources(cls, settings_cls, init_settings, env_settings, dotenv_settings, file_secret_settings):
+        # Allow tests to disable reading .env to avoid polluting constructor kwargs
+        if os.getenv("PYTEST_DISABLE_DOTENV") == "1":
+            return (init_settings, env_settings, file_secret_settings)
+        return (init_settings, env_settings, dotenv_settings, file_secret_settings)
     
     # Application
-    app_name: str = "Google Drive Image Optimizer API"
+    app_name: str = "Quill API"
     app_version: str = "1.0.0"
     environment: str = Field(default="development")
     debug: bool = Field(default=False)
@@ -57,9 +65,14 @@ class Settings(BaseSettings):
     dlq: Optional[object] = None  # Dead letter queue binding (DLQ)
     kv_namespace: Optional[object] = None  # Optional KV for caching
     
-    # Queue Configuration
-    queue_name: str = Field(default="image-optimization-queue")
-    dead_letter_queue_name: str = Field(default="image-optimization-dlq")
+    # Queue Configuration (Cloudflare)
+    # - use_inline_queue=true: bypass Cloudflare Queues (worker polls DB)
+    # - use_inline_queue=false: use Cloudflare Workers bindings if provided, otherwise HTTP API via cf_* fields
+    use_inline_queue: bool = Field(default=True)  # Use in-memory queue for local dev
+    cf_account_id: Optional[str] = None  # Cloudflare account ID (required when use_inline_queue=false)
+    cf_api_token: Optional[str] = None  # Cloudflare API token for Queue HTTP API (required when use_inline_queue=false)
+    cf_queue_name: Optional[str] = None  # Primary Cloudflare queue name used by the app
+    cf_queue_dlq: Optional[str] = None  # Optional Cloudflare dead letter queue name
     
     # Job Configuration
     max_job_retries: int = 3
@@ -68,14 +81,9 @@ class Settings(BaseSettings):
     # CORS - accept string or list, will be converted to list
     cors_origins: Union[str, list[str]] = Field(default="http://localhost:8000")
 
-    # Phase 2: Transcripts/ASR
-    enable_ytdlp_audio: bool = Field(default=True)
-    asr_engine: str = Field(default="faster_whisper")  # faster_whisper|whisper|provider
-    whisper_model_size: str = Field(default="small.en")
-    asr_device: str = Field(default="cpu")  # cpu|cuda|auto
-    asr_max_duration_min: int = Field(default=60)
+    # Transcript Configuration
     transcript_langs: Union[str, list[str]] = Field(default="en,en-US,en-GB")
-    
+
     @field_validator("encryption_key")
     @classmethod
     def validate_encryption_key(cls, v: Optional[str]) -> Optional[str]:
@@ -95,22 +103,42 @@ class Settings(BaseSettings):
         if (self.environment or "").lower() == "production" and not self.encryption_key:
             raise ValueError("ENCRYPTION_KEY is required in production (provide a base64 URL-safe 32-byte key)")
         return self
+    
+    @model_validator(mode="after")
+    def validate_queue_configuration(self):
+        """Validate queue configuration based on environment."""
+        is_production = (self.environment or "").lower() == "production"
 
-    @field_validator("asr_engine")
-    @classmethod
-    def validate_asr_engine(cls, v: str) -> str:
-        allowed = {"faster_whisper", "whisper", "provider"}
-        if v not in allowed:
-            raise ValueError(f"asr_engine must be one of {sorted(allowed)}")
-        return v
+        # In production, require real Cloudflare bindings (not inline queue)
+        if is_production and self.use_inline_queue:
+            raise ValueError(
+                "USE_INLINE_QUEUE=true is not allowed in production. "
+                "Production must use real Cloudflare Queue bindings. "
+                "Set USE_INLINE_QUEUE=false and ensure queue bindings are configured in wrangler.toml"
+            )
+        
+        # If using Cloudflare Queue API (not inline), require API credentials.
+        # Respect explicit constructor intent: if the caller explicitly set use_inline_queue=False,
+        # enforce validation even if environment configuration might otherwise imply inline.
+        explicitly_set = hasattr(self, "model_fields_set") and ("use_inline_queue" in getattr(self, "model_fields_set", set()))
+        if (not self.use_inline_queue) or (explicitly_set and self.use_inline_queue is False):
+            if not self.cf_account_id:
+                raise ValueError(
+                    "CF_ACCOUNT_ID is required when USE_INLINE_QUEUE=false. "
+                    "Get your account ID with: wrangler whoami"
+                )
+            if not self.cf_api_token:
+                raise ValueError(
+                    "CF_API_TOKEN is required when USE_INLINE_QUEUE=false. "
+                    "Create an API token in Cloudflare dashboard: https://dash.cloudflare.com/profile/api-tokens"
+                )
+            if not self.cf_queue_name:
+                raise ValueError(
+                    "CF_QUEUE_NAME is required when USE_INLINE_QUEUE=false. "
+                    "Set to your Cloudflare queue name (e.g., 'quill-jobs')"
+                )
 
-    @field_validator("asr_device")
-    @classmethod
-    def validate_asr_device(cls, v: str) -> str:
-        allowed = {"cpu", "cuda", "auto"}
-        if v not in allowed:
-            raise ValueError(f"asr_device must be one of {sorted(allowed)}")
-        return v
+        return self
 
     @model_validator(mode="after")
     def parse_transcript_langs(self):
