@@ -1,9 +1,10 @@
 {% extends "base.html" %}
 {% block page_title %}{{ service.name }}{% endblock %}
 {% block content %}
+{% from 'components/elements/icon.html' import icon %}
 <div class="p-4 md:p-6 space-y-6">
   <a href="/dashboard/integrations" class="inline-flex items-center text-contentMuted hover:text-content text-sm">
-    <svg class="h-4 w-4 mr-2" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
+    {{ icon('back', size='h-4 w-4', class='mr-2') }}
     Back
   </a>
 
@@ -35,11 +36,11 @@
       </div>
       <a class="flex items-center justify-between px-4 py-4 border-b border-border hover:bg-surfaceMuted/50" href="{{ service.website }}" target="_blank" rel="noopener">
         <div class="text-contentMuted">Website</div>
-        <svg class="h-4 w-4 text-primary" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 3h7v7M10 14L21 3M21 14v7h-7"/></svg>
+        {{ icon('external-link', size='h-4 w-4', class='text-primary') }}
       </a>
       <a class="flex items-center justify-between px-4 py-4 hover:bg-surfaceMuted/50" href="{{ service.privacy }}" target="_blank" rel="noopener">
         <div class="text-contentMuted">Privacy Policy</div>
-        <svg class="h-4 w-4 text-primary" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 3h7v7M10 14L21 3M21 14v7h-7"/></svg>
+        {{ icon('external-link', size='h-4 w-4', class='text-primary') }}
       </a>
     {% endcall %}
   </div>

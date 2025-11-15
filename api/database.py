@@ -4,6 +4,7 @@ Database utilities for Cloudflare D1 with a local SQLite fallback for developmen
 
 import json
 import hashlib
+import uuid
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timezone
 import logging
@@ -91,13 +92,87 @@ class Database:
                     source_ref TEXT,
                     raw_text TEXT,
                     metadata TEXT,
+                    content_format TEXT,
+                    frontmatter TEXT,
+                    latest_version_id TEXT,
                     created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
                 )
                 """
             )
             cur.execute("CREATE INDEX IF NOT EXISTS idx_documents_user ON documents(user_id, created_at DESC)")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_documents_source ON documents(source_type, source_ref)")
+            cur.execute("PRAGMA table_info('documents')")
+            doc_cols = {row[1] for row in cur.fetchall()}
+            if 'content_format' not in doc_cols:
+                cur.execute("ALTER TABLE documents ADD COLUMN content_format TEXT")
+            if 'frontmatter' not in doc_cols:
+                cur.execute("ALTER TABLE documents ADD COLUMN frontmatter TEXT")
+            if 'latest_version_id' not in doc_cols:
+                cur.execute("ALTER TABLE documents ADD COLUMN latest_version_id TEXT")
+            # Document versions table
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS document_versions (
+                    version_id TEXT PRIMARY KEY,
+                    document_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    version INTEGER NOT NULL,
+                    content_format TEXT NOT NULL,
+                    frontmatter TEXT,
+                    body_mdx TEXT,
+                    body_html TEXT,
+                    outline TEXT,
+                    chapters TEXT,
+                    sections TEXT,
+                    assets TEXT,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    FOREIGN KEY (document_id) REFERENCES documents(document_id) ON DELETE CASCADE,
+                    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+                    UNIQUE(document_id, version)
+                )
+                """
+            )
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_document_versions_document ON document_versions(document_id, version DESC)")
+            # Also ensure unique index in case table was created earlier without the constraint
+            try:
+                cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS unique_document_version ON document_versions(document_id, version)")
+            except Exception:
+                pass
+            # Document exports table
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS document_exports (
+                    export_id TEXT PRIMARY KEY,
+                    document_id TEXT NOT NULL,
+                    version_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    target TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued','pending','processing','completed','failed','cancelled')),
+                    payload TEXT,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    FOREIGN KEY (document_id) REFERENCES documents(document_id) ON DELETE CASCADE,
+                    FOREIGN KEY (version_id) REFERENCES document_versions(version_id) ON DELETE CASCADE,
+                    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+                )
+                """
+            )
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_document_exports_document ON document_exports(document_id, created_at DESC)")
+            # Trigger to maintain updated_at on updates
+            cur.execute(
+                """
+                CREATE TRIGGER IF NOT EXISTS document_exports_set_updated_at
+                AFTER UPDATE ON document_exports
+                WHEN NEW.updated_at = OLD.updated_at
+                BEGIN
+                    UPDATE document_exports SET updated_at = datetime('now') WHERE export_id = OLD.export_id;
+                END;
+                """
+            )
+
+            # Rely on FOREIGN KEY (latest_version_id) for referential integrity; no extra triggers needed
             # Idempotent step invocations
             cur.execute(
                 """
@@ -777,11 +852,14 @@ async def create_document(
     source_ref: Optional[str] = None,
     raw_text: Optional[str] = None,
     metadata: Optional[Dict[str, Any]] = None,
+    content_format: Optional[str] = None,
+    frontmatter: Optional[Dict[str, Any]] = None,
+    latest_version_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Create a document row."""
     query = (
-        "INSERT INTO documents (document_id, user_id, source_type, source_ref, raw_text, metadata) "
-        "VALUES (?, ?, ?, ?, ?, ?) RETURNING *"
+        "INSERT INTO documents (document_id, user_id, source_type, source_ref, raw_text, metadata, content_format, frontmatter, latest_version_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *"
     )
     result = await db.execute(
         query,
@@ -792,6 +870,9 @@ async def create_document(
             source_ref,
             raw_text,
             json.dumps(metadata or {}),
+            content_format,
+            json.dumps(frontmatter or {}) if frontmatter is not None else None,
+            latest_version_id,
         ),
     )
     return dict(result) if result else {}
@@ -810,18 +891,127 @@ async def update_document(
     document_id: str,
     updates: Dict[str, Any],
 ) -> None:
-    allowed = {"source_type", "source_ref", "raw_text", "metadata"}
+    allowed = {"source_type", "source_ref", "raw_text", "metadata", "content_format", "frontmatter", "latest_version_id"}
     fields = []
     params: list[Any] = []
     for k, v in updates.items():
         if k in allowed:
             fields.append(f"{k} = ?")
-            params.append(json.dumps(v) if k == "metadata" and v is not None else v)
+            if k in {"metadata", "frontmatter"} and v is not None:
+                params.append(json.dumps(v))
+            else:
+                params.append(v)
     if not fields:
         return
     fields.append("updated_at = datetime('now')")
     params.append(document_id)
     await db.execute(f"UPDATE documents SET {', '.join(fields)} WHERE document_id = ?", tuple(params))
+
+
+async def create_document_version(
+    db: Database,
+    document_id: str,
+    user_id: str,
+    content_format: str,
+    frontmatter: Dict[str, Any],
+    body_mdx: str,
+    body_html: str,
+    outline: List[Dict[str, Any]],
+    chapters: List[Dict[str, Any]],
+    sections: List[Dict[str, Any]],
+    assets: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Create immutable document version snapshot."""
+    version_id = str(uuid.uuid4())
+    result = await db.execute(
+        """
+        INSERT INTO document_versions (
+            version_id, document_id, user_id, version, content_format, frontmatter,
+            body_mdx, body_html, outline, chapters, sections, assets
+        ) VALUES (
+            ?, ?, ?,
+            COALESCE((SELECT MAX(version) FROM document_versions WHERE document_id = ?), 0) + 1,
+            ?, ?, ?, ?, ?, ?, ?, ?
+        )
+        RETURNING *
+        """,
+        (
+            version_id,
+            document_id,
+            user_id,
+            document_id,
+            content_format,
+            json.dumps(frontmatter or {}),
+            body_mdx,
+            body_html,
+            json.dumps(outline or []),
+            json.dumps(chapters or []),
+            json.dumps(sections or []),
+            json.dumps(assets or {}),
+        ),
+    )
+    return dict(result) if result else {}
+
+
+async def list_document_versions(
+    db: Database,
+    document_id: str,
+    user_id: str,
+    limit: int = 20,
+) -> List[Dict[str, Any]]:
+    """Return recent document versions for the user."""
+    rows = await db.execute_all(
+        """
+        SELECT * FROM document_versions
+        WHERE document_id = ? AND user_id = ?
+        ORDER BY version DESC
+        LIMIT ?
+        """,
+        (document_id, user_id, max(1, min(limit, 50))),
+    )
+    return [dict(r) for r in rows] if rows else []
+
+
+async def get_document_version(
+    db: Database,
+    document_id: str,
+    version_id: str,
+    user_id: str,
+) -> Optional[Dict[str, Any]]:
+    """Fetch document version ensuring ownership."""
+    row = await db.execute(
+        "SELECT * FROM document_versions WHERE document_id = ? AND version_id = ? AND user_id = ?",
+        (document_id, version_id, user_id),
+    )
+    return dict(row) if row else None
+
+
+async def create_document_export(
+    db: Database,
+    document_id: str,
+    version_id: str,
+    user_id: str,
+    target: str,
+    payload: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Record an export request for downstream connectors."""
+    export_id = str(uuid.uuid4())
+    result = await db.execute(
+        """
+        INSERT INTO document_exports (export_id, document_id, version_id, user_id, target, status, payload)
+        VALUES (?, ?, ?, ?, ?, 'queued', ?)
+        RETURNING *
+        """,
+        (
+            export_id,
+            document_id,
+            version_id,
+            user_id,
+            target,
+            json.dumps(payload or {}),
+        ),
+    )
+    return dict(result) if result else {}
 
 
 async def get_user_count(db: Database) -> int:

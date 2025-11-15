@@ -50,6 +50,7 @@ async def root():
             "auth": "/auth/github/start",
             "documents_drive": "/api/v1/documents/drive",
             "optimize": "/api/v1/optimize",
+            "generate_blog": "/api/v1/pipelines/generate_blog",
             "jobs": "/api/v1/jobs",
             "health": "/health",
             "docs": "/docs",

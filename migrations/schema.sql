@@ -126,6 +126,9 @@ CREATE TABLE IF NOT EXISTS documents (
     source_ref TEXT,
     raw_text TEXT,
     metadata TEXT,
+    content_format TEXT,
+    frontmatter TEXT,
+    latest_version_id TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
@@ -133,6 +136,75 @@ CREATE TABLE IF NOT EXISTS documents (
 
 CREATE INDEX IF NOT EXISTS idx_documents_user ON documents(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_documents_source ON documents(source_type, source_ref);
+
+-- Document versions table for immutable snapshots
+CREATE TABLE IF NOT EXISTS document_versions (
+    version_id TEXT PRIMARY KEY,
+    document_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    content_format TEXT NOT NULL,
+    frontmatter TEXT,
+    body_mdx TEXT,
+    body_html TEXT,
+    outline TEXT,
+    chapters TEXT,
+    sections TEXT,
+    assets TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (document_id) REFERENCES documents(document_id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+    UNIQUE(document_id, version)
+);
+
+CREATE INDEX IF NOT EXISTS idx_document_versions_document ON document_versions(document_id, version DESC);
+-- Ensure uniqueness for document versions across existing databases
+CREATE UNIQUE INDEX IF NOT EXISTS unique_document_version ON document_versions(document_id, version);
+
+-- Document export requests (preparing for connectors)
+CREATE TABLE IF NOT EXISTS document_exports (
+    export_id TEXT PRIMARY KEY,
+    document_id TEXT NOT NULL,
+    version_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    target TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued','pending','processing','completed','failed','cancelled')),
+    payload TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (document_id) REFERENCES documents(document_id) ON DELETE CASCADE,
+    FOREIGN KEY (version_id) REFERENCES document_versions(version_id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_document_exports_document ON document_exports(document_id, created_at DESC);
+
+-- Constraints and triggers for document_exports status and timestamp maintenance
+CREATE TRIGGER IF NOT EXISTS check_document_export_status 
+BEFORE INSERT ON document_exports
+WHEN NEW.status NOT IN ('queued','pending','processing','completed','failed','cancelled')
+BEGIN
+    SELECT RAISE(ABORT, 'Invalid status value for document_exports.');
+END;
+
+CREATE TRIGGER IF NOT EXISTS check_document_export_status_update
+BEFORE UPDATE ON document_exports
+WHEN NEW.status NOT IN ('queued','pending','processing','completed','failed','cancelled')
+BEGIN
+    SELECT RAISE(ABORT, 'Invalid status value for document_exports.');
+END;
+
+-- Maintain updated_at on updates
+CREATE TRIGGER IF NOT EXISTS document_exports_set_updated_at
+AFTER UPDATE ON document_exports
+WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+    UPDATE document_exports SET updated_at = datetime('now') WHERE export_id = OLD.export_id;
+END;
+
+-- Enforce that documents.latest_version_id references an existing document_versions.version_id
+-- Rely on FOREIGN KEY (latest_version_id) REFERENCES document_versions(version_id) ON DELETE SET NULL
+-- No additional triggers needed here.
 
 -- Phase 2: Usage metering
 CREATE TABLE IF NOT EXISTS usage_events (

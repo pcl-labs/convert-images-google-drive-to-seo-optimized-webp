@@ -55,7 +55,7 @@ This document tracks the remaining tasks to complete the Quill rebranding.
   wrangler d1 create quill-db
   
   # Create queues
-  wrangler queues create quill-queue
+  wrangler queues create quill-jobs
   wrangler queues create quill-dlq
   
   # Update wrangler.toml with the database_id after creation
@@ -66,7 +66,7 @@ This document tracks the remaining tasks to complete the Quill rebranding.
 - **Status**: Pending
 - **Action**: Update `docs/DEPLOYMENT.md` to reflect:
   - New database name: `quill-db` (instead of `image-optimizer-db`)
-  - New queue names: `quill-queue` and `quill-dlq`
+  - New queue names: `quill-jobs` and `quill-dlq`
   - New worker name: `quill-api`
 
 ### 7. Verification Checklist
