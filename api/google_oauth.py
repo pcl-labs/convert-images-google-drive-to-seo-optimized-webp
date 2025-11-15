@@ -56,6 +56,7 @@ def get_google_oauth_url(state: str, redirect_uri: str, *, integration: str) -> 
     """
     if not settings.google_client_id or not settings.google_client_secret:
         raise ValueError("Google OAuth not configured")
+    integration_key = _normalize_integration(integration)
     flow = Flow.from_client_config(
         client_config={
             "web": {
@@ -66,7 +67,7 @@ def get_google_oauth_url(state: str, redirect_uri: str, *, integration: str) -> 
                 "redirect_uris": [redirect_uri],
             }
         },
-        scopes=_scopes_for_integration(integration),
+        scopes=_scopes_for_integration(integration_key),
     )
     flow.redirect_uri = redirect_uri
     auth_url, _ = flow.authorization_url(
@@ -127,17 +128,21 @@ async def exchange_google_code(
             token_response.raise_for_status()
             try:
                 token_json = token_response.json()
-            except Exception as e:
-                logger.error(f"Failed to parse Google token JSON: {e}")
-                raise ValueError("Invalid response format from Google OAuth service")
+            except (json.JSONDecodeError, ValueError) as e:
+                logger.exception("Failed to parse Google token JSON: %s", e)
+                raise ValueError("Invalid response format from Google OAuth service") from e
     except httpx.HTTPStatusError as e:
-        logger.error(f"HTTP error during Google token exchange: {e.response.status_code} {e.response.text}")
-        raise ValueError(f"Failed to exchange Google code: HTTP {e.response.status_code}")
+        logger.exception(
+            "HTTP error during Google token exchange: %s %s",
+            e.response.status_code,
+            e.response.text,
+        )
+        raise ValueError(f"Failed to exchange Google code: HTTP {e.response.status_code}") from e
     except httpx.RequestError as e:
-        logger.error(f"Network error during Google token exchange: {e}")
-        raise ValueError("Failed to connect to Google OAuth service")
+        logger.exception("Network error during Google token exchange: %s", e)
+        raise ValueError("Failed to connect to Google OAuth service") from e
     except Exception as e:
-        logger.error(f"Unexpected error during Google token exchange: {e}")
+        logger.exception("Unexpected error during Google token exchange: %s", e)
         raise
     
     # Create credentials from manually obtained token
@@ -171,7 +176,7 @@ async def exchange_google_code(
     await upsert_google_token(
         db,
         user_id=user_id,
-        integration=integration,
+        integration=integration_key,
         access_token=creds.token,
         refresh_token=getattr(creds, "refresh_token", None),
         expiry=expiry_iso,
@@ -251,7 +256,14 @@ async def _build_google_service_for_user(
         raise ValueError(missing_scope_message)
 
     # Use the scopes that were actually granted (may include additional scopes like youtube.readonly)
-    # This handles cases where Google grants both youtube and youtube.readonly
+    # and restore stored expiry so google-auth can determine when to refresh
+    expiry_dt = None
+    raw_expiry = token_row.get("expiry")
+    if raw_expiry:
+        try:
+            expiry_dt = datetime.fromisoformat(str(raw_expiry).replace("Z", "+00:00"))
+        except ValueError:
+            expiry_dt = None
     creds = Credentials(
         token=token_row.get("access_token"),
         refresh_token=token_row.get("refresh_token"),
@@ -259,6 +271,7 @@ async def _build_google_service_for_user(
         client_id=settings.google_client_id,
         client_secret=settings.google_client_secret,
         scopes=scopes,  # Use actual granted scopes, not just requested ones
+        expiry=expiry_dt,
     )
 
     if not creds.valid:
