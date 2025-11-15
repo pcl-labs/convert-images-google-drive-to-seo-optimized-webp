@@ -84,21 +84,6 @@ class Settings(BaseSettings):
     # Transcript Configuration
     transcript_langs: Union[str, list[str]] = Field(default="en,en-US,en-GB")
 
-    def model_post_init(self, __context) -> None:  # type: ignore[override]
-        is_production = (self.environment or "").lower() == "production"
-        if is_production and self.use_inline_queue:
-            raise ValueError(
-                "USE_INLINE_QUEUE=true is not allowed in production. Production must use real Cloudflare Queue bindings."
-            )
-        # If explicitly not inline, enforce CF settings here too to raise ValueError directly for tests
-        if self.use_inline_queue is False:
-            if not self.cf_account_id:
-                raise ValueError("CF_ACCOUNT_ID is required when USE_INLINE_QUEUE=false.")
-            if not self.cf_api_token:
-                raise ValueError("CF_API_TOKEN is required when USE_INLINE_QUEUE=false.")
-            if not self.cf_queue_name:
-                raise ValueError("CF_QUEUE_NAME is required when USE_INLINE_QUEUE=false.")
-    
     @field_validator("encryption_key")
     @classmethod
     def validate_encryption_key(cls, v: Optional[str]) -> Optional[str]:

@@ -129,10 +129,8 @@ def test_process_ingest_youtube_job_merges_metadata(monkeypatch):
             await create_user(db, user_id=user_id, github_id=None, email=f"{user_id}@example.com")
             
             # Store Google token for YouTube integration (with refresh token if available)
-            # Use the actual scopes from the real token (may include both youtube and youtube.readonly)
-            # Get actual scopes from the database if available
-            actual_token = await get_google_token(db, "github_5694308", "youtube")
-            actual_scopes = actual_token.get("scopes", "https://www.googleapis.com/auth/youtube https://www.googleapis.com/auth/youtube.readonly") if actual_token else "https://www.googleapis.com/auth/youtube https://www.googleapis.com/auth/youtube.readonly"
+            # Use explicit test scopes to avoid depending on another user's token
+            actual_scopes = "https://www.googleapis.com/auth/youtube https://www.googleapis.com/auth/youtube.readonly"
             
             await upsert_google_token(
                 db,
