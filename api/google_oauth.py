@@ -112,22 +112,33 @@ async def exchange_google_code(
     
     # Manually exchange the code to avoid oauthlib's strict scope validation
     # This ensures we get the token even when Google grants additional scopes
-    async with httpx.AsyncClient() as client:
-        token_response = await client.post(
-            "https://oauth2.googleapis.com/token",
-            data={
-                "code": code,
-                "client_id": settings.google_client_id,
-                "client_secret": settings.google_client_secret,
-                "redirect_uri": redirect_uri,
-                "grant_type": "authorization_code",
-            }
-        )
-        if token_response.status_code != 200:
-            error_detail = token_response.text
-            logger.error(f"Token exchange failed: {error_detail}")
-            raise ValueError(f"OAuth token exchange failed: {error_detail}")
-        token_json = token_response.json()
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            token_response = await client.post(
+                "https://oauth2.googleapis.com/token",
+                data={
+                    "code": code,
+                    "client_id": settings.google_client_id,
+                    "client_secret": settings.google_client_secret,
+                    "redirect_uri": redirect_uri,
+                    "grant_type": "authorization_code",
+                }
+            )
+            token_response.raise_for_status()
+            try:
+                token_json = token_response.json()
+            except Exception as e:
+                logger.error(f"Failed to parse Google token JSON: {e}")
+                raise ValueError("Invalid response format from Google OAuth service")
+    except httpx.HTTPStatusError as e:
+        logger.error(f"HTTP error during Google token exchange: {e.response.status_code} {e.response.text}")
+        raise ValueError(f"Failed to exchange Google code: HTTP {e.response.status_code}")
+    except httpx.RequestError as e:
+        logger.error(f"Network error during Google token exchange: {e}")
+        raise ValueError("Failed to connect to Google OAuth service")
+    except Exception as e:
+        logger.error(f"Unexpected error during Google token exchange: {e}")
+        raise
     
     # Create credentials from manually obtained token
     scopes_list = token_json.get("scope", "").split() if isinstance(token_json.get("scope"), str) else (token_json.get("scope") or [])
@@ -221,6 +232,7 @@ async def _build_google_service_for_user(
 
     if not creds.valid:
         if creds.expired and creds.refresh_token:
+            did_upsert = False
             try:
                 await asyncio.to_thread(creds.refresh, Request())
                 # After refresh, update stored scopes if they changed (Google may grant additional scopes)
@@ -237,14 +249,17 @@ async def _build_google_service_for_user(
                         token_type="Bearer",
                         scopes=scopes_str,
                     )
+                    did_upsert = True
             except Exception as e:
-                # If refresh fails due to scope mismatch, log but don't fail - the token might still work
+                # Log refresh error and re-raise to surface credential failures to the caller
                 logger.warning(f"Token refresh had issues (may be scope-related): {e}")
                 raise
-            expiry_iso = None
-            if creds.expiry:
-                expiry_iso = creds.expiry.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
-            await update_google_token_expiry(db, user_id, integration_key, creds.token, expiry_iso)
+            # Only update expiry/access when scopes are unchanged; upsert already handled the update otherwise
+            if not did_upsert:
+                expiry_iso = None
+                if creds.expiry:
+                    expiry_iso = creds.expiry.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+                await update_google_token_expiry(db, user_id, integration_key, creds.token, expiry_iso)
         else:
             raise ValueError("Google credentials invalid and no refresh token available")
 
