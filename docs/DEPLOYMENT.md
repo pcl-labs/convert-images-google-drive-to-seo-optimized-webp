@@ -59,18 +59,18 @@ These steps can be run via CLI commands:
 ```bash
 # Create the database
 wrangler d1 create quill-db
-
-# Note the database_id from the output and update wrangler.toml
 ```
 
-Update `wrangler.toml` with the database_id:
+The output will include the `database_id`. Update `wrangler.toml` with the database_id from the output:
 
 ```toml
 [[d1_databases]]
 binding = "DB"
 database_name = "quill-db"
-database_id = "YOUR_DATABASE_ID_HERE"
+database_id = "933d76cf-a988-4a71-acc6-d884278c6402"  # Replace with your actual ID
 ```
+
+**Note**: The database `quill-db` has already been created for this project with ID `933d76cf-a988-4a71-acc6-d884278c6402`.
 
 ### 2. Initialize Database Schema
 
@@ -90,6 +90,8 @@ wrangler queues create quill-dlq
 ```
 
 **Note**: Queue names should match what's configured in your `wrangler.toml` and environment variables.
+
+**Note**: The queues `quill-jobs` and `quill-dlq` have already been created for this project.
 
 ### 4. Configure Environment Variables
 
