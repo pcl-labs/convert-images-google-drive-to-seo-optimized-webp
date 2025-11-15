@@ -4,9 +4,11 @@ per-user Google Drive/YouTube clients from stored tokens.
 """
 import asyncio
 import json
+import logging
 from datetime import timezone
 from typing import List, Optional
 
+import httpx
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
@@ -21,6 +23,8 @@ from .database import (
     update_google_token_expiry,
     upsert_google_token,
 )
+
+logger = logging.getLogger(__name__)
 
 AVAILABLE_GOOGLE_INTEGRATIONS = set(GOOGLE_INTEGRATION_SCOPES.keys())
 
@@ -67,9 +71,9 @@ def get_google_oauth_url(state: str, redirect_uri: str, *, integration: str) -> 
     flow.redirect_uri = redirect_uri
     auth_url, _ = flow.authorization_url(
         access_type="offline",
-        include_granted_scopes="true",
+        include_granted_scopes="false",  # Don't include previously granted scopes to avoid scope conflicts
         state=state,
-        prompt="consent",
+        prompt="consent",  # Always show consent screen to ensure correct scopes
     )
     return auth_url
 
@@ -105,14 +109,40 @@ async def exchange_google_code(
         scopes=_scopes_for_integration(integration),
     )
     flow.redirect_uri = redirect_uri
-    try:
-        await asyncio.to_thread(flow.fetch_token, code=code)
-    except Exception:
-        raise
-    creds: Credentials = flow.credentials
+    
+    # Manually exchange the code to avoid oauthlib's strict scope validation
+    # This ensures we get the token even when Google grants additional scopes
+    async with httpx.AsyncClient() as client:
+        token_response = await client.post(
+            "https://oauth2.googleapis.com/token",
+            data={
+                "code": code,
+                "client_id": settings.google_client_id,
+                "client_secret": settings.google_client_secret,
+                "redirect_uri": redirect_uri,
+                "grant_type": "authorization_code",
+            }
+        )
+        if token_response.status_code != 200:
+            error_detail = token_response.text
+            logger.error(f"Token exchange failed: {error_detail}")
+            raise ValueError(f"OAuth token exchange failed: {error_detail}")
+        token_json = token_response.json()
+    
+    # Create credentials from manually obtained token
+    scopes_list = token_json.get("scope", "").split() if isinstance(token_json.get("scope"), str) else (token_json.get("scope") or [])
+    creds = Credentials(
+        token=token_json.get("access_token"),
+        refresh_token=token_json.get("refresh_token"),
+        token_uri="https://oauth2.googleapis.com/token",
+        client_id=settings.google_client_id,
+        client_secret=settings.google_client_secret,
+        scopes=scopes_list,
+    )
     expiry_iso = None
     if creds.expiry:
         expiry_iso = creds.expiry.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    # Use the scopes Google actually granted (may include additional scopes)
     scopes_str = " ".join(creds.scopes or [])
     await upsert_google_token(
         db,
@@ -165,20 +195,38 @@ async def _build_google_service_for_user(
     if not all(scope in scopes for scope in required_scopes):
         raise ValueError(missing_scope_message)
 
+    # Use the scopes that were actually granted (may include additional scopes like youtube.readonly)
+    # This handles cases where Google grants both youtube and youtube.readonly
     creds = Credentials(
         token=token_row.get("access_token"),
         refresh_token=token_row.get("refresh_token"),
         token_uri="https://oauth2.googleapis.com/token",
         client_id=settings.google_client_id,
         client_secret=settings.google_client_secret,
-        scopes=scopes,
+        scopes=scopes,  # Use actual granted scopes, not just requested ones
     )
 
     if not creds.valid:
         if creds.expired and creds.refresh_token:
             try:
                 await asyncio.to_thread(creds.refresh, Request())
-            except Exception:
+                # After refresh, update stored scopes if they changed (Google may grant additional scopes)
+                refreshed_scopes = creds.scopes or []
+                if refreshed_scopes != scopes:
+                    scopes_str = " ".join(refreshed_scopes)
+                    await upsert_google_token(
+                        db,
+                        user_id=user_id,
+                        integration=integration_key,
+                        access_token=creds.token,
+                        refresh_token=creds.refresh_token,
+                        expiry=creds.expiry.astimezone(timezone.utc).isoformat().replace("+00:00", "Z") if creds.expiry else None,
+                        token_type="Bearer",
+                        scopes=scopes_str,
+                    )
+            except Exception as e:
+                # If refresh fails due to scope mismatch, log but don't fail - the token might still work
+                logger.warning(f"Token refresh had issues (may be scope-related): {e}")
                 raise
             expiry_iso = None
             if creds.expiry:

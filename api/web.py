@@ -124,7 +124,8 @@ INTEGRATION_STATUS_LABELS = {
 
 GOOGLE_SCOPE_LABELS = {
     GOOGLE_SCOPE_DRIVE: "Drive access",
-    GOOGLE_SCOPE_YOUTUBE: "YouTube read-only",
+    GOOGLE_SCOPE_YOUTUBE: "YouTube (full access - required for captions)",
+    "https://www.googleapis.com/auth/youtube.force-ssl": "YouTube (full access - required for captions)",
     GOOGLE_SCOPE_GMAIL: "Gmail read-only",
 }
 
@@ -189,7 +190,7 @@ def _build_google_integration_entries(token_rows: Optional[list[Dict[str, Any]]]
         "youtube",
         hints={
             "connected": "YouTube ingestion and metadata fetch are enabled.",
-            "reconnect": "Reconnect Google to add the YouTube read-only scope.",
+            "reconnect": "Reconnect Google to add the YouTube scope (required for captions API).",
             "connect": "Connect Google to unlock YouTube ingestion.",
         },
     )

@@ -3,6 +3,7 @@ Configuration management for the application.
 """
 
 import base64
+import os
 from typing import Optional, Union
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -16,6 +17,13 @@ class Settings(BaseSettings):
         case_sensitive=False,
         extra="ignore"  # Ignore extra fields from .env
     )
+
+    @classmethod
+    def settings_customise_sources(cls, settings_cls, init_settings, env_settings, dotenv_settings, file_secret_settings):
+        # Allow tests to disable reading .env to avoid polluting constructor kwargs
+        if os.getenv("PYTEST_DISABLE_DOTENV") == "1":
+            return (init_settings, env_settings, file_secret_settings)
+        return (init_settings, env_settings, dotenv_settings, file_secret_settings)
     
     # Application
     app_name: str = "Quill API"
@@ -75,6 +83,21 @@ class Settings(BaseSettings):
 
     # Transcript Configuration
     transcript_langs: Union[str, list[str]] = Field(default="en,en-US,en-GB")
+
+    def model_post_init(self, __context) -> None:  # type: ignore[override]
+        is_production = (self.environment or "").lower() == "production"
+        if is_production and self.use_inline_queue:
+            raise ValueError(
+                "USE_INLINE_QUEUE=true is not allowed in production. Production must use real Cloudflare Queue bindings."
+            )
+        # If explicitly not inline, enforce CF settings here too to raise ValueError directly for tests
+        if self.use_inline_queue is False:
+            if not self.cf_account_id:
+                raise ValueError("CF_ACCOUNT_ID is required when USE_INLINE_QUEUE=false.")
+            if not self.cf_api_token:
+                raise ValueError("CF_API_TOKEN is required when USE_INLINE_QUEUE=false.")
+            if not self.cf_queue_name:
+                raise ValueError("CF_QUEUE_NAME is required when USE_INLINE_QUEUE=false.")
     
     @field_validator("encryption_key")
     @classmethod
@@ -100,7 +123,7 @@ class Settings(BaseSettings):
     def validate_queue_configuration(self):
         """Validate queue configuration based on environment."""
         is_production = (self.environment or "").lower() == "production"
-        
+
         # In production, require real Cloudflare bindings (not inline queue)
         if is_production and self.use_inline_queue:
             raise ValueError(
@@ -109,8 +132,11 @@ class Settings(BaseSettings):
                 "Set USE_INLINE_QUEUE=false and ensure queue bindings are configured in wrangler.toml"
             )
         
-        # If using Cloudflare Queue API (not inline), require API credentials
-        if not self.use_inline_queue:
+        # If using Cloudflare Queue API (not inline), require API credentials.
+        # Respect explicit constructor intent: if the caller explicitly set use_inline_queue=False,
+        # enforce validation even if environment configuration might otherwise imply inline.
+        explicitly_set = hasattr(self, "model_fields_set") and ("use_inline_queue" in getattr(self, "model_fields_set", set()))
+        if (not self.use_inline_queue) or (explicitly_set and self.use_inline_queue is False):
             if not self.cf_account_id:
                 raise ValueError(
                     "CF_ACCOUNT_ID is required when USE_INLINE_QUEUE=false. "
@@ -126,7 +152,7 @@ class Settings(BaseSettings):
                     "CF_QUEUE_NAME is required when USE_INLINE_QUEUE=false. "
                     "Set to your Cloudflare queue name (e.g., 'quill-jobs')"
                 )
-        
+
         return self
 
     @model_validator(mode="after")

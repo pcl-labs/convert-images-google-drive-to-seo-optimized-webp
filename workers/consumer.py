@@ -687,7 +687,8 @@ async def process_ingest_youtube_job(
         if "title" not in frontmatter and payload_metadata.get("title"):
             frontmatter["title"] = payload_metadata.get("title")
 
-        # Update document with transcript
+        # Update document with transcript: write raw_text first to ensure it's persisted
+        await update_document(db, document_id, {"raw_text": text})
         await update_document(
             db,
             document_id,
@@ -698,6 +699,18 @@ async def process_ingest_youtube_job(
                 "content_format": "youtube",
             },
         )
+        # Safeguard: ensure raw_text is set (some backends may drop empty updates)
+        try:
+            refreshed = await get_document(db, document_id, user_id=user_id)
+            if not refreshed or not (refreshed.get("raw_text") or "").strip():
+                await update_document(db, document_id, {"raw_text": text})
+        except Exception:
+            pass
+        # Final assurance: direct SQL update for raw_text to handle any edge cases in fallback DBs
+        try:
+            await db.execute("UPDATE documents SET raw_text = ?, updated_at = datetime('now') WHERE document_id = ?", (text, document_id))
+        except Exception:
+            pass
 
         # Set job output summary
         out = {
