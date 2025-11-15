@@ -143,19 +143,23 @@ class Database:
         """
         if max_age_hours <= 0:
             max_age_hours = 48
-        cutoff_expr = f"datetime('now','-{int(max_age_hours)} hours')"
-        query = f"DELETE FROM step_invocations WHERE created_at < {cutoff_expr}"
+        query = "DELETE FROM step_invocations WHERE created_at < datetime('now', ?)"
+        cutoff_param = f"-{int(max_age_hours)} hours"
         # execute() returns first row, so use batch with single statement to get an ack, then count via changes().
         # For SQLite, we can fetch changes using a small helper.
         if self.db and hasattr(self.db, "prepare"):
-            await self.execute(query, ())
-            return 0
+            # D1 path: estimate deletions with a COUNT beforehand, then delete
+            count_query = "SELECT COUNT(*) as cnt FROM step_invocations WHERE created_at < datetime('now', ?)"
+            count_result = await self.execute(count_query, (cutoff_param,))
+            count = dict(count_result).get("cnt", 0) if count_result else 0
+            await self.execute(query, (cutoff_param,))
+            return int(count)
         try:
             def _delete_and_count():
                 conn = self._get_sqlite_connection()
                 try:
                     cur = conn.cursor()
-                    cur.execute(query)
+                    cur.execute(query, (cutoff_param,))
                     deleted = cur.rowcount if cur.rowcount is not None else 0
                     if not conn.in_transaction:
                         conn.commit()

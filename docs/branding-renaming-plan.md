@@ -118,9 +118,20 @@ Option B: Manual assets
 ```
 
 Option C: Use an online icon generator
+- Recommended tools: https://favicon.io and https://realfavicongenerator.net
 - Upload a 1024x1024 PNG logo.
-- Download the generated favicon set (and manifest if provided).
-- Place images under `static/favicon` and ensure `static/site.webmanifest` references them.
+- Generate and download a full favicon set including at minimum:
+  - 16x16 PNG (favicon-16x16.png)
+  - 32x32 PNG (favicon-32x32.png)
+  - 180x180 PNG (apple-touch-icon.png)
+  - 192x192 PNG (favicon-192.png)
+  - 512x512 PNG (favicon-512.png)
+- Place images under `static/favicon`.
+- Verification: ensure filenames match the manifest/template expectations above. If they don’t, either rename to match, or update the manifest paths accordingly.
+- Manifest alignment: if the generator outputs a site.webmanifest, merge or replace into `static/site.webmanifest` and manually confirm icon entries point to:
+  - `/static/favicon/favicon-192.png`
+  - `/static/favicon/favicon-512.png`
+- Privacy note: uploading assets to third-party services may have privacy/security trade-offs. Review the generator’s data handling policy before uploading brand assets.
 
 Add an OG image placeholder (1200x630 recommended)
 ```bash
