@@ -204,23 +204,8 @@ BEGIN
 END;
 
 -- Enforce that documents.latest_version_id references an existing document_versions.version_id
-CREATE TRIGGER IF NOT EXISTS documents_check_latest_version_id_insert
-BEFORE INSERT ON documents
-WHEN NEW.latest_version_id IS NOT NULL AND NOT EXISTS (
-    SELECT 1 FROM document_versions dv WHERE dv.version_id = NEW.latest_version_id
-)
-BEGIN
-    SELECT RAISE(ABORT, 'latest_version_id must reference an existing document version');
-END;
-
-CREATE TRIGGER IF NOT EXISTS documents_check_latest_version_id_update
-BEFORE UPDATE ON documents
-WHEN NEW.latest_version_id IS NOT NULL AND NOT EXISTS (
-    SELECT 1 FROM document_versions dv WHERE dv.version_id = NEW.latest_version_id
-)
-BEGIN
-    SELECT RAISE(ABORT, 'latest_version_id must reference an existing document version');
-END;
+-- Rely on FOREIGN KEY (latest_version_id) REFERENCES document_versions(version_id) ON DELETE SET NULL
+-- No additional triggers needed here.
 
 -- Phase 2: Usage metering
 CREATE TABLE IF NOT EXISTS usage_events (

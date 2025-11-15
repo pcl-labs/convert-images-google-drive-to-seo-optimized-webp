@@ -1,5 +1,5 @@
 from starlette.responses import StreamingResponse
-from typing import Optional, Dict, Any, Set
+from typing import Optional, Dict, Any
 import json
 import asyncio
 import logging
@@ -10,7 +10,7 @@ from .database import list_notifications, Database
 logger = logging.getLogger(__name__)
 
 # Track active SSE connections for graceful shutdown
-_active_sse_tasks: Set[asyncio.Task] = weakref.WeakSet()
+_active_sse_tasks: weakref.WeakSet[asyncio.Task] = weakref.WeakSet()
 
 
 def _sse_headers() -> Dict[str, str]:
