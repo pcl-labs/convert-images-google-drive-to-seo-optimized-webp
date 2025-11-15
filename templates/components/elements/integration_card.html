@@ -1,29 +1,10 @@
 {% macro integration_card(s, data, csrf_token) %}
+  {% from 'components/elements/integration_icon.html' import integration_icon %}
   <div class="surface rounded-md px-4 py-4 transition-colors hover:bg-surfaceMuted/50">
     <div class="flex items-start justify-between gap-4">
       <div class="flex items-start gap-3 min-w-0">
-        <div class="h-11 w-11 rounded-md bg-surfaceMuted border border-border shrink-0 flex items-center justify-center">
-          {% if s.key == 'drive' %}
-            <svg viewBox="0 0 256 256" class="h-6 w-6" aria-hidden="true">
-              <path fill="#0F9D58" d="M44 192l36-62h72l-36 62z"/>
-              <path fill="#4285F4" d="M80 130L44 192 0 118l36-62z"/>
-              <path fill="#F4B400" d="M116 68h72l68 118h-72z"/>
-            </svg>
-          {% elif s.key == 'gmail' %}
-            <svg viewBox="0 0 256 256" class="h-6 w-6" aria-hidden="true">
-              <path fill="#EA4335" d="M32 200V80l96 64 96-64v120h-40V120l-56 38-56-38v80z"/>
-              <path fill="#34A853" d="M32 80l24-16 72 48-24 16z"/>
-              <path fill="#FBBC05" d="M224 80l-24-16-72 48 24 16z"/>
-              <path fill="#4285F4" d="M32 200h40v-80L32 80zM184 120v80h40V80z"/>
-            </svg>
-          {% elif s.key == 'youtube' %}
-            <svg viewBox="0 0 256 256" class="h-6 w-6" aria-hidden="true">
-              <rect x="16" y="64" width="224" height="128" rx="24" fill="#FF0000"/>
-              <path d="M112 96l48 32-48 32z" fill="#fff"/>
-            </svg>
-          {% else %}
-            <svg viewBox="0 0 24 24" class="h-6 w-6 text-contentMuted" fill="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="10"/></svg>
-          {% endif %}
+        <div class="h-11 w-11 rounded-md bg-surfaceMuted border border-border shrink-0 p-2.5">
+          {{ integration_icon(s.key) }}
         </div>
         <a href="/dashboard/integrations/{{ s.key }}" class="min-w-0 group">
           <div class="text-content font-semibold truncate group-hover:underline">{{ s.name }}</div>

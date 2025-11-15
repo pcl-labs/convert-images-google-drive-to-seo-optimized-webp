@@ -1,0 +1,55 @@
+{% macro icon(name, size='h-5 w-5', variant='outline', class='') %}
+  {# 
+    Heroicons macro - paste SVG code from heroicons.com into the appropriate section below
+    Usage: {{ icon('menu', size='h-6 w-6') }}
+    Variants: 'outline' (default) or 'solid'
+  #}
+  {% set icon_class = size ~ ' ' ~ class %}
+  {% if name == 'menu' %}
+    {# Hamburger menu icon - Heroicons: bars-3 #}
+    <svg class="{{ icon_class }}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      {# Paste Heroicons bars-3 SVG path here #}
+    </svg>
+  {% elif name == 'close' or name == 'x' %}
+    {# Close/X icon - Heroicons: x-mark #}
+    <svg class="{{ icon_class }}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      {# Paste Heroicons x-mark SVG path here #}
+    </svg>
+  {% elif name == 'email' or name == 'envelope' %}
+    {# Email/Envelope icon - Heroicons: envelope #}
+    <svg class="{{ icon_class }}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      {# Paste Heroicons envelope SVG path here #}
+    </svg>
+  {% elif name == 'arrow-left' or name == 'back' or name == 'chevron-left' %}
+    {# Back/Arrow left icon - Heroicons: chevron-left #}
+    <svg class="{{ icon_class }}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      {# Paste Heroicons chevron-left SVG path here #}
+    </svg>
+  {% elif name == 'arrow-right' %}
+    {# Arrow right icon - Heroicons: arrow-right #}
+    <svg class="{{ icon_class }}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      {# Paste Heroicons arrow-right SVG path here #}
+    </svg>
+  {% elif name == 'external-link' %}
+    {# External link icon - Heroicons: arrow-top-right-on-square #}
+    <svg class="{{ icon_class }}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      {# Paste Heroicons arrow-top-right-on-square SVG path here #}
+    </svg>
+  {% elif name == 'chevron-down' %}
+    {# Chevron down icon - Heroicons: chevron-down #}
+    <svg class="{{ icon_class }}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      {# Paste Heroicons chevron-down SVG path here #}
+    </svg>
+  {% elif name == 'spinner' %}
+    {# Loading spinner icon - Heroicons: arrow-path (animated) #}
+    <svg class="{{ icon_class }} animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      {# Paste Heroicons arrow-path SVG path here #}
+    </svg>
+  {% else %}
+    {# Default/fallback icon - add new icons above this line #}
+    <svg class="{{ icon_class }}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="10"/>
+    </svg>
+  {% endif %}
+{% endmacro %}
+

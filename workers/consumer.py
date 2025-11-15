@@ -22,6 +22,8 @@ import json
 from typing import Dict, Any, Optional
 import asyncio
 import functools
+import textwrap
+from datetime import datetime, timezone
 
 from core.drive_utils import (
     download_images,
@@ -32,9 +34,26 @@ from core.drive_utils import (
     is_valid_drive_file_id,
 )
 from core.image_processor import process_image
-from api.database import Database, update_job_status, update_document, set_job_output, record_usage_event, get_document
+from api.database import (
+    Database,
+    update_job_status,
+    update_document,
+    set_job_output,
+    record_usage_event,
+    get_document,
+    create_document_version,
+)
 from api.config import settings
 from core.transcripts import fetch_transcript_with_fallback
+from core.ai_modules import (
+    generate_outline,
+    organize_chapters,
+    compose_blog,
+    default_title_from_outline,
+    generate_seo_metadata,
+    generate_image_prompts,
+    markdown_to_html,
+)
 from api.notifications import notify_job
 from api.app_logging import setup_logging, get_logger
 from core.filename_utils import FILENAME_ID_SEPARATOR, sanitize_folder_name, parse_download_name, make_output_dir_name
@@ -667,6 +686,173 @@ async def process_ingest_text_job(
         raise
 
 
+async def process_generate_blog_job(
+    db: Database,
+    job_id: str,
+    user_id: str,
+    document_id: str,
+    options: Optional[Dict[str, Any]] = None,
+):
+    """Orchestrate outline -> chapters -> SEO -> compose pipeline."""
+    options = options or {}
+    recent_logs: list[str] = []
+    MAX_LOGS = 40
+
+    def _log(msg: str) -> None:
+        safe = str(msg)
+        recent_logs.append(safe[:280])
+        if len(recent_logs) > MAX_LOGS:
+            del recent_logs[0: len(recent_logs) - MAX_LOGS]
+
+    def _progress(stage: str) -> Dict[str, Any]:
+        return make_progress(stage, recent_logs=list(recent_logs))
+
+    try:
+        _log("Loading document payload")
+        await update_job_status(db, job_id, "processing", progress=_progress("loading_document"))
+        doc = await get_document(db, document_id, user_id=user_id)
+        if not doc:
+            raise ValueError("Document not found")
+        text = (doc.get("raw_text") or "").strip()
+        if not text:
+            raise ValueError("Document missing raw text; ingest text or transcript first")
+        metadata = _parse_document_metadata(doc)
+
+        try:
+            max_sections = max(1, min(12, int(options.get("max_sections", 5))))
+        except Exception:
+            max_sections = 5
+        try:
+            target_chapters = max(1, min(12, int(options.get("target_chapters", max_sections))))
+        except Exception:
+            target_chapters = max_sections
+        tone = str(options.get("tone") or "informative")
+        include_images = bool(options.get("include_images", True))
+        section_index = options.get("section_index")
+
+        _log("Generating outline")
+        outline = generate_outline(text, max_sections)
+        await record_usage_event(db, user_id, job_id, "outline", {"sections": len(outline)})
+        await update_job_status(db, job_id, "processing", progress=_progress("outline"))
+
+        _log("Organizing chapters")
+        chapters = organize_chapters(text, target_chapters)
+        if not chapters and outline:
+            chapters = [{"title": item.get("title"), "summary": item.get("summary")} for item in outline if item]
+        if not chapters:
+            chapters = [{"title": default_title_from_outline([]), "summary": textwrap.shorten(text, width=360, placeholder="…")}]
+        await record_usage_event(db, user_id, job_id, "chapters", {"chapters": len(chapters)})
+        await update_job_status(db, job_id, "processing", progress=_progress("chapters"))
+
+        _log("Generating SEO metadata")
+        seo_meta = generate_seo_metadata(text, outline)
+
+        _log("Composing markdown body")
+        composed = compose_blog(chapters, tone=tone)
+        markdown_body = composed.get("markdown", "")
+        word_count = composed.get("meta", {}).get("word_count", len(markdown_body.split()))
+        await record_usage_event(db, user_id, job_id, "compose", {"tone": tone, "word_count": word_count})
+
+        html_body = markdown_to_html(markdown_body)
+        image_prompts = generate_image_prompts(chapters) if include_images else []
+
+        frontmatter = {
+            "title": seo_meta.get("title") or default_title_from_outline(outline),
+            "description": seo_meta.get("description"),
+            "slug": seo_meta.get("slug") or f"{document_id[:8]}-draft",
+            "tags": seo_meta.get("keywords", []),
+            "hero_image": seo_meta.get("hero_image"),
+        }
+
+        sections = []
+        for idx, chapter in enumerate(chapters):
+            section = {
+                "order": idx,
+                "title": chapter.get("title"),
+                "summary": chapter.get("summary"),
+            }
+            if include_images and idx < len(image_prompts):
+                section["image_prompt"] = image_prompts[idx]
+            sections.append(section)
+
+        pipeline_output = {
+            "document_id": document_id,
+            "content_format": "mdx",
+            "frontmatter": frontmatter,
+            "body": {
+                "mdx": markdown_body,
+                "html": html_body,
+            },
+            "outline": outline,
+            "chapters": chapters,
+            "sections": sections,
+            "seo": seo_meta,
+            "assets": {
+                "images": image_prompts,
+                "media": [],
+            },
+            "options": {
+                "tone": tone,
+                "max_sections": max_sections,
+                "target_chapters": target_chapters,
+                "include_images": include_images,
+            },
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+        _log("Persisting pipeline output")
+        await set_job_output(db, job_id, pipeline_output)
+        version_row = await create_document_version(
+            db,
+            document_id=document_id,
+            user_id=user_id,
+            content_format=pipeline_output["content_format"],
+            frontmatter=frontmatter,
+            body_mdx=markdown_body,
+            body_html=html_body,
+            outline=outline,
+            chapters=chapters,
+            sections=sections,
+            assets=pipeline_output["assets"],
+        )
+        version_id = version_row.get("version_id")
+
+        metadata["latest_generation"] = {
+            "job_id": job_id,
+            "title": frontmatter["title"],
+            "slug": frontmatter["slug"],
+            "generated_at": pipeline_output["generated_at"],
+            "version_id": version_id,
+            "section_index": section_index,
+        }
+        metadata["latest_outline"] = outline
+        metadata["latest_chapters"] = chapters
+        metadata["latest_sections"] = sections
+        await update_document(
+            db,
+            document_id,
+            {
+                "metadata": metadata,
+                "frontmatter": frontmatter,
+                "content_format": pipeline_output["content_format"],
+                "latest_version_id": version_id,
+            },
+        )
+        await record_usage_event(db, user_id, job_id, "persist", {"sections": len(sections)})
+
+        await update_job_status(db, job_id, "completed", progress=_progress("completed"))
+        try:
+            await notify_job(db, user_id=user_id, job_id=job_id, level="success", text="Blog draft generated")
+        except Exception:
+            pass
+    except Exception as exc:
+        await update_job_status(db, job_id, "failed", error=str(exc))
+        try:
+            await notify_job(db, user_id=user_id, job_id=job_id, level="error", text="Blog generation failed")
+        except Exception:
+            pass
+        raise
+
 async def handle_queue_message(message: Dict[str, Any], db: Database):
     """Handle a message from the queue."""
     job_id = message.get("job_id")
@@ -744,6 +930,26 @@ async def handle_queue_message(message: Dict[str, Any], db: Database):
                 skip_existing=message.get("skip_existing", True),
                 cleanup_originals=message.get("cleanup_originals", False),
                 max_retries=message.get("max_retries", 3)
+            )
+        elif job_type == "generate_blog":
+            document_id = message.get("document_id")
+            if not document_id:
+                app_logger.error("Generate blog job missing document_id")
+                try:
+                    await update_job_status(db, job_id, "failed", error="Missing document_id")
+                    try:
+                        await notify_job(db, user_id=user_id, job_id=job_id, level="error", text="Job failed: missing document reference")
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+                return
+            await process_generate_blog_job(
+                db,
+                job_id,
+                user_id,
+                document_id,
+                message.get("options") or {},
             )
         else:
             app_logger.error(f"Unknown job_type '{job_type}' for job {job_id}")

@@ -192,6 +192,10 @@ Think in 5 layers:
   - Persist a normalized `document_versions` table: `{document_id, version, content_format, frontmatter_json, mdx_body, html_body, outline_json, assets_manifest, created_at}`.
   - Each `generate_blog` job writes a new version row (immutability) and updates `documents.latest_version_id`.
   - Support lightweight diff metadata (e.g., `source_job_id`, `source_step_ids`) for traceability and audit trails.
+- ✅ Implemented: versions table + dashboard viewer
+  - Worker snapshots `{frontmatter, mdx, html, outline, sections, assets}` into `document_versions` and keeps `documents.latest_version_id` + frontmatter synced.
+  - Dashboard detail page shows tabs for outline/MDX/HTML, copy/download buttons, and section-level “Regenerate” actions that requeue the pipeline with context.
+  - Exposed /api + UI endpoints to list versions, fetch bodies, and queue export hooks; current targets: Google Docs, Zapier, WordPress (stubs enqueue `document_exports` rows for later connectors).
 
 - Copy/export surfaces
   - **Copy as MDX**: Dashboard detail view exposes one-click copy of the exact MDX (frontmatter + body) and provides download as `.mdx`.
@@ -203,11 +207,13 @@ Think in 5 layers:
     - CMS webhook: generic `POST /api/v1/hooks/export` for user-registered endpoints.
   - Design export API so each connector consumes the same normalized payload: `frontmatter`, `mdx`, `html`, `assets`.
   - Include `export_status` + `export_history` tables to track success/failure per target and re-play jobs.
+  - ✅ Hooks prepped: `document_exports` table + dashboard buttons/HTMX allow queuing exports per target; connector workers will hydrate these rows in a follow-up PR.
 
 - Editor roadmap alignment
   - Editor UI should read from `document_versions` and allow toggling between `outline`, `MDX`, and `Rendered` tabs.
   - Provide “Regenerate section” actions that spawn partial jobs while preserving earlier versions.
   - Inline asset picker (images/transcript snippets) references the `assets_manifest`.
+  - ✅ Dashboard detail implements outline/MDX/HTML tabs, metadata summary, copy/download controls, and section-specific regenerate buttons (currently re-runs the full pipeline but stores trigger context for future diffs).
 
 - Developer ergonomics
   - Guardrails: strict schema for version payload (Pydantic model) + JSON schema file stored in repo for contract tests.

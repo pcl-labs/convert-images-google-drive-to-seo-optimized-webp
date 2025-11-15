@@ -1,0 +1,87 @@
+<div id="version-viewer" class="space-y-4">
+  {% if not version %}
+    <p class="text-sm text-contentMuted">No versions generated yet. Run the pipeline to see the preview.</p>
+  {% else %}
+    <div class="space-y-4">
+      <div class="flex items-center justify-between text-sm">
+        <div>
+          <p class="text-content font-semibold">v{{ version.version }} &middot; {{ version.title or 'Untitled Draft' }}</p>
+          <p class="text-contentMuted text-xs">{{ version.created_at }}</p>
+        </div>
+        <div class="flex gap-2 text-xs">
+          <button type="button" class="px-3 py-1.5 rounded-md border border-border text-content" onclick="switchVersionTab('outline')" data-version-tab="outline">Outline</button>
+          <button type="button" class="px-3 py-1.5 rounded-md border border-border text-content" onclick="switchVersionTab('mdx')" data-version-tab="mdx">MDX</button>
+          <button type="button" class="px-3 py-1.5 rounded-md border border-border text-content" onclick="switchVersionTab('html')" data-version-tab="html">HTML</button>
+        </div>
+      </div>
+
+      <div class="border border-border rounded-lg">
+        <div class="p-4 space-y-4">
+          <div data-version-panel="outline">
+            {% if version.outline %}
+              <ol class="list-decimal list-inside space-y-2 text-sm text-content">
+                {% for item in version.outline %}
+                  <li>
+                    <div class="font-semibold">{{ item.title or ('Section ' ~ (loop.index)) }}</div>
+                    <div class="text-contentMuted">{{ item.summary }}</div>
+                  </li>
+                {% endfor %}
+              </ol>
+            {% else %}
+              <p class="text-sm text-contentMuted">No outline available for this version.</p>
+            {% endif %}
+          </div>
+          <div class="hidden space-y-2" data-version-panel="mdx">
+            <div class="flex justify-end gap-2">
+              <button type="button" class="text-xs px-2 py-1 rounded-md border border-border text-content" onclick="copyVersionContent('mdx-body')">Copy</button>
+              <a href="/dashboard/documents/{{ document.id }}/versions/{{ version.version_id }}/download?format=mdx" class="text-xs px-2 py-1 rounded-md border border-border text-content hover:bg-surface/70">Download</a>
+            </div>
+            <pre id="mdx-body" class="bg-card border border-border rounded-lg text-xs text-content overflow-auto p-3 whitespace-pre-wrap">{{ version.body_mdx }}</pre>
+          </div>
+          <div class="hidden space-y-2" data-version-panel="html">
+            <div class="flex justify-end gap-2">
+              <button type="button" class="text-xs px-2 py-1 rounded-md border border-border text-content" onclick="copyVersionContent('html-body')">Copy</button>
+              <a href="/dashboard/documents/{{ document.id }}/versions/{{ version.version_id }}/download?format=html" class="text-xs px-2 py-1 rounded-md border border-border text-content hover:bg-surface/70">Download</a>
+            </div>
+            <pre id="html-body" class="hidden">{{ version.body_html }}</pre>
+            <div class="prose prose-invert max-w-none border border-border rounded-lg p-4 bg-card overflow-auto">{{ version.body_html | safe }}</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="space-y-2">
+        <h3 class="text-sm font-semibold text-content">Sections</h3>
+        {% if version.sections %}
+          <div class="space-y-2">
+            {% for section in version.sections %}
+              <div class="border border-border rounded-lg p-3 space-y-2 bg-card/60">
+                <div class="flex items-start justify-between">
+                  <div>
+                    <p class="text-sm font-semibold text-content">Section {{ section.order + 1 }} &middot; {{ section.title or 'Untitled' }}</p>
+                    <p class="text-xs text-contentMuted">{{ section.summary }}</p>
+                  </div>
+                  <form hx-post="/dashboard/documents/{{ document.id }}/sections/{{ section.order }}/regenerate" hx-target="#doc-flash" hx-swap="innerHTML">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <button type="submit" class="text-xs px-2 py-1 rounded-md border border-border text-content hover:bg-surface/70">Regenerate</button>
+                  </form>
+                </div>
+                {% if section.image_prompt %}
+                  <div class="text-xs text-contentMuted">
+                    <span class="font-semibold text-content">Image prompt:</span> {{ section.image_prompt.prompt }}
+                  </div>
+                {% endif %}
+              </div>
+            {% endfor %}
+          </div>
+        {% else %}
+          <p class="text-sm text-contentMuted">Sections will appear after generation completes.</p>
+        {% endif %}
+      </div>
+    </div>
+  {% endif %}
+</div>
+<script>
+  if (typeof switchVersionTab === 'function') {
+    switchVersionTab('outline');
+  }
+</script>

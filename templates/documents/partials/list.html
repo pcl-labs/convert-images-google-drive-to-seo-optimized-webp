@@ -6,19 +6,20 @@
     </div>
   {% endif %}
   {% from 'components/data/table.html' import table with context %}
-  {% call table(headers=["Document ID","Source","Origin","Created"]) %}
+  {% call table(headers=["Document ID","Source","Latest Draft","Origin","Created"]) %}
     {% for document in documents %}
       <tr>
         <td class="px-3 py-2 md:px-4 md:py-3 text-sm text-content break-all">
           <a href="/dashboard/documents/{{ document.id }}" class="text-primary hover:text-primary/80">{{ document.id }}</a>
         </td>
         <td class="px-3 py-2 md:px-4 md:py-3">{{ document.source_label }}</td>
+        <td class="px-3 py-2 md:px-4 md:py-3 text-content">{{ document.latest_generation.title if document.latest_generation and document.latest_generation.title else document.latest_title or '—' }}</td>
         <td class="px-3 py-2 md:px-4 md:py-3 text-contentMuted break-all">{{ document.origin or '—' }}</td>
         <td class="px-3 py-2 md:px-4 md:py-3 text-contentMuted">{{ document.created_at }}</td>
       </tr>
     {% else %}
       <tr>
-        <td colspan="4" class="px-4 py-6 text-center text-contentMuted">No documents yet</td>
+        <td colspan="5" class="px-4 py-6 text-center text-contentMuted">No documents yet</td>
       </tr>
     {% endfor %}
   {% endcall %}
