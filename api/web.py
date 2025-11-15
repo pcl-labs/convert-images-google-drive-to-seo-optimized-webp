@@ -272,6 +272,12 @@ async def signup_page(request: Request):
     return _render_auth_page(request, view_mode="signup")
 
 
+@router.get("/styleguide", response_class=HTMLResponse)
+async def styleguide(request: Request):
+    """Design system styleguide page."""
+    return templates.TemplateResponse("styleguide.html", {"request": request, "title": "Design System Styleguide"})
+
+
 @router.get("/dashboard", response_class=HTMLResponse)
 async def dashboard(request: Request, page: int = 1, user: dict = Depends(get_current_user)):
     

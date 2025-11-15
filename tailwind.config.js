@@ -8,22 +8,23 @@ module.exports = {
   theme: {
     extend: {
       colors: {
-        // Semantic tokens (for theming)
-        bg: 'var(--bg)',
-        surface: 'var(--surface)',
-        surfaceMuted: 'var(--surface-muted)',
-        border: 'var(--border)',
-        content: 'var(--content)',
-        contentMuted: 'var(--content-muted)',
-        primary: 'var(--primary)',
-        primaryContrast: 'var(--primary-contrast)',
-        destructive: 'var(--destructive)',
-        destructiveContrast: 'var(--destructive-contrast)',
-        accent: 'var(--accent)',
-        accentContrast: 'var(--accent-contrast)',
-        warning: 'var(--warning)',
-        warningContrast: 'var(--warning-contrast)',
-        ring: 'var(--ring)',
+        // Semantic tokens (for theming) - using RGB format for opacity support
+        bg: 'rgb(var(--bg))',
+        surface: 'rgb(var(--surface))',
+        'surface-muted': 'rgb(var(--surface-muted) / <alpha-value>)',
+        surfaceMuted: 'rgb(var(--surface-muted) / <alpha-value>)',
+        border: 'rgb(var(--border))',
+        content: 'rgb(var(--content))',
+        contentMuted: 'rgb(var(--content-muted))',
+        primary: 'rgb(var(--primary) / <alpha-value>)',
+        primaryContrast: 'rgb(var(--primary-contrast))',
+        destructive: 'rgb(var(--destructive) / <alpha-value>)',
+        destructiveContrast: 'rgb(var(--destructive-contrast))',
+        accent: 'rgb(var(--accent))',
+        accentContrast: 'rgb(var(--accent-contrast))',
+        warning: 'rgb(var(--warning))',
+        warningContrast: 'rgb(var(--warning-contrast))',
+        ring: 'rgb(var(--ring) / <alpha-value>)',
         // Standard Tailwind colors (still available for utility use)
         // These are the default Tailwind color palette
       },
