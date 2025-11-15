@@ -121,7 +121,9 @@ async def create_drive_document_for_user(db, user_id: str, drive_source: str) ->
     try:
         from googleapiclient.errors import HttpError  # type: ignore
     except Exception:
-        HttpError = Exception  # type: ignore
+        class _GoogleHttpError(Exception):
+            pass
+        HttpError = _GoogleHttpError  # type: ignore
 
     try:
         service = await build_drive_service_for_user(db, user_id)  # type: ignore

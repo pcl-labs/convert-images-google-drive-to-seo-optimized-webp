@@ -1,24 +1,35 @@
 #!/usr/bin/env python3
 """
-Style Audit Script for Tailwind/Jinja templates
+Style Audit Script for Tailwind/Jinja templates (heuristic parser)
 
 Scans ./templates and ./assets/css to inventory Tailwind utility usage,
 identify hard-coded color usage, and list component macros with paths.
 
-Usage:
-  python scripts/style_audit.py --out docs/style-audit.md
-  python scripts/style_audit.py --print
+Heuristic notes and limitations:
+- Macro usage detection is based on a regex for `macro_name(` and may still overcount
+  in unusual cases. We attempt to avoid counting definitions by checking for a
+  preceding `{% macro` prefix near each match, but this is heuristic.
+- Variant styles block extraction uses brace counting. We mask string literals
+  (single/double-quoted with escapes) before counting braces to avoid braces
+  inside strings, but nested braces or complex templating constructs may still
+  confuse the parser.
 
-Outputs a Markdown report with:
-- Component inventory (macros and files)
-- Tailwind utility frequency (bg-, text-, border-, ring-, shadow-, rounded-, etc.)
-- Unique color scales used (e.g., slate-800, sky-600)
-- Suggested token groups to cover current usage
+Usage:
+  python scripts/style_audit.py --json-out docs/style-audit.json
+  python scripts/style_audit.py --json  # print to stdout
+
+Outputs:
+- JSON report (recommended for tools/LLMs)
+  - Component inventory (macros and files)
+  - Tailwind utility frequency (bg-, text-, border-, ring-, shadow-, rounded-, etc.)
+  - Unique color scales used (e.g., slate-800, sky-600)
+  - Suggested token groups to cover current usage
 """
 import argparse
 import os
 import re
 import sys
+import json
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -191,10 +202,15 @@ def analyze():
                 content = path.read_text(encoding="utf-8")
             except Exception:
                 continue
+            rel = str(path.relative_to(ROOT))
             # Skip counting definitions: we only want invocations in templates
             for m in invocation_re.finditer(content):
                 macro_name = m.group(1)
-                rel = str(path.relative_to(ROOT))
+                # Heuristic: if directly preceded by a macro definition tag, skip
+                start = max(0, m.start() - 50)
+                prefix = content[start:m.start()]
+                if re.search(r"\{\%\s*macro\s+$", prefix):
+                    continue
                 macro_usage[rel][macro_name] += 1
 
     # Variant drift check: look for `{% set styles = { 'primary': '...' } %}` maps in components
@@ -213,15 +229,46 @@ def analyze():
         block_lines = []
         open_braces = 0
         in_block = False
+        # Lightweight string masking to avoid counting braces inside strings
+        def _mask_strings(line: str) -> str:
+            out = []
+            in_sq = False
+            in_dq = False
+            esc = False
+            for ch in line:
+                if esc:
+                    # keep quotes masked context, skip affecting state
+                    out.append(' ')
+                    esc = False
+                    continue
+                if ch == '\\':
+                    esc = True
+                    out.append(' ')
+                    continue
+                if not in_dq and ch == "'":
+                    in_sq = not in_sq
+                    out.append(' ')
+                    continue
+                if not in_sq and ch == '"':
+                    in_dq = not in_dq
+                    out.append(' ')
+                    continue
+                if in_sq or in_dq:
+                    out.append(' ')
+                else:
+                    out.append(ch)
+            return ''.join(out)
         for line in content.splitlines():
             if not in_block and styles_block_start.search(line):
                 in_block = True
-                open_braces = line.count("{") - line.count("}")
+                masked = _mask_strings(line)
+                open_braces = masked.count("{") - masked.count("}")
                 block_lines.append(line)
                 continue
             if in_block:
                 block_lines.append(line)
-                open_braces += line.count("{") - line.count("}")
+                masked = _mask_strings(line)
+                open_braces += masked.count("{") - masked.count("}")
                 if open_braces <= 0 and "}%" in line:
                     break
         if block_lines:
@@ -475,12 +522,100 @@ def render_markdown(report: dict) -> str:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", type=str, help="Write Markdown report to this path")
-    ap.add_argument("--print", action="store_true", help="Print report to stdout")
+    ap.add_argument("--print", action="store_true", help="Print report to stdout (Markdown)")
+    ap.add_argument("--json", action="store_true", help="Print JSON report to stdout")
+    ap.add_argument("--json-out", type=str, help="Write JSON report to this path")
+    ap.add_argument("--allowlist", type=str, help="Path to newline-delimited arbitrary allowlist file")
     args = ap.parse_args()
 
-    report = analyze()
-    md = render_markdown(report)
+    # Load allowlist if provided
+    if args.allowlist:
+        p = Path(args.allowlist)
+        if p.exists():
+            try:
+                with p.open("r", encoding="utf-8") as fh:
+                    allowed = {line.strip() for line in fh if line.strip()}
+                if allowed:
+                    ARBITRARY_ALLOWLIST.clear()
+                    ARBITRARY_ALLOWLIST.update(allowed)
+            except Exception:
+                pass
 
+    report = analyze()
+
+    def to_json(report: dict) -> dict:
+        # Helper to convert Counter to list of [key, count]
+        def c_list(c: Counter):
+            return [[k, int(v)] for k, v in c.most_common()]
+        # Convert nested counters for macro_usage
+        macro_usage = {}
+        for f, cnt in report.get("macro_usage", {}).items():
+            macro_usage[f] = {k: int(v) for k, v in cnt.items()}
+        macro_totals = Counter()
+        for cnt in report.get("macro_usage", {}).values():
+            for k, v in cnt.items():
+                macro_totals[k] += v
+        # Variant drift consolidation
+        variant_drift = defaultdict(list)
+        for file, vmap in report.get("variant_maps", {}).items():
+            for variant, classes in vmap.items():
+                # We'll aggregate later if drift exists; LLMs can compare
+                pass
+        data = {
+            "generated_at": __import__("datetime").datetime.utcnow().isoformat() + "Z",
+            "root": str(ROOT),
+            "path_stats": dict(report.get("path_stats", {})),
+            "components": [{"file": f, "macros": ms} for f, ms in report.get("components", [])],
+            "macro_usage": macro_usage,
+            "macro_totals": {k: int(v) for k, v in macro_totals.most_common()},
+            "variant_maps": report.get("variant_maps", {}),
+            "util_counters": {cat: c_list(cnt) for cat, cnt in report.get("util_counters", {}).items()},
+            "spacing_usage": c_list(report.get("spacing_usage", Counter())),
+            "radius_usage": c_list(report.get("radius_usage", Counter())),
+            "shadow_usage": c_list(report.get("shadow_usage", Counter())),
+            "color_usage": c_list(report.get("color_usage", Counter())),
+            "inline_style": {
+                "style_tags": report.get("inline_style_files", []),
+                "style_attrs": [[f, int(n)] for f, n in report.get("inline_style_attrs", {}).items()],
+            },
+            "arbitrary": {
+                "all": c_list(report.get("util_counters", {}).get("arbitrary", Counter())),
+                "allowlist": sorted(list(ARBITRARY_ALLOWLIST)),
+                "disallowed": c_list(report.get("arbitrary_disallowed", Counter())),
+            },
+            "duplicates": [
+                {
+                    "fingerprint": fp,
+                    "count": int(c),
+                    "examples": report.get("duplicate_class_examples", {}).get(fp, [])
+                }
+                for fp, c in sorted(report.get("class_string_fingerprints", {}).items(), key=lambda x: x[1], reverse=True) if c > 1
+            ],
+            "per_file_summary": {
+                f: {
+                    "total_classes": int(s.get("total_classes", 0)),
+                    "unique_classes": int(s.get("unique_classes", 0)),
+                    "top_classes": [[u, int(n)] for u, n in s.get("top_classes", [])],
+                }
+                for f, s in report.get("per_file_summary", {}).items()
+            },
+        }
+        return data
+
+    # JSON outputs take precedence if specified
+    if args.json or args.json_out:
+        data = to_json(report)
+        if args.json_out:
+            outp = (ROOT / args.json_out).resolve()
+            outp.parent.mkdir(parents=True, exist_ok=True)
+            outp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            print(f"Wrote {outp}")
+        if args.json:
+            sys.stdout.write(json.dumps(data))
+        return
+
+    # Otherwise, emit Markdown if requested
+    md = render_markdown(report)
     if args.out:
         out_path = (ROOT / args.out).resolve()
         out_path.parent.mkdir(parents=True, exist_ok=True)
