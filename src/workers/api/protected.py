@@ -7,6 +7,7 @@ import secrets
 import json
 import asyncio
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 from .config import settings
 from .models import (
@@ -74,6 +75,29 @@ from fastapi import Query
 logger = get_logger(__name__)
 
 router = APIRouter()
+
+
+def _validate_redirect_path(path: str, fallback: str) -> str:
+    """
+    Validate a redirect path to ensure it's a safe relative path.
+    Rejects protocol-relative URLs (//evil.com) and absolute URLs (https://evil.com).
+    Returns the validated path or the fallback if validation fails.
+    """
+    if not path:
+        return fallback
+    
+    # Parse the URL to check for netloc (domain/host)
+    parsed = urlparse(path)
+    
+    # Reject if netloc is present (absolute URL or protocol-relative URL)
+    if parsed.netloc:
+        return fallback
+    
+    # Reject if path doesn't start with a single "/" (e.g., "//evil.com")
+    if not path.startswith("/") or path.startswith("//"):
+        return fallback
+    
+    return path
 
 
 def _parse_job_progress_model(progress_str: str) -> JobProgress:
@@ -208,7 +232,7 @@ async def create_drive_document_for_user(db, user_id: str, drive_source: str) ->
         raise
     except Exception as e:
         logger.error("drive_folder_unexpected_error", exc_info=True, extra={"user_id": user_id, "drive_source": drive_source})
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to create Drive document") from None
+        raise
     document_id = str(uuid.uuid4())
     doc = await create_document(
         db,
@@ -480,8 +504,7 @@ async def google_auth_start(
             path="/",
         )
         redirect_path = redirect or f"/dashboard/integrations/{integration_key}"
-        if not redirect_path.startswith("/"):
-            redirect_path = f"/dashboard/integrations/{integration_key}"
+        redirect_path = _validate_redirect_path(redirect_path, f"/dashboard/integrations/{integration_key}")
         response.set_cookie(
             key="google_redirect_next",
             value=redirect_path,
@@ -517,8 +540,7 @@ async def google_auth_callback(code: str, state: str, request: Request, user: di
         await exchange_google_code(db, user["user_id"], code, redirect_uri, integration=integration_key)
         is_secure = settings.environment == "production" or request.url.scheme == "https"
         next_path = request.cookies.get("google_redirect_next") or f"/dashboard/integrations/{integration_key}"
-        if not next_path.startswith("/"):
-            next_path = f"/dashboard/integrations/{integration_key}"
+        next_path = _validate_redirect_path(next_path, f"/dashboard/integrations/{integration_key}")
         response = RedirectResponse(url=next_path, status_code=status.HTTP_302_FOUND)
         response.delete_cookie(key=COOKIE_GOOGLE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
         response.delete_cookie(key="google_redirect_uri", path="/", samesite="lax", httponly=True, secure=is_secure)

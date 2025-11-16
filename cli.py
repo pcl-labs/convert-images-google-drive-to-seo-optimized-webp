@@ -333,8 +333,15 @@ def main():
     if original_file_ids:
         print("Automatically deleting original images from Google Drive...")
         try:
-            delete_images(folder_id, original_file_ids)
-            print("Original images deleted.")
+            deleted_ids, failed_ids = delete_images(folder_id, original_file_ids)
+            deleted_count = len(deleted_ids)
+            failed_count = len(failed_ids)
+            if failed_count > 0:
+                print(f"Deletion completed: {deleted_count} deleted, {failed_count} failed")
+                if failed_ids:
+                    print(f"Failed IDs: {', '.join(failed_ids[:10])}{'...' if len(failed_ids) > 10 else ''}")
+            else:
+                print(f"Original images deleted: {deleted_count} files")
         except Exception as e:
             print(f"\nError: Failed to delete original images from Google Drive.")
             print(f"Exception details: {type(e).__name__}: {e}")

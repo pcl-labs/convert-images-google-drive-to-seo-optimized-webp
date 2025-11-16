@@ -140,7 +140,6 @@ class Settings:
                 data[name] = os.environ[env_key]
             elif env_key in dotenv_values:
                 data[name] = dotenv_values[env_key]
-        data.update(overrides)
         return cls(**data)
 
 

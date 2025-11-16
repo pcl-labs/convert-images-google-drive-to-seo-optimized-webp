@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 from simple_http import HTTPStatusError, RequestError, SimpleClient, SimpleResponse
+
+logger = logging.getLogger(__name__)
 
 
 class GoogleAPIError(Exception):
@@ -67,7 +70,20 @@ class GoogleAPISession:
         return response
 
     def close(self) -> None:
-        return None
+        """Close the underlying HTTP client and release resources."""
+        if self._client is None:
+            return
+        
+        try:
+            # Try synchronous close() method
+            if hasattr(self._client, "close"):
+                self._client.close()
+            # Note: If client has aclose() but not close(), we can't await it from sync context
+            # In that case, we'll just release the reference below
+        except Exception as exc:
+            logger.warning("Error closing HTTP client: %s", exc, exc_info=True)
+        finally:
+            self._client = None
 
 
 class GoogleDriveClient:

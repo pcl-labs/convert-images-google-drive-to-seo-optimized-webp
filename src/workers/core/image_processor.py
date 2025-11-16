@@ -34,7 +34,7 @@ def resize_image(input_path, output_path, target_size):
     """Resize image to target_size and save to output_path."""
     with Image.open(input_path) as img:
         img = img.convert('RGB')
-        img = img.resize(target_size, Image.LANCZOS)
+        img = img.resize(target_size, Image.Resampling.LANCZOS)
         img.save(output_path)
 
 
@@ -118,7 +118,7 @@ def process_image(input_path, output_dir, overwrite=False, skip_existing=False, 
             target_size = PORTRAIT_SIZE
         else:
             target_size = LANDSCAPE_SIZE
-        resized = img.resize(target_size, Image.LANCZOS)
+        resized = img.resize(target_size, Image.Resampling.LANCZOS)
         data, size_kb = _save_as_webp_under_size(resized, max_size_kb, start_quality=80, min_quality=10, step=5)
         with open(output_path, 'wb') as f:
             f.write(data)

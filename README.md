@@ -333,7 +333,7 @@ For production, set `USE_INLINE_QUEUE=false` and provide `CLOUDFLARE_ACCOUNT_ID`
 
 ## Dependencies
 
-- `urllib` (standard library via `simple_http.py`): Lightweight HTTP client used for Google REST calls without third-party deps
+- `urllib` (standard library, wrapped in [`simple_http.py`](simple_http.py)): Lightweight HTTP client used for Google REST calls without third-party deps
 - `Pillow`: Image processing (convert HEIC/HEIF assets to JPEG/PNG before invoking the CLI/Worker)
 - `tqdm`: Progress bars
 - `fastapi`: Web API framework
@@ -362,7 +362,16 @@ The application includes in-memory rate limiting middleware that tracks requests
 
 ### Token Encryption
 
-Google OAuth tokens (`access_token` and `refresh_token`) are encrypted at rest using a lightweight stream cipher built on HMAC-SHA256 with per-record nonces. The cipher key comes from the `ENCRYPTION_KEY` environment variable (a base64-encoded 32 byte secret).
+Google OAuth tokens (`access_token` and `refresh_token`) are encrypted at rest using a stream cipher with HMAC-SHA256-based keystream generation and authentication. **Cryptographic specification:**
+
+- **Cipher type**: Stream cipher (XOR-based)
+- **Keystream generation**: HMAC-SHA256(key, nonce || counter) in counter mode (CTR-like), generating 32-byte blocks until sufficient keystream length
+- **Encryption**: Plaintext ⊕ keystream
+- **Authentication**: HMAC-SHA256(key, nonce || ciphertext) - 32-byte authentication tag
+- **Nonce**: 16-byte random nonce per record (stored with ciphertext)
+- **Format**: `base64(nonce || mac || ciphertext)`
+
+The cipher key comes from the `ENCRYPTION_KEY` environment variable (a base64-encoded 32 byte secret).
 
 **Key Management:**
 - Generate the key with `python -c "import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())"`
