@@ -4,6 +4,7 @@ Configuration management for the application.
 
 import base64
 import os
+import threading
 from typing import Optional, Union
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -180,6 +181,7 @@ class Settings(BaseSettings):
 
 # Global settings instance
 settings = Settings()
+_settings_lock = threading.Lock()
 
 
 def replace_settings(new_settings: Settings) -> Settings:
@@ -188,8 +190,13 @@ def replace_settings(new_settings: Settings) -> Settings:
     updated values (critical for Cloudflare Workers where env bindings are
     injected at request time).
     """
-    for field_name in new_settings.model_fields:
-        object.__setattr__(settings, field_name, getattr(new_settings, field_name))
+    field_names = getattr(new_settings, "model_fields_set", None)
+    names_to_copy = set(field_names) if field_names else set()
+    if not names_to_copy:
+        return settings
+    with _settings_lock:
+        for field_name in names_to_copy:
+            object.__setattr__(settings, field_name, getattr(new_settings, field_name))
     return settings
 
 

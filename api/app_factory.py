@@ -13,6 +13,7 @@ from typing import Optional
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pathlib import Path
 
 from .config import Settings, settings as global_settings
 from .cloudflare_queue import QueueProducer
@@ -176,7 +177,8 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
         lifespan=lifespan,
     )
 
-    app.mount("/static", StaticFiles(directory="static"), name="static")
+    if Path("static").exists():
+        app.mount("/static", StaticFiles(directory="static"), name="static")
 
     from .web import router as web_router
     from .public import router as public_router

@@ -26,15 +26,9 @@ def _string_bindings_from_env(env: Any) -> Dict[str, str]:
     if env is None:
         return string_values
 
-    for attr in dir(env):
-        if attr.startswith("_"):
-            continue
-        try:
-            value = getattr(env, attr)
-        except AttributeError:
-            continue
-
-        if isinstance(value, str):
+    env_dict = getattr(env, "__dict__", {})
+    for attr, value in env_dict.items():
+        if not attr.startswith("_") and isinstance(value, str):
             string_values[attr] = value
 
     return string_values
@@ -46,18 +40,43 @@ def apply_worker_env(env: Any) -> Settings:
     update the shared module-level settings in-place.
     """
     string_env = _string_bindings_from_env(env)
+    allowed = {
+        "ENVIRONMENT",
+        "DEBUG",
+        "BASE_URL",
+        "CORS_ORIGINS",
+        "RATE_LIMIT_PER_MINUTE",
+        "RATE_LIMIT_PER_HOUR",
+        "JWT_USE_COOKIES",
+        "JWT_SECRET_KEY",
+        "JWT_ALGORITHM",
+        "JWT_EXPIRATION_HOURS",
+        "GITHUB_CLIENT_ID",
+        "GITHUB_CLIENT_SECRET",
+        "GOOGLE_CLIENT_ID",
+        "GOOGLE_CLIENT_SECRET",
+        "USE_INLINE_QUEUE",
+        "CLOUDFLARE_ACCOUNT_ID",
+        "CLOUDFLARE_API_TOKEN",
+        "CF_QUEUE_NAME",
+        "CF_QUEUE_DLQ",
+        "TRANSCRIPT_LANGS",
+    }
+    protected = {"PATH", "HOME", "USER", "SHELL", "LD_LIBRARY_PATH", "PYTHONPATH"}
     for key, value in string_env.items():
-        os.environ[key] = value
+        if key in allowed and key not in protected:
+            os.environ[key] = value
 
     worker_kwargs = {}
-    if hasattr(env, WORKER_DB_BINDING):
-        worker_kwargs["d1_database"] = getattr(env, WORKER_DB_BINDING)
-    if hasattr(env, WORKER_QUEUE_BINDING):
-        worker_kwargs["queue"] = getattr(env, WORKER_QUEUE_BINDING)
-    if hasattr(env, WORKER_DLQ_BINDING):
-        worker_kwargs["dlq"] = getattr(env, WORKER_DLQ_BINDING)
-    if hasattr(env, WORKER_KV_BINDING):
-        worker_kwargs["kv_namespace"] = getattr(env, WORKER_KV_BINDING)
+    if env is not None:
+        if hasattr(env, WORKER_DB_BINDING):
+            worker_kwargs["d1_database"] = getattr(env, WORKER_DB_BINDING)
+        if hasattr(env, WORKER_QUEUE_BINDING):
+            worker_kwargs["queue"] = getattr(env, WORKER_QUEUE_BINDING)
+        if hasattr(env, WORKER_DLQ_BINDING):
+            worker_kwargs["dlq"] = getattr(env, WORKER_DLQ_BINDING)
+        if hasattr(env, WORKER_KV_BINDING):
+            worker_kwargs["kv_namespace"] = getattr(env, WORKER_KV_BINDING)
 
     # Instantiate a new Settings to evaluate BaseSettings sources with the
     # freshly injected os.environ values, then mutate the global instance.
