@@ -39,7 +39,7 @@
           {% elif state.needs_reconnect %}
             <a href="{{ reconnect_url }}" class="btn-primary">Reconnect</a>
           {% else %}
-            {% if s.key in ['drive', 'youtube'] %}
+            {% if s.key in ['drive', 'youtube', 'github'] %}
               <a href="{{ connect_url }}" class="btn-primary">Connect</a>
             {% else %}
               {{ button('In roadmap', variant='secondary', attrs='disabled', extra_classes='opacity-60 cursor-not-allowed') }}

@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from .config import settings
 from .constants import COOKIE_OAUTH_STATE, COOKIE_GOOGLE_OAUTH_STATE
 from .auth import authenticate_github
+from .auth import authenticate_google
 from .deps import ensure_db
 from .app_logging import get_logger
 
@@ -40,7 +41,49 @@ def _build_github_oauth_response(request: Request, auth_url: str, state: str) ->
     return response
 
 
-@router.get("/api", tags=["Public"]) 
+def _google_login_redirect_uri(request: Request) -> str:
+    if settings.base_url:
+        return f"{settings.base_url.rstrip('/')}/auth/google/login/callback"
+    return str(request.url.replace(path="/auth/google/login/callback", query=""))
+
+
+def _get_google_login_oauth_redirect(request: Request) -> tuple[str, str]:
+    redirect_uri = _google_login_redirect_uri(request)
+    from . import auth as auth_module
+    return auth_module.get_google_login_oauth_url(redirect_uri)
+
+
+def _build_google_oauth_response(request: Request, auth_url: str, state: str) -> RedirectResponse:
+    xf_proto = request.headers.get("x-forwarded-proto", "").lower()
+    is_secure = (xf_proto == "https") if xf_proto else (request.url.scheme == "https")
+    response = RedirectResponse(url=auth_url, status_code=status.HTTP_303_SEE_OTHER)
+    response.set_cookie(
+        key=COOKIE_GOOGLE_OAUTH_STATE,
+        value=state,
+        httponly=True,
+        secure=is_secure,
+        samesite="lax",
+        max_age=600,
+        path="/",
+    )
+    return response
+
+
+def _build_logout_response(request: Request, *, redirect: str = "/") -> RedirectResponse:
+    response = RedirectResponse(url=redirect, status_code=status.HTTP_302_FOUND)
+    xf_proto = request.headers.get("x-forwarded-proto", "").lower()
+    is_secure = (xf_proto == "https") if xf_proto else (request.url.scheme == "https")
+    response.delete_cookie("access_token", path="/", samesite="lax", httponly=True, secure=is_secure)
+    response.delete_cookie(COOKIE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
+    response.delete_cookie(COOKIE_GOOGLE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
+    response.delete_cookie("google_redirect_uri", path="/", samesite="lax", httponly=True, secure=is_secure)
+    response.delete_cookie("google_integration", path="/", samesite="lax", httponly=True, secure=is_secure)
+    response.delete_cookie("google_redirect_next", path="/", samesite="lax", httponly=True, secure=is_secure)
+    response.delete_cookie("csrf_token", path="/", samesite="lax", httponly=True, secure=is_secure)
+    return response
+
+
+@router.get("/api", tags=["Public"])
 async def root():
     # Determine queue mode for debugging
     queue_mode = "inline" if settings.use_inline_queue else ("workers-binding" if settings.queue else ("api" if settings.cf_api_token else "none"))
@@ -52,6 +95,7 @@ async def root():
         "queue_mode": queue_mode,
         "endpoints": {
             "auth": "/auth/github/start",
+            "auth_google": "/auth/google/login/start",
             "documents_drive": "/api/v1/documents/drive",
             "optimize": "/api/v1/optimize",
             "generate_blog": "/api/v1/pipelines/generate_blog",
@@ -103,7 +147,38 @@ async def github_auth_start_post(request: Request, csrf_token: str = Form(...)):
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="GitHub OAuth not configured")
 
 
-@router.get("/auth/github/callback", tags=["Authentication"]) 
+@router.get("/auth/google/login/start", tags=["Authentication"])
+async def google_login_start(request: Request):
+    try:
+        auth_url, state = _get_google_login_oauth_redirect(request)
+        return _build_google_oauth_response(request, auth_url, state)
+    except Exception:
+        logger.exception("Google auth initiation failed")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Google OAuth not configured")
+
+
+@router.post("/auth/google/login/start", tags=["Authentication"])
+async def google_login_start_post(request: Request, csrf_token: str = Form(...)):
+    cookie_token = request.cookies.get("csrf_token")
+    if not cookie_token or not secrets.compare_digest(cookie_token, csrf_token):
+        try:
+            client_host = request.client.host if request.client else "-"
+            ua = request.headers.get("user-agent", "-")
+            logger.warning(
+                f"Google login CSRF validation failed: ip={client_host} method={request.method} path={request.url.path} ua={ua}"
+            )
+        except Exception:
+            pass
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
+    try:
+        auth_url, state = _get_google_login_oauth_redirect(request)
+        return _build_google_oauth_response(request, auth_url, state)
+    except Exception:
+        logger.exception("Google auth initiation (POST) failed")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Google OAuth not configured")
+
+
+@router.get("/auth/github/callback", tags=["Authentication"])
 async def github_callback(code: str, state: str, request: Request):
     db = ensure_db()
 
@@ -141,14 +216,50 @@ async def github_callback(code: str, state: str, request: Request):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication failed")
 
 
-@router.get("/auth/logout", tags=["Authentication"]) 
+@router.get("/auth/google/login/callback", tags=["Authentication"])
+async def google_login_callback(code: str, state: str, request: Request):
+    db = ensure_db()
+
+    stored_state = request.cookies.get(COOKIE_GOOGLE_OAUTH_STATE)
+    if not stored_state or not secrets.compare_digest(stored_state, state):
+        logger.warning("Google login state verification failed - possible CSRF attack")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid state parameter - possible CSRF attack")
+
+    try:
+        redirect_uri = _google_login_redirect_uri(request)
+        jwt_token, user = await authenticate_google(db, code, redirect_uri)
+        user_response = {
+            "user_id": user["user_id"],
+            "email": user.get("email"),
+            "github_id": user.get("github_id"),
+            "google_id": user.get("google_id"),
+        }
+
+        xf_proto = request.headers.get("x-forwarded-proto", "").lower()
+        is_secure = (xf_proto == "https") if xf_proto else (request.url.scheme == "https")
+        if settings.jwt_use_cookies:
+            max_age_seconds = settings.jwt_expiration_hours * 3600
+            response = RedirectResponse(url="/dashboard", status_code=status.HTTP_302_FOUND)
+            response.set_cookie(
+                key="access_token",
+                value=jwt_token,
+                httponly=True,
+                secure=is_secure,
+                samesite="lax",
+                max_age=max_age_seconds,
+                path="/",
+            )
+            response.delete_cookie(key=COOKIE_GOOGLE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
+            return response
+        else:
+            response = JSONResponse(content={"access_token": jwt_token, "token_type": "bearer", "user": user_response})
+            response.delete_cookie(key=COOKIE_GOOGLE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
+            return response
+    except Exception:
+        logger.exception("Google callback failed")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication failed")
+
+
+@router.get("/auth/logout", tags=["Authentication"])
 async def logout_get(request: Request):
-    response = RedirectResponse(url="/", status_code=status.HTTP_302_FOUND)
-    xf_proto = request.headers.get("x-forwarded-proto", "").lower()
-    is_secure = (xf_proto == "https") if xf_proto else (request.url.scheme == "https")
-    response.delete_cookie("access_token", path="/", samesite="lax", httponly=True, secure=is_secure)
-    response.delete_cookie(COOKIE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
-    response.delete_cookie(COOKIE_GOOGLE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
-    response.delete_cookie("google_redirect_uri", path="/", samesite="lax", httponly=True, secure=is_secure)
-    response.delete_cookie("csrf_token", path="/", samesite="lax", httponly=True, secure=is_secure)
-    return response
+    return _build_logout_response(request)

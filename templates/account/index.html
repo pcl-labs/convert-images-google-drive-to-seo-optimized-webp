@@ -17,12 +17,29 @@
         <dd class="font-mono break-all text-content">{{ user.github_id or '-' }}</dd>
       </div>
       <div class="flex flex-col">
+        <dt class="text-xs font-semibold uppercase tracking-wide text-contentMuted">Google ID</dt>
+        <dd class="font-mono break-all text-content">{{ user.google_id or '-' }}</dd>
+      </div>
+      <div class="flex flex-col">
         <dt class="text-xs font-semibold uppercase tracking-wide text-contentMuted">Email</dt>
         <dd class="font-mono break-all text-content">{{ user.email or '-' }}</dd>
       </div>
       <div class="flex flex-col">
         <dt class="text-xs font-semibold uppercase tracking-wide text-contentMuted">Created</dt>
         <dd>{{ user.created_at or '-' }}</dd>
+      </div>
+      <div class="flex flex-col">
+        <dt class="text-xs font-semibold uppercase tracking-wide text-contentMuted">Connected providers</dt>
+        <dd class="space-y-1">
+          <div class="flex items-center justify-between">
+            <span>GitHub</span>
+            <span class="text-xs font-mono text-contentMuted">{{ user.github_id or 'Not connected' }}</span>
+          </div>
+          <div class="flex items-center justify-between">
+            <span>Google</span>
+            <span class="text-xs font-mono text-contentMuted">{{ user.google_id or 'Not connected' }}</span>
+          </div>
+        </dd>
       </div>
     </dl>
   {% endcall %}

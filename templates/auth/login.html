@@ -10,22 +10,36 @@
       <div class="text-content font-semibold">Quill</div>
     </div>
     <h1 class="text-lg font-semibold text-content text-center">{{ 'Create your account' if is_signup else 'Sign in' }}</h1>
-    <p class="text-contentMuted text-sm text-center mt-1">Use your GitHub account to {{ 'get started' if is_signup else 'continue' }}.</p>
+    <p class="text-contentMuted text-sm text-center mt-1">Use GitHub or Google to {{ 'get started' if is_signup else 'continue' }}.</p>
 
     {% from 'components/elements/alert.html' import alert %}
     {% if error %}
       <div class="mt-4">{{ alert('error', error) }}</div>
     {% endif %}
 
-    <form method="post" action="/auth/github/start" class="mt-6">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-      <button type="submit" class="w-full inline-flex items-center justify-center rounded-md bg-white text-gray-900 hover:bg-gray-50 px-3 py-2 text-sm font-medium">
-        <svg class="h-4 w-4 mr-2" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-          <path d="M12 .5C5.73.5.98 5.24.98 11.5c0 4.85 3.15 8.96 7.51 10.41.55.1.75-.24.75-.53 0-.26-.01-1.12-.02-2.04-3.06.66-3.71-1.3-3.71-1.3-.5-1.26-1.22-1.6-1.22-1.6-1-.68.08-.67.08-.67 1.1.08 1.68 1.13 1.68 1.13.98 1.67 2.57 1.19 3.2.91.1-.71.38-1.19.69-1.46-2.44-.28-5.01-1.22-5.01-5.44 0-1.2.43-2.18 1.13-2.95-.11-.28-.49-1.41.11-2.94 0 0 .92-.29 3.01 1.13.87-.24 1.8-.36 2.72-.36s1.85.12 2.72.36c2.09-1.42 3.01-1.13 3.01-1.13.6 1.53.22 2.66.11 2.94.7.77 1.13 1.75 1.13 2.95 0 4.23-2.58 5.15-5.03 5.42.39.33.73.98.73 1.98 0 1.43-.01 2.58-.01 2.93 0 .29.2.64.75.53 4.36-1.45 7.51-5.56 7.51-10.41C23.02 5.24 18.27.5 12 .5z"/>
-        </svg>
-        Continue with GitHub
-      </button>
-    </form>
+    <div class="mt-6 space-y-3">
+      <form method="post" action="/auth/github/start">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+        <button type="submit" class="w-full inline-flex items-center justify-center rounded-md bg-white text-gray-900 hover:bg-gray-50 px-3 py-2 text-sm font-medium shadow-sm">
+          <svg class="h-4 w-4 mr-2" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M12 .5C5.73.5.98 5.24.98 11.5c0 4.85 3.15 8.96 7.51 10.41.55.1.75-.24.75-.53 0-.26-.01-1.12-.02-2.04-3.06.66-3.71-1.3-3.71-1.3-.5-1.26-1.22-1.6-1.22-1.6-1-.68.08-.67.08-.67 1.1.08 1.68 1.13 1.68 1.13.98 1.67 2.57 1.19 3.2.91.1-.71.38-1.19.69-1.46-2.44-.28-5.01-1.22-5.01-5.44 0-1.2.43-2.18 1.13-2.95-.11-.28-.49-1.41.11-2.94 0 0 .92-.29 3.01 1.13.87-.24 1.8-.36 2.72-.36s1.85.12 2.72.36c2.09-1.42 3.01-1.13 3.01-1.13.6 1.53.22 2.66.11 2.94.7.77 1.13 1.75 1.13 2.95 0 4.23-2.58 5.15-5.03 5.42.38.33.73.98.73 1.98 0 1.43-.01 2.58-.01 2.93 0 .29.2.64.75.53 4.36-1.45 7.51-5.56 7.51-10.41C23.02 5.24 18.27.5 12 .5z"/>
+          </svg>
+          Continue with GitHub
+        </button>
+      </form>
+      <form method="post" action="/auth/google/login/start">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+        <button type="submit" class="w-full inline-flex items-center justify-center rounded-md bg-white text-gray-900 hover:bg-gray-50 px-3 py-2 text-sm font-medium shadow-sm">
+          <svg class="h-4 w-4 mr-2" viewBox="0 0 533.5 544.3" aria-hidden="true">
+            <path fill="#4285F4" d="M533.5 278.4c0-17.4-1.6-34.1-4.6-50.3H272v95.1h146.9c-6.3 33.9-25.2 62.6-53.8 81.9v68.1h86.9c51 47 80.5 116.4 80.5 190.9z"/>
+            <path fill="#34A853" d="M272 544.3c72.6 0 133.7-24 178.3-65.3l-86.9-68.1c-24.1 16.2-55.1 25.8-91.4 25.8-70.4 0-130.2-47.6-151.6-111.7H31.7v69.9C75.8 480.5 167.5 544.3 272 544.3z"/>
+            <path fill="#FBBC04" d="M120.4 325c-11.1-33.9-11.1-70.6 0-104.5V150.6h-88.7c-38.4 76.5-38.4 166.7 0 243.2z"/>
+            <path fill="#EA4335" d="M272 107.6c39.6-.6 77.2 13.6 106 38.6l78.9-78.9C424.9 24.1 363.8 0 272 0 167.5 0 75.8 63.8 31.7 159.4l88.7 69.9C141.8 155.2 201.6 107.6 272 107.6z"/>
+          </svg>
+          Continue with Google
+        </button>
+      </form>
+    </div>
     <p class="mt-6 text-center text-sm text-contentMuted">
       {% if is_signup %}
         Already have an account?

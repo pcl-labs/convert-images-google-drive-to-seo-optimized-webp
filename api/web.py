@@ -81,6 +81,17 @@ templates.env.filters["status_label"] = _status_label
 
 # Centralized service metadata used across integrations views
 SERVICES_META = {
+    "github": {
+        "key": "github",
+        "name": "GitHub",
+        "capability": "Authentication",
+        "description": "Sign in with GitHub to manage developer workflows.",
+        "category": "Developer tools",
+        "developer": "GitHub",
+        "website": "https://github.com/",
+        "privacy": "https://docs.github.com/en/site-policy/privacy-policies/github-privacy-statement",
+        "created_at": None,
+    },
     "gmail": {
         "key": "gmail",
         "name": "Gmail",
@@ -200,7 +211,11 @@ def _build_google_integration_entries(token_rows: Optional[list[Dict[str, Any]]]
     }
 
 
-def _build_integrations_model(tokens: list[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+def _build_integrations_model(
+    tokens: list[Dict[str, Any]],
+    *,
+    github_info: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Dict[str, Any]]:
     google_entries = _build_google_integration_entries(tokens)
     google_entries["gmail"] = {
         "connected": False,
@@ -209,7 +224,42 @@ def _build_integrations_model(tokens: list[Dict[str, Any]]) -> Dict[str, Dict[st
         "status_label": "Not available",
         "status_hint": "Gmail workflows are on the roadmap.",
     }
-    return google_entries
+    integrations = dict(google_entries)
+
+    info = github_info or {}
+    github_id = info.get("github_id")
+    email = info.get("email")
+    connected_at = info.get("created_at")
+    github_connected = bool(github_id)
+    status = "completed" if github_connected else "disconnected"
+    status_label = "Connected" if github_connected else "Disconnected"
+    if github_connected:
+        if github_id and email:
+            hint = f"Signed in with GitHub user {github_id} ({email})."
+        elif github_id:
+            hint = f"Signed in with GitHub user {github_id}."
+        elif email:
+            hint = f"Signed in with GitHub account {email}."
+        else:
+            hint = "GitHub account linked for authentication."
+    else:
+        hint = "Connect GitHub to enable developer authentication."
+
+    integrations["github"] = {
+        "key": "github",
+        "connected": github_connected,
+        "needs_reconnect": False,
+        "status": status,
+        "status_label": status_label,
+        "status_hint": hint,
+        "connect_url": "/auth/github/start",
+        "reconnect_url": "/auth/github/start",
+        "granted_scopes": ["user:email"] if github_connected else [],
+        "connected_at": connected_at,
+        "can_disconnect": False,
+    }
+
+    return integrations
 
 def _get_csrf_token(request: Request) -> str:
     token = request.cookies.get("csrf_token")
@@ -432,9 +482,11 @@ async def logout(request: Request, csrf_token: str = Form(...)) -> RedirectRespo
     response.delete_cookie(COOKIE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
     response.delete_cookie(COOKIE_GOOGLE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
     response.delete_cookie("google_redirect_uri", path="/", samesite="lax", httponly=True, secure=is_secure)
+    response.delete_cookie("google_integration", path="/", samesite="lax", httponly=True, secure=is_secure)
+    response.delete_cookie("google_redirect_next", path="/", samesite="lax", httponly=True, secure=is_secure)
     # Clear CSRF token on logout for security
     response.delete_cookie("csrf_token", path="/", samesite="lax", httponly=True, secure=is_secure)
-    
+
     return response
 
 
@@ -944,7 +996,13 @@ async def jobs_page(request: Request, user: dict = Depends(get_current_user), pa
 async def integrations_page(request: Request, user: dict = Depends(get_current_user)):
     db = ensure_db()
     tokens = await list_google_tokens(db, user["user_id"])  # type: ignore
-    integrations = _build_integrations_model(tokens)
+    stored_user = await get_user_by_id(db, user["user_id"])  # type: ignore
+    github_info = {
+        "github_id": user.get("github_id") or (stored_user.get("github_id") if stored_user else None),
+        "email": user.get("email") or (stored_user.get("email") if stored_user else None),
+        "created_at": stored_user.get("created_at") if stored_user else None,
+    }
+    integrations = _build_integrations_model(tokens, github_info=github_info)
     services_meta = SERVICES_META
     csrf = _get_csrf_token(request)
     context = {"request": request, "user": user, "integrations": integrations, "services_meta": services_meta, "page_title": "Integrations", "csrf_token": csrf}
@@ -969,7 +1027,13 @@ async def integrations_drive_disconnect(request: Request, csrf_token: str = Form
 async def integrations_grid_partial(request: Request, user: dict = Depends(get_current_user)):
     db = ensure_db()
     tokens = await list_google_tokens(db, user["user_id"])  # type: ignore
-    integrations = _build_integrations_model(tokens)
+    stored_user = await get_user_by_id(db, user["user_id"])  # type: ignore
+    github_info = {
+        "github_id": user.get("github_id") or (stored_user.get("github_id") if stored_user else None),
+        "email": user.get("email") or (stored_user.get("email") if stored_user else None),
+        "created_at": stored_user.get("created_at") if stored_user else None,
+    }
+    integrations = _build_integrations_model(tokens, github_info=github_info)
     services_meta = SERVICES_META
     csrf = _get_csrf_token(request)
     return templates.TemplateResponse("integrations/partials/grid.html", {"request": request, "integrations": integrations, "services_meta": services_meta, "csrf_token": csrf})
@@ -978,12 +1042,18 @@ async def integrations_grid_partial(request: Request, user: dict = Depends(get_c
 @router.get("/dashboard/integrations/{service}", response_class=HTMLResponse)
 async def integration_detail(service: str, request: Request, user: dict = Depends(get_current_user)):
     # Validate service early to avoid unnecessary DB calls and object construction
-    allowed_services = {"gmail", "drive", "youtube"}
+    allowed_services = {"gmail", "drive", "youtube", "github"}
     if service not in allowed_services:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     db = ensure_db()
     tokens = await list_google_tokens(db, user["user_id"])  # type: ignore
-    integrations = _build_integrations_model(tokens)
+    stored_user = await get_user_by_id(db, user["user_id"])  # type: ignore
+    github_info = {
+        "github_id": user.get("github_id") or (stored_user.get("github_id") if stored_user else None),
+        "email": user.get("email") or (stored_user.get("email") if stored_user else None),
+        "created_at": stored_user.get("created_at") if stored_user else None,
+    }
+    integrations = _build_integrations_model(tokens, github_info=github_info)
     services_meta = SERVICES_META
     csrf = _get_csrf_token(request)
     return templates.TemplateResponse(
@@ -1171,6 +1241,7 @@ async def account_page(request: Request, user: dict = Depends(get_current_user))
     display_user = {
         "user_id": user.get("user_id"),
         "github_id": user.get("github_id") or (stored.get("github_id") if stored else None),
+        "google_id": user.get("google_id") or (stored.get("google_id") if stored else None),
         "email": user.get("email") or (stored.get("email") if stored else None),
         "created_at": stored.get("created_at") if stored else None,
     }
