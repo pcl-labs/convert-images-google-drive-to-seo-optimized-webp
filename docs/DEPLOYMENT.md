@@ -6,7 +6,7 @@ Cloudflare's Python Workers runtime only bundles packages listed in `cf-requirem
 Keep this file focused on the modules actually needed by the HTTP worker (FastAPI, auth helpers, google APIs, etc.) and continue to use `requirements.txt` for the full local toolchain (Uvicorn, Pillow, pytest, and any native-heavy libs used by the queue consumer).  
 `wrangler deploy` will run `pip install -r cf-requirements.txt` as part of the build step; if you add a new import that should run inside the worker, update this file as well.
 
-### 5. Set Secrets
+### Set Secrets
 
 ```bash
 # GitHub OAuth credentials
@@ -34,14 +34,14 @@ wrangler secret put CF_QUEUE_NAME
 wrangler secret put CF_QUEUE_DLQ
 ```
 
-### 6. Configure GitHub OAuth App
+### Configure GitHub OAuth App
 
 1. Go to GitHub Settings > Developer settings > OAuth Apps
 2. Create a new OAuth App
 3. Set Authorization callback URL to your deployed API URL + `/auth/github/callback`
 4. Copy Client ID and Client Secret
 
-### 7. Deploy
+### Deploy
 
 ```bash
 # Deploy the main API worker
@@ -51,7 +51,7 @@ wrangler deploy
 # Note: Queue consumer can be part of the same worker or separate
 ```
 
-### 8. Verify Deployment
+### Verify Deployment
 
 ```bash
 # Check health endpoint

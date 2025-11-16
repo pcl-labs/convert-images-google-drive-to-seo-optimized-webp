@@ -7,6 +7,7 @@ import secrets
 import json
 import asyncio
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 from .config import settings
 from .models import (
@@ -59,8 +60,8 @@ from .google_oauth import (
 from .constants import COOKIE_GOOGLE_OAUTH_STATE
 from .app_logging import get_logger
 from .exceptions import JobNotFoundError
-from core.drive_utils import extract_folder_id_from_input
-from core.youtube_api import fetch_video_metadata, YouTubeAPIError
+from src.workers.core.drive_utils import extract_folder_id_from_input
+from src.workers.core.youtube_api import fetch_video_metadata, YouTubeAPIError
 from .deps import (
     ensure_db,
     ensure_services,
@@ -68,7 +69,7 @@ from .deps import (
     parse_job_progress,
 )
 from .utils import enqueue_job_with_guard
-from core.url_utils import parse_youtube_video_id
+from src.workers.core.url_utils import parse_youtube_video_id
 from .drive_workspace import ensure_drive_workspace, ensure_document_drive_structure
 from .database import get_usage_summary, list_usage_events, count_usage_events
 from fastapi import Query
@@ -100,7 +101,7 @@ def _summarize_google_tokens(rows: list[dict]) -> dict:
     return summary
 
 
-def _parse_db_datetime(value):
+def _parse_db_datetime(value) -> Optional[datetime]:
     if isinstance(value, datetime):
         return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
     if isinstance(value, str) and value:
@@ -108,8 +109,17 @@ def _parse_db_datetime(value):
             dt = datetime.fromisoformat(value)
             return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
         except Exception:
-            pass
-    return datetime.now(timezone.utc)
+            logger.warning(
+                "Failed to parse datetime string",
+                extra={"value": value, "error_type": "parse_failure"}
+            )
+            return None
+    if value is not None:
+        logger.warning(
+            "Invalid datetime value type",
+            extra={"value": value, "value_type": type(value).__name__}
+        )
+    return None
 
 
 def _coerce_document_metadata(doc: dict) -> dict:
@@ -178,18 +188,21 @@ def _version_payload(row: dict) -> dict:
 
 def _version_summary_model(row: dict) -> DocumentVersionSummary:
     data = _version_payload(row)
+    created_at = data["created_at"] or datetime.now(timezone.utc)
     return DocumentVersionSummary(
         version_id=data["version_id"],
         document_id=data["document_id"],
         version=data["version"],
         content_format=data["content_format"],
         frontmatter=data["frontmatter"],
-        created_at=data["created_at"],
+        created_at=created_at,
     )
 
 
 def _version_detail_model(row: dict) -> DocumentVersionDetail:
     data = _version_payload(row)
+    created_at = data["created_at"] or datetime.now(timezone.utc)
+    data["created_at"] = created_at
     return DocumentVersionDetail(**data)
 
 
@@ -372,12 +385,13 @@ async def start_ingest_youtube_job(db, queue, user_id: str, url: str) -> JobStat
             extra={"job_id": job_id, "document_id": document_id, "reason": "queue unavailable", "exception": str(enqueue_exception) if enqueue_exception else None},
         )
     progress = _parse_job_progress_model(progress_str=job_row.get("progress", "{}"))
+    created_at = _parse_db_datetime(job_row.get("created_at")) or datetime.now(timezone.utc)
     return JobStatus(
         job_id=job_id,
         user_id=user_id,
         status=JobStatusEnum.PENDING,
         progress=progress,
-        created_at=_parse_db_datetime(job_row.get("created_at")),
+        created_at=created_at,
         job_type=JobType.INGEST_YOUTUBE.value,
         document_id=document_id,
     )
@@ -419,12 +433,13 @@ async def start_ingest_drive_job(db, queue, user_id: str, document_id: str) -> J
             extra={"job_id": job_id, "document_id": document_id, "doc_hint": "docs/DEPLOYMENT.md#queue-configuration-modes", "exception": str(enqueue_exception) if enqueue_exception else None},
         )
     progress = _parse_job_progress_model(progress_str=job_row.get("progress", "{}"))
+    created_at = _parse_db_datetime(job_row.get("created_at")) or datetime.now(timezone.utc)
     return JobStatus(
         job_id=job_id,
         user_id=user_id,
         status=JobStatusEnum.PENDING,
         progress=progress,
-        created_at=_parse_db_datetime(job_row.get("created_at")),
+        created_at=created_at,
         job_type=JobType.INGEST_DRIVE.value,
         document_id=document_id,
     )
@@ -462,12 +477,13 @@ async def start_drive_change_poll_job(db, queue, user_id: str, document_ids: Opt
             extra={"job_id": job_id, "doc_hint": "docs/DEPLOYMENT.md#queue-configuration-modes", "exception": str(enqueue_exception) if enqueue_exception else None},
         )
     progress = _parse_job_progress_model(progress_str=job_row.get("progress", "{}"))
+    created_at = _parse_db_datetime(job_row.get("created_at")) or datetime.now(timezone.utc)
     return JobStatus(
         job_id=job_id,
         user_id=user_id,
         status=JobStatusEnum.PENDING,
         progress=progress,
-        created_at=_parse_db_datetime(job_row.get("created_at")),
+        created_at=created_at,
         job_type=JobType.DRIVE_CHANGE_POLL.value,
     )
 
@@ -508,12 +524,13 @@ async def start_ingest_text_job(db, queue, user_id: str, text: str, title: Optio
             extra={"job_id": job_id, "document_id": document_id, "reason": "queue unavailable", "exception": str(enqueue_exception) if enqueue_exception else None},
         )
     progress = _parse_job_progress_model(progress_str=job_row.get("progress", "{}"))
+    created_at = _parse_db_datetime(job_row.get("created_at")) or datetime.now(timezone.utc)
     return JobStatus(
         job_id=job_id,
         user_id=user_id,
         status=JobStatusEnum.PENDING,
         progress=progress,
-        created_at=_parse_db_datetime(job_row.get("created_at")),
+        created_at=created_at,
         job_type=JobType.INGEST_TEXT.value,
         document_id=document_id,
     )
@@ -587,8 +604,21 @@ async def google_auth_start(
             path="/",
         )
         redirect_path = redirect or f"/dashboard/integrations/{integration_key}"
-        if not redirect_path.startswith("/"):
-            redirect_path = f"/dashboard/integrations/{integration_key}"
+        # Validate redirect path to prevent protocol-relative URLs and external redirects
+        safe_default = f"/dashboard/integrations/{integration_key}"
+        if redirect_path:
+            # Reject protocol-relative URLs (e.g., '//evil.com')
+            if redirect_path.startswith("//"):
+                redirect_path = safe_default
+            else:
+                # Parse URL to ensure it's a safe internal path-only redirect
+                parsed = urlparse(redirect_path)
+                if parsed.scheme or parsed.netloc or not parsed.path.startswith("/"):
+                    redirect_path = safe_default
+                else:
+                    redirect_path = parsed.path
+        else:
+            redirect_path = safe_default
         response.set_cookie(
             key="google_redirect_next",
             value=redirect_path,
@@ -624,7 +654,7 @@ async def google_auth_callback(code: str, state: str, request: Request, user: di
         await exchange_google_code(db, user["user_id"], code, redirect_uri, integration=integration_key)
         is_secure = settings.environment == "production" or request.url.scheme == "https"
         next_path = request.cookies.get("google_redirect_next") or f"/dashboard/integrations/{integration_key}"
-        if not next_path.startswith("/"):
+        if not next_path.startswith("/") or next_path.startswith("//"):
             next_path = f"/dashboard/integrations/{integration_key}"
         response = RedirectResponse(url=next_path, status_code=status.HTTP_302_FOUND)
         response.delete_cookie(key=COOKIE_GOOGLE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
@@ -782,13 +812,14 @@ async def create_document_export_endpoint(document_id: str, request: DocumentExp
         target=request.target.value,
         payload=request.metadata,
     )
+    created_at = _parse_db_datetime(row.get("created_at")) or datetime.now(timezone.utc)
     return DocumentExportResponse(
         export_id=row.get("export_id"),
         status=row.get("status"),
         target=request.target,
         version_id=row.get("version_id"),
         document_id=row.get("document_id"),
-        created_at=_parse_db_datetime(row.get("created_at")),
+        created_at=created_at,
     )
 
 
@@ -837,12 +868,13 @@ async def start_optimize_job(
             },
         )
     progress = _parse_job_progress_model(progress_str=job_row.get("progress", "{}"))
+    created_at = _parse_db_datetime(job_row.get("created_at")) or datetime.now(timezone.utc)
     return JobStatus(
         job_id=job_id,
         user_id=user_id,
         status=JobStatusEnum.PENDING,
         progress=progress,
-        created_at=_parse_db_datetime(job_row.get("created_at")),
+        created_at=created_at,
         job_type=JobType.OPTIMIZE_DRIVE.value,
         document_id=document_id,
     )
@@ -891,12 +923,13 @@ async def start_generate_blog_job(
             },
         )
     progress = _parse_job_progress_model(progress_str=job_row.get("progress", "{}"))
+    created_at = _parse_db_datetime(job_row.get("created_at")) or datetime.now(timezone.utc)
     return JobStatus(
         job_id=job_id,
         user_id=user_id,
         status=JobStatusEnum.PENDING,
         progress=progress,
-        created_at=_parse_db_datetime(job_row.get("created_at")),
+        created_at=created_at,
         job_type=JobType.GENERATE_BLOG.value,
         document_id=document_id,
     )
@@ -934,12 +967,13 @@ async def get_job_status(job_id: str, user: dict = Depends(get_current_user)):
     if not job:
         raise JobNotFoundError(job_id)
     progress = _parse_job_progress_model(progress_str=job.get("progress", "{}"))
+    created_at = _parse_db_datetime(job.get("created_at")) or datetime.now(timezone.utc)
     return JobStatus(
         job_id=job["job_id"],
         user_id=job["user_id"],
         status=JobStatusEnum(job["status"]),
         progress=progress,
-        created_at=_parse_db_datetime(job.get("created_at")),
+        created_at=created_at,
         completed_at=_parse_db_datetime(job.get("completed_at")) if job.get("completed_at") else None,
         error=job.get("error"),
         job_type=job.get("job_type"),
@@ -959,13 +993,14 @@ async def list_user_jobs(page: int = 1, page_size: int = 20, status_filter: Opti
     job_statuses = []
     for job in jobs_list:
         progress = _parse_job_progress_model(progress_str=job.get("progress", "{}"))
+        created_at = _parse_db_datetime(job.get("created_at")) or datetime.now(timezone.utc)
         job_statuses.append(
             JobStatus(
                 job_id=job["job_id"],
                 user_id=job["user_id"],
                 status=JobStatusEnum(job["status"]),
                 progress=progress,
-                created_at=_parse_db_datetime(job.get("created_at")),
+                created_at=created_at,
                 completed_at=_parse_db_datetime(job.get("completed_at")) if job.get("completed_at") else None,
                 error=job.get("error"),
                 job_type=job.get("job_type"),

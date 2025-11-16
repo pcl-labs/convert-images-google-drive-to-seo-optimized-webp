@@ -13,12 +13,18 @@ def _threadsafe_execute(request: Any) -> Any:
     """Execute a googleapiclient request with a per-call AuthorizedHttp."""
     http = getattr(request, "http", None)
     new_http: Optional[AuthorizedHttp] = None
+    http_instance: Optional[httplib2.Http] = None
     credentials = getattr(http, "credentials", None)
     if credentials is not None:
-        new_http = AuthorizedHttp(credentials, http=httplib2.Http())
-    if new_http is not None:
-        return request.execute(http=new_http)
-    return request.execute()
+        http_instance = httplib2.Http()
+        new_http = AuthorizedHttp(credentials, http=http_instance)
+    try:
+        if new_http is not None:
+            return request.execute(http=new_http)
+        return request.execute()
+    finally:
+        if http_instance is not None:
+            http_instance.close()
 
 
 async def execute_google_request(request: Any) -> Any:

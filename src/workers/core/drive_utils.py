@@ -33,20 +33,22 @@ def get_drive_service():
             creds.refresh(Request())
         else:
             # Validate credentials.json exists and is readable before attempting OAuth flow
-            try:
-                if not os.path.exists("credentials.json"):
-                    raise FileNotFoundError("credentials.json not found")
-                if not os.access("credentials.json", os.R_OK):
-                    raise PermissionError("credentials.json is not readable")
-                # Try to parse JSON to catch malformed files early
-                with open("credentials.json", "r") as f:
-                    json.load(f)
-            except FileNotFoundError:
-                error_msg = "credentials.json not found or unreadable — please provide OAuth client secrets"
+            if not os.path.exists("credentials.json"):
+                error_msg = "credentials.json not found — please provide OAuth client secrets"
                 logger.error(error_msg)
                 raise FileNotFoundError(error_msg)
-            except (json.JSONDecodeError, PermissionError) as e:
-                error_msg = f"credentials.json is malformed or unreadable — please provide valid OAuth client secrets: {e}"
+            
+            if not os.access("credentials.json", os.R_OK):
+                error_msg = "credentials.json is not readable — please provide OAuth client secrets"
+                logger.error(error_msg)
+                raise PermissionError(error_msg)
+            
+            # Try to parse JSON to catch malformed files early
+            try:
+                with open("credentials.json", "r") as f:
+                    json.load(f)
+            except json.JSONDecodeError as e:
+                error_msg = f"credentials.json is malformed — please provide valid OAuth client secrets: {e}"
                 logger.error(error_msg)
                 raise ValueError(error_msg)
             except Exception as e:
@@ -138,13 +140,6 @@ def list_files_in_folder(drive_folder_id, service=None, max_retries=3, retry_del
                     f"(page_token: {page_token}, attempt: {attempt}): {e}"
                 )
                 raise
-        
-        if response is None:
-            # Exhausted retries without a response; raise to signal explicit failure
-            logger.error(f"Failed to get response for folder {drive_folder_id} after {max_retries} attempts")
-            raise RuntimeError(
-                f"Failed to list files for folder {drive_folder_id} after {max_retries} retries"
-            )
         
         # Process response
         for file in response.get('files', []):

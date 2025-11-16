@@ -41,8 +41,11 @@ def detect_extensions_in_dir(directory: str, fallback: Optional[List[str]] = Non
     if fallback is None:
         fallback = ['.webp', '.jpg', '.png', '.avif']
     
+    # Sort fallback once for consistent ordering across all return paths
+    sorted_fallback = sorted(fallback)
+    
     if not os.path.exists(directory) or not os.path.isdir(directory):
-        return fallback
+        return sorted_fallback
     
     extensions = set()
     try:
@@ -53,10 +56,10 @@ def detect_extensions_in_dir(directory: str, fallback: Optional[List[str]] = Non
                     extensions.add(ext.lower())
     except (OSError, PermissionError):
         # If we can't read the directory, return fallback
-        return fallback
+        return sorted_fallback
     
     if not extensions:
-        return fallback
+        return sorted_fallback
     
     # Return as sorted list for consistency
     return sorted(list(extensions))

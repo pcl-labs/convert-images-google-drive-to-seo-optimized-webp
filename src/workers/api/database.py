@@ -11,6 +11,7 @@ import logging
 import os
 import asyncio
 import sqlite3
+import random
 
 from .config import settings
 from .models import JobStatus, JobStatusEnum, JobProgress
@@ -56,7 +57,7 @@ class Database:
             if os.path.exists(schema_path):
                 with open(schema_path, "r", encoding="utf-8") as f:
                     sql = f.read()
-                conn = sqlite3.connect(self._sqlite_path, timeout=30, isolation_level=None)
+                conn = sqlite3.connect(self._sqlite_path, timeout=30, isolation_level='DEFERRED')
                 try:
                     conn.row_factory = sqlite3.Row
                     conn.executescript(sql)
@@ -72,7 +73,7 @@ class Database:
         """Create a new short-lived SQLite connection for each operation."""
         if not self._sqlite_path:
             raise DatabaseError("Database not initialized")
-        conn = sqlite3.connect(self._sqlite_path, timeout=30, isolation_level=None)
+        conn = sqlite3.connect(self._sqlite_path, timeout=30, isolation_level='DEFERRED')
         conn.row_factory = sqlite3.Row
         return conn
 
@@ -249,8 +250,9 @@ class Database:
                 """
             )
         except Exception as e:
-            # Log but do not fail startup; features may be degraded until migration applied
-            logger.warning(f"Phase 1 schema ensure failed: {e}")
+            # Log full exception details and fail startup to alert operators
+            logger.error("Phase 1 schema ensure failed", exc_info=True)
+            raise
 
     # Retention helper: delete step_invocations older than max_age_hours (default 48h)
     async def cleanup_old_step_invocations(self, max_age_hours: int = 48) -> int:
@@ -261,15 +263,20 @@ class Database:
             max_age_hours = 48
         query = "DELETE FROM step_invocations WHERE created_at < datetime('now', ?)"
         cutoff_param = f"-{int(max_age_hours)} hours"
-        # execute() returns first row, so use batch with single statement to get an ack, then count via changes().
-        # For SQLite, we can fetch changes using a small helper.
+        # Execute DELETE first and get affected rows from execution result to avoid race conditions.
+        # For SQLite, we can fetch changes using cursor.rowcount.
         if self.db and hasattr(self.db, "prepare"):
-            # D1 path: estimate deletions with a COUNT beforehand, then delete
-            count_query = "SELECT COUNT(*) as cnt FROM step_invocations WHERE created_at < datetime('now', ?)"
-            count_result = await self.execute(count_query, (cutoff_param,))
-            count = dict(count_result).get("cnt", 0) if count_result else 0
-            await self.execute(query, (cutoff_param,))
-            return int(count)
+            # D1 path: execute DELETE and get affected rows from changes count
+            try:
+                result = await self.db.prepare(query).bind(cutoff_param).run()
+                # D1's run() returns result with changes property indicating affected rows
+                changes = result.changes if hasattr(result, 'changes') else (
+                    result.meta.changes if hasattr(result, 'meta') and hasattr(result.meta, 'changes') else 0
+                )
+                return int(changes) if changes is not None else 0
+            except Exception as e:
+                logger.error(f"Cleanup old step_invocations failed (D1): {e}")
+                return 0
         try:
             def _delete_and_count():
                 conn = self._get_sqlite_connection()
@@ -277,7 +284,8 @@ class Database:
                     cur = conn.cursor()
                     cur.execute(query, (cutoff_param,))
                     deleted = cur.rowcount if cur.rowcount is not None else 0
-                    if not conn.in_transaction:
+                    # Commit if we're in a transaction (DML operations start transactions automatically)
+                    if conn.in_transaction:
                         conn.commit()
                     return deleted
                 finally:
@@ -320,7 +328,8 @@ class Database:
                 try:
                     cur = conn.execute(query, params)
                     row = cur.fetchone()
-                    if not conn.in_transaction:
+                    # Commit if we're in a transaction (DML operations start transactions automatically)
+                    if conn.in_transaction:
                         conn.commit()
                     return row
                 finally:
@@ -663,15 +672,14 @@ async def get_user_by_api_key(db: Database, api_key: str) -> Optional[Dict[str, 
     if legacy_record:
         return legacy_record
     
-    # For PBKDF2 keys, we need to check all keys
-    # This is less efficient but necessary without a key_id prefix
-    # In production at scale, consider adding a key_id prefix to API keys
-    all_keys = await get_all_api_key_records(db)
+    # For PBKDF2 keys, use targeted lookup via lookup_hash to avoid O(n) full scan
+    # Compute lookup_hash using the same logic as when keys are stored
+    lookup_hash = hashlib.sha256(api_key.encode()).hexdigest()[:18]  # 9 bytes hex prefix
+    candidates = await get_api_key_candidates_by_lookup_hash(db, lookup_hash)
     
-    # Return all PBKDF2 records for verification in auth.py
-    # The caller will verify each one
+    # Filter candidates for PBKDF2 fields (salt and iterations)
     pbkdf2_records = [
-        key_record for key_record in all_keys
+        key_record for key_record in candidates
         if key_record.get('salt') is not None and key_record.get('iterations') is not None
     ]
     
@@ -689,8 +697,14 @@ def _decrypt_google_token_row(row: Optional[Dict[str, Any]]) -> Optional[Dict[st
         if decoded.get(field):
             try:
                 decoded[field] = decrypt(decoded[field])
-            except Exception:
-                pass
+            except Exception as e:
+                # Log decryption failure with context and return None to prevent processing partial data
+                logger.error(
+                    f"Failed to decrypt {field} for user_id={decoded.get('user_id')}, "
+                    f"integration={decoded.get('integration')}",
+                    exc_info=True
+                )
+                return None
     return decoded
 
 
@@ -1172,6 +1186,27 @@ async def update_document(
     await db.execute(query, tuple(params))
 
 
+def _is_unique_constraint_violation(error: Exception) -> bool:
+    """Check if an exception represents a UNIQUE constraint violation.
+    
+    Handles both SQLite and D1 error formats:
+    - SQLite: "UNIQUE constraint failed: document_versions.document_id, document_versions.version"
+    - D1: May have different formatting but should contain UNIQUE constraint info
+    """
+    error_str = str(error).upper()
+    # Check for UNIQUE constraint patterns
+    has_unique = "UNIQUE" in error_str
+    has_constraint = "CONSTRAINT" in error_str or "FAILED" in error_str
+    # Also check for the specific index name
+    has_index_name = "UNIQUE_DOCUMENT_VERSION" in error_str or "DOCUMENT_VERSIONS" in error_str
+    
+    return (
+        (has_unique and has_constraint) or
+        (isinstance(error, sqlite3.IntegrityError) and has_unique) or
+        has_index_name
+    )
+
+
 async def create_document_version(
     db: Database,
     document_id: str,
@@ -1185,36 +1220,75 @@ async def create_document_version(
     sections: List[Dict[str, Any]],
     assets: Dict[str, Any],
 ) -> Dict[str, Any]:
-    """Create immutable document version snapshot."""
-    version_id = str(uuid.uuid4())
-    result = await db.execute(
-        """
-        INSERT INTO document_versions (
-            version_id, document_id, user_id, version, content_format, frontmatter,
-            body_mdx, body_html, outline, chapters, sections, assets
-        ) VALUES (
-            ?, ?, ?,
-            COALESCE((SELECT MAX(version) FROM document_versions WHERE document_id = ?), 0) + 1,
-            ?, ?, ?, ?, ?, ?, ?, ?
-        )
-        RETURNING *
-        """,
-        (
-            version_id,
-            document_id,
-            user_id,
-            document_id,
-            content_format,
-            json.dumps(frontmatter or {}),
-            body_mdx,
-            body_html,
-            json.dumps(outline or []),
-            json.dumps(chapters or []),
-            json.dumps(sections or []),
-            json.dumps(assets or {}),
-        ),
-    )
-    return dict(result) if result else {}
+    """Create immutable document version snapshot.
+    
+    Handles race conditions in version number assignment by retrying on UNIQUE constraint violations.
+    Uses exponential backoff with jitter to avoid thundering herd problems.
+    """
+    max_retries = 5
+    base_delay = 0.01  # 10ms base delay
+    
+    for attempt in range(max_retries):
+        version_id = str(uuid.uuid4())
+        try:
+            result = await db.execute(
+                """
+                INSERT INTO document_versions (
+                    version_id, document_id, user_id, version, content_format, frontmatter,
+                    body_mdx, body_html, outline, chapters, sections, assets
+                ) VALUES (
+                    ?, ?, ?,
+                    COALESCE((SELECT MAX(version) FROM document_versions WHERE document_id = ?), 0) + 1,
+                    ?, ?, ?, ?, ?, ?, ?, ?
+                )
+                RETURNING *
+                """,
+                (
+                    version_id,
+                    document_id,
+                    user_id,
+                    document_id,
+                    content_format,
+                    json.dumps(frontmatter or {}),
+                    body_mdx,
+                    body_html,
+                    json.dumps(outline or []),
+                    json.dumps(chapters or []),
+                    json.dumps(sections or []),
+                    json.dumps(assets or {}),
+                ),
+            )
+            return dict(result) if result else {}
+        except DatabaseError as e:
+            # Check if this is a UNIQUE constraint violation (race condition)
+            if _is_unique_constraint_violation(e) and attempt < max_retries - 1:
+                # Exponential backoff with jitter: base_delay * 2^attempt + random(0, base_delay)
+                delay = base_delay * (2 ** attempt) + random.uniform(0, base_delay)
+                logger.warning(
+                    f"Version number collision detected for document_id={document_id}, "
+                    f"retrying (attempt {attempt + 1}/{max_retries}) after {delay:.3f}s",
+                    exc_info=True
+                )
+                await asyncio.sleep(delay)
+                continue
+            # Not a constraint violation or max retries reached - re-raise
+            raise
+        except Exception as e:
+            # Check for constraint violations in unwrapped exceptions (e.g., from SQLite)
+            if _is_unique_constraint_violation(e) and attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt) + random.uniform(0, base_delay)
+                logger.warning(
+                    f"Version number collision detected for document_id={document_id}, "
+                    f"retrying (attempt {attempt + 1}/{max_retries}) after {delay:.3f}s",
+                    exc_info=True
+                )
+                await asyncio.sleep(delay)
+                continue
+            # Unexpected error - re-raise
+            raise
+    
+    # Should not reach here, but handle gracefully
+    raise DatabaseError(f"Failed to create document version after {max_retries} attempts")
 
 
 async def list_document_versions(
@@ -1563,7 +1637,7 @@ async def record_usage_event(
     await db.execute(
         "INSERT INTO usage_events (id, user_id, job_id, event_type, metrics, created_at) VALUES (?, ?, ?, ?, ?, datetime('now'))",
         (
-            f"{job_id}:{event_type}:{datetime.now(timezone.utc).isoformat()}",
+            f"{job_id}:{event_type}:{datetime.now(timezone.utc).isoformat()}:{uuid.uuid4()}",
             user_id,
             job_id,
             event_type,

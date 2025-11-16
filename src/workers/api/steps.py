@@ -22,10 +22,10 @@ from .database import (
     save_step_invocation,
 )
 from .google_oauth import build_youtube_service_for_user, build_docs_service_for_user, build_drive_service_for_user
-from core.youtube_api import fetch_video_metadata, YouTubeAPIError
-from core.youtube_captions import fetch_captions_text, YouTubeCaptionsError
-from core.ai_modules import generate_outline, organize_chapters, compose_blog, default_title_from_outline
-from core.google_async import execute_google_request
+from src.workers.core.youtube_api import fetch_video_metadata, YouTubeAPIError
+from src.workers.core.youtube_captions import fetch_captions_text
+from src.workers.core.ai_modules import generate_outline, organize_chapters, compose_blog, default_title_from_outline
+from src.workers.core.google_async import execute_google_request
 from .app_logging import get_logger
 from googleapiclient.errors import HttpError  # type: ignore
 
@@ -170,10 +170,10 @@ async def _sync_drive_doc_after_persist(
     except Exception:
         logger.exception("drive_docs_get_failed", extra={"drive_file_id": drive_file_id, "document_id": document.get("document_id")})
         end_index = len(new_text) + 1
-    requests = [
-        {"deleteContentRange": {"range": {"startIndex": 1, "endIndex": max(1, end_index)}}},
-        {"insertText": {"location": {"index": 1}, "text": new_text}},
-    ]
+    requests = []
+    if end_index > 1:
+        requests.append({"deleteContentRange": {"range": {"startIndex": 1, "endIndex": end_index}}})
+    requests.append({"insertText": {"location": {"index": 1}, "text": new_text}})
     try:
         await execute_google_request(
             docs_service.documents().batchUpdate(documentId=drive_file_id, body={"requests": requests})
@@ -231,14 +231,18 @@ async def transcript_fetch(request: Request, payload: TranscriptFetchRequest, us
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
 
     # Captions text via official API
-    try:
-        cap = await asyncio.to_thread(fetch_captions_text, yt_service, payload.video_id, langs)
-    except YouTubeCaptionsError as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    cap = await asyncio.to_thread(fetch_captions_text, yt_service, payload.video_id, langs)
     if not cap.get("success"):
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=cap.get("error") or "Captions unavailable")
 
     text = cap.get("text") or ""
+    # Extract duration from authoritative API metadata bundle (available for both branches)
+    duration_out = None
+    try:
+        youtube_meta = meta_bundle.get("metadata") or {}
+        duration_out = youtube_meta.get("duration_seconds")
+    except Exception:
+        duration_out = None
     if payload.document_id:
         doc = await _load_document_text(db, user["user_id"], payload.document_id)
         existing_meta_raw = doc.get("metadata")
@@ -247,12 +251,6 @@ async def transcript_fetch(request: Request, payload: TranscriptFetchRequest, us
         except Exception:
             existing_meta = {}
         # Prefer authoritative API duration from the metadata bundle.
-        duration_out = None
-        try:
-            youtube_meta = meta_bundle.get("metadata") or {}
-            duration_out = youtube_meta.get("duration_seconds")
-        except Exception:
-            duration_out = None
         new_meta = {
             **(existing_meta or {}),
             "source": "youtube",
@@ -369,6 +367,7 @@ async def blog_compose(request: Request, payload: BlogComposeRequest, user: dict
 
     outline = payload.outline or []
     chapters = payload.chapters
+    doc = None
     if payload.document_id and not (outline or chapters):
         doc = await _load_document_text(db, user["user_id"], payload.document_id)
         text = doc.get("raw_text") or ""
@@ -382,7 +381,8 @@ async def blog_compose(request: Request, payload: BlogComposeRequest, user: dict
     composed = await asyncio.to_thread(compose_blog, chapters, tone=payload.tone)
     if payload.document_id:
         # Merge metadata to avoid dropping existing fields
-        doc = await _load_document_text(db, user["user_id"], payload.document_id)
+        if doc is None:
+            doc = await _load_document_text(db, user["user_id"], payload.document_id)
         existing_meta_raw = doc.get("metadata")
         try:
             existing_meta = json.loads(existing_meta_raw) if isinstance(existing_meta_raw, str) else (existing_meta_raw or {})
@@ -432,11 +432,7 @@ async def document_persist(request: Request, payload: DocumentPersistRequest, us
         updates["metadata"] = payload.metadata
     if updates:
         await update_document(db, payload.document_id, updates)
-        updated_doc = dict(document)
-        if "metadata" in updates:
-            updated_doc["metadata"] = updates["metadata"]
-        if "raw_text" in updates:
-            updated_doc["raw_text"] = updates["raw_text"]
+        updated_doc = await _load_document_text(db, user["user_id"], payload.document_id)
         await _sync_drive_doc_after_persist(db, user["user_id"], updated_doc, updates)
     response_body = {"document_id": payload.document_id, "updated": list(updates.keys())}
     if payload.job_id:

@@ -7,6 +7,7 @@ import logging
 from PIL import Image
 import io
 import json
+import time
 import pillow_heif
 from .constants import PORTRAIT_SIZE, LANDSCAPE_SIZE, DEFAULT_MAX_SIZE_KB
 
@@ -35,10 +36,20 @@ def _save_as_webp_under_size(img, max_size_kb, start_quality=80, min_quality=10,
 
 def resize_image(input_path, output_path, target_size):
     """Resize image to target_size and save to output_path."""
+    # Detect format from output_path extension
+    output_ext = os.path.splitext(output_path)[1].lower()
+    if output_ext in ('.jpg', '.jpeg'):
+        detected_format = 'JPEG'
+    elif output_ext == '.png':
+        detected_format = 'PNG'
+    else:
+        # Default to JPEG since image is converted to RGB
+        detected_format = 'JPEG'
+    
     with Image.open(input_path) as img:
         img = img.convert('RGB')
-        img = img.resize(target_size, Image.LANCZOS)
-        img.save(output_path)
+        img = img.resize(target_size, Image.Resampling.LANCZOS)
+        img.save(output_path, format=detected_format)
 
 
 def compress_and_convert_to_webp(input_path, output_path, max_size_kb=DEFAULT_MAX_SIZE_KB, quality=80):
@@ -99,8 +110,10 @@ def process_image(input_path, output_dir, overwrite=False, skip_existing=False, 
             return output_path, 'skipped'
         if not overwrite and versioned:
             # Find next available versioned filename
+            max_attempts = 1000
+            attempts = 0
             v = 2
-            while True:
+            while attempts < max_attempts:
                 if seo_prefix:
                     versioned_name = f"{seo_prefix}-{name}_v{v}.webp"
                 else:
@@ -110,6 +123,16 @@ def process_image(input_path, output_dir, overwrite=False, skip_existing=False, 
                     output_path = versioned_path
                     break
                 v += 1
+                attempts += 1
+            else:
+                # Fall back to timestamp-based unique name if max attempts exceeded
+                timestamp = int(time.time())
+                if seo_prefix:
+                    fallback_name = f"{seo_prefix}-{name}_{timestamp}.webp"
+                else:
+                    fallback_name = f"{name}_{timestamp}.webp"
+                output_path = os.path.join(output_dir, fallback_name)
+                logger.warning(f"Max version attempts ({max_attempts}) exceeded for {name}, using timestamp fallback: {fallback_name}")
         elif not overwrite:
             logger.info(f"Skipping (exists, no overwrite): {output_path}")
             return output_path, 'skipped'
@@ -121,23 +144,22 @@ def process_image(input_path, output_dir, overwrite=False, skip_existing=False, 
             target_size = PORTRAIT_SIZE
         else:
             target_size = LANDSCAPE_SIZE
-        resized = img.resize(target_size, Image.LANCZOS)
+        resized = img.resize(target_size, Image.Resampling.LANCZOS)
         data, size_kb = _save_as_webp_under_size(resized, max_size_kb, start_quality=80, min_quality=10, step=5)
         with open(output_path, 'wb') as f:
             f.write(data)
+        # Determine status and log appropriate message
         if size_kb <= max_size_kb:
+            status = 'ok'
             logger.info(f"Optimized: {output_path} ({int(size_kb)} KB)")
-            alt_text = extract_alt_text(base)
-            try:
-                update_alt_text_map(os.path.basename(output_path), alt_text, alt_text_map_path)
-            except Exception as e:
-                logger.error(f"Failed to update alt text map for {output_path}: {e}")
-            return output_path, 'ok'
-        logger.info(f"Saved at lowest quality: {output_path}")
+        else:
+            status = 'low_quality'
+            logger.info(f"Saved at lowest quality: {output_path}")
+        # Extract alt text and update map once
         alt_text = extract_alt_text(base)
         try:
             update_alt_text_map(os.path.basename(output_path), alt_text, alt_text_map_path)
         except Exception as e:
             logger.error(f"Failed to update alt text map for {output_path}: {e}")
-    return output_path, 'low_quality'
+        return output_path, status
  

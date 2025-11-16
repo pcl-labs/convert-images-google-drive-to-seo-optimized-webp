@@ -103,8 +103,10 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         user_id = getattr(request.state, "user_id", None)
         if user_id:
             return f"user:{user_id}"
-        # Fall back to IP address
-        return f"ip:{request.client.host if request.client else 'unknown'}"
+        # Require valid client info for rate limiting
+        if not request.client or not request.client.host:
+            return "ip:unknown"
+        return f"ip:{request.client.host}"
     
     def _is_rate_limited(self, client_id: str) -> bool:
         """Check if client is rate limited (thread-safe)."""
@@ -195,22 +197,43 @@ class CORSMiddleware(BaseHTTPMiddleware):
     
     async def dispatch(self, request: Request, call_next: Callable):
         origin = request.headers.get("Origin")
-        allowed = origin and (origin in self.allow_origins or "*" in self.allow_origins)
+        
+        # Determine if origin is allowed and what header value to use
+        allowed = False
+        allow_origin_value = None
+        
+        if origin:
+            # Check if origin is explicitly in the allowed list (excluding "*")
+            explicit_origins = [o for o in self.allow_origins if o != "*"]
+            if origin in explicit_origins:
+                # Origin is explicitly allowed - use it
+                allowed = True
+                allow_origin_value = origin
+            elif "*" in self.allow_origins:
+                # Wildcard is configured
+                if not self.allow_credentials:
+                    # Safe to use wildcard when credentials are disabled
+                    allowed = True
+                    allow_origin_value = "*"
+                # If credentials are enabled and "*" is present, only allow explicit origins
+                # (already handled above, so allowed remains False)
         
         if request.method == "OPTIONS":
             response = Response()
             if allowed:
-                response.headers["Access-Control-Allow-Origin"] = origin
+                response.headers["Access-Control-Allow-Origin"] = allow_origin_value
                 response.headers["Access-Control-Allow-Methods"] = ", ".join(self.allow_methods) if isinstance(self.allow_methods, list) else self.allow_methods
                 response.headers["Access-Control-Allow-Headers"] = ", ".join(self.allow_headers) if isinstance(self.allow_headers, list) else self.allow_headers
-                if self.allow_credentials:
+                # Only set credentials when origin is explicitly allowed (not when using "*")
+                if self.allow_credentials and allow_origin_value != "*":
                     response.headers["Access-Control-Allow-Credentials"] = "true"
             return response
         
         response = await call_next(request)
         if allowed:
-            response.headers["Access-Control-Allow-Origin"] = origin
-            if self.allow_credentials:
+            response.headers["Access-Control-Allow-Origin"] = allow_origin_value
+            # Only set credentials when origin is explicitly allowed (not when using "*")
+            if self.allow_credentials and allow_origin_value != "*":
                 response.headers["Access-Control-Allow-Credentials"] = "true"
             response.headers["Access-Control-Allow-Headers"] = ", ".join(self.allow_headers) if isinstance(self.allow_headers, list) else self.allow_headers
             response.headers["Access-Control-Allow-Methods"] = ", ".join(self.allow_methods) if isinstance(self.allow_methods, list) else self.allow_methods

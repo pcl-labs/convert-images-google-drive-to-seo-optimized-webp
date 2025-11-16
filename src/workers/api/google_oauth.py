@@ -14,7 +14,7 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 
-from core.constants import GOOGLE_INTEGRATION_SCOPES
+from src.workers.core.constants import GOOGLE_INTEGRATION_SCOPES
 
 from .config import settings
 from .database import (
@@ -72,7 +72,7 @@ def get_google_oauth_url(state: str, redirect_uri: str, *, integration: str) -> 
     flow.redirect_uri = redirect_uri
     auth_url, _ = flow.authorization_url(
         access_type="offline",
-        include_granted_scopes="false",  # Don't include previously granted scopes to avoid scope conflicts
+        include_granted_scopes=False,  # Don't include previously granted scopes to avoid scope conflicts
         state=state,
         prompt="consent",  # Always show consent screen to ensure correct scopes
     )
@@ -133,17 +133,16 @@ async def exchange_google_code(
                 logger.exception("Failed to parse Google token JSON: %s", e)
                 raise ValueError("Invalid response format from Google OAuth service") from e
     except httpx.HTTPStatusError as e:
-        logger.exception(
-            "HTTP error during Google token exchange: %s %s",
+        logger.error(
+            "HTTP error during Google token exchange: status=%s",
             e.response.status_code,
-            e.response.text,
         )
         raise ValueError(f"Failed to exchange Google code: HTTP {e.response.status_code}") from e
     except httpx.RequestError as e:
-        logger.exception("Network error during Google token exchange: %s", e)
+        logger.error("Network error during Google token exchange: %s", type(e).__name__)
         raise ValueError("Failed to connect to Google OAuth service") from e
     except Exception as e:
-        logger.exception("Unexpected error during Google token exchange: %s", e)
+        logger.error("Unexpected error during Google token exchange: %s", type(e).__name__)
         raise
     
     # Create credentials from manually obtained token

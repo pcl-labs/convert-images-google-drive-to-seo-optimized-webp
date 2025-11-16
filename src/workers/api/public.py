@@ -189,12 +189,12 @@ async def google_login_start_post(request: Request, csrf_token: str = Form(...))
 
 @router.get("/auth/github/callback", tags=["Authentication"])
 async def github_callback(code: str, state: str, request: Request):
-    db = ensure_db()
-
     stored_state = request.cookies.get(COOKIE_OAUTH_STATE)
     if not stored_state or not secrets.compare_digest(stored_state, state):
         logger.warning("OAuth state verification failed - possible CSRF attack")
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid state parameter - possible CSRF attack")
+
+    db = ensure_db()
 
     try:
         jwt_token, user = await authenticate_github(db, code)
@@ -227,12 +227,12 @@ async def github_callback(code: str, state: str, request: Request):
 
 @router.get("/auth/google/login/callback", tags=["Authentication"])
 async def google_login_callback(code: str, state: str, request: Request):
-    db = ensure_db()
-
     stored_state = request.cookies.get(COOKIE_GOOGLE_OAUTH_STATE)
     if not stored_state or not secrets.compare_digest(stored_state, state):
         logger.warning("Google login state verification failed - possible CSRF attack")
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid state parameter - possible CSRF attack")
+
+    db = ensure_db()
 
     try:
         redirect_uri = _google_login_redirect_uri(request)
