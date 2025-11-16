@@ -379,13 +379,14 @@ async def get_google_user_info(access_token: str) -> Dict[str, Any]:
 async def _verify_google_id_token(id_token_value: str) -> Dict[str, Any]:
     """Verify Google ID token asynchronously."""
     try:
-        request = google_requests.Request()
-        return await asyncio.to_thread(
-            google_id_token.verify_oauth2_token,
-            id_token_value,
-            request,
-            settings.google_client_id,
-        )
+        def _verify():
+            req = google_requests.Request()
+            return google_id_token.verify_oauth2_token(
+                id_token_value,
+                req,
+                settings.google_client_id,
+            )
+        return await asyncio.to_thread(_verify)
     except Exception as exc:
         logger.error("Google ID token verification failed: %s", exc)
         raise AuthenticationError("Failed to verify Google ID token") from exc
@@ -410,7 +411,7 @@ async def authenticate_google(
     google_id = str(raw_google_id)
 
     email: Optional[str] = None
-    if id_info.get("email") and (id_info.get("email_verified") is True or id_info.get("email_verified") is None):
+    if id_info.get("email") and (id_info.get("email_verified") is True):
         email = id_info.get("email")
 
     access_token = token_data.get("access_token")
@@ -418,7 +419,7 @@ async def authenticate_google(
         try:
             userinfo = await get_google_user_info(access_token)
             email_candidate = userinfo.get("email")
-            if email_candidate and (userinfo.get("email_verified") is True or userinfo.get("email_verified") is None):
+            if email_candidate and (userinfo.get("email_verified") is True):
                 email = email_candidate
         except AuthenticationError:
             # Continue with fallback email handling below
@@ -451,7 +452,6 @@ async def authenticate_google(
     if not user:
         raise AuthenticationError("Failed to resolve Google user account")
 
-    user_id = user.get("user_id")
     jwt_token = generate_jwt_token(
         user_id,
         user.get("github_id"),

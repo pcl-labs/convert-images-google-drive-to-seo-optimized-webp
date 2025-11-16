@@ -141,6 +141,23 @@ GOOGLE_SCOPE_LABELS = {
 }
 
 
+def _github_info_for(user: dict, stored_user: dict | None) -> dict:
+    return {
+        "github_id": user.get("github_id") or ((stored_user or {}).get("github_id")),
+        "email": user.get("email") or ((stored_user or {}).get("email")),
+        "created_at": (stored_user or {}).get("created_at"),
+    }
+
+
+def _services_meta_filtered() -> dict:
+    # Only show Drive and YouTube in Integrations UI (auth providers live on Account page)
+    return {k: v for k, v in SERVICES_META.items() if k in {"drive", "youtube"}}
+
+
+def _filter_integrations_map(integrations: dict) -> dict:
+    return {k: v for k, v in integrations.items() if k in {"drive", "youtube"}}
+
+
 def _scope_names(scopes: list[str]) -> list[str]:
     return [GOOGLE_SCOPE_LABELS.get(scope, scope) for scope in scopes]
 
@@ -997,15 +1014,10 @@ async def integrations_page(request: Request, user: dict = Depends(get_current_u
     db = ensure_db()
     tokens = await list_google_tokens(db, user["user_id"])  # type: ignore
     stored_user = await get_user_by_id(db, user["user_id"])  # type: ignore
-    github_info = {
-        "github_id": user.get("github_id") or (stored_user.get("github_id") if stored_user else None),
-        "email": user.get("email") or (stored_user.get("email") if stored_user else None),
-        "created_at": stored_user.get("created_at") if stored_user else None,
-    }
+    github_info = _github_info_for(user, stored_user)
     integrations = _build_integrations_model(tokens, github_info=github_info)
-    # Only show Drive and YouTube in Integrations UI (auth providers live on Account page)
-    services_meta = {k: v for k, v in SERVICES_META.items() if k in {"drive", "youtube"}}
-    integrations = {k: v for k, v in integrations.items() if k in {"drive", "youtube"}}
+    services_meta = _services_meta_filtered()
+    integrations = _filter_integrations_map(integrations)
     csrf = _get_csrf_token(request)
     context = {"request": request, "user": user, "integrations": integrations, "services_meta": services_meta, "page_title": "Integrations", "csrf_token": csrf}
     resp = templates.TemplateResponse("integrations/index.html", context)
@@ -1029,10 +1041,10 @@ async def integrations_drive_disconnect(request: Request, csrf_token: str = Form
 async def integrations_grid_partial(request: Request, user: dict = Depends(get_current_user)):
     db = ensure_db()
     tokens = await list_google_tokens(db, user["user_id"])  # type: ignore
-    integrations = _build_integrations_model(tokens, github_info=user)
-    # Only show Drive and YouTube in Integrations UI (auth providers live on Account page)
-    services_meta = {k: v for k, v in SERVICES_META.items() if k in {"drive", "youtube"}}
-    integrations = {k: v for k, v in integrations.items() if k in {"drive", "youtube"}}
+    github_info = _github_info_for(user, None)
+    integrations = _build_integrations_model(tokens, github_info=github_info)
+    services_meta = _services_meta_filtered()
+    integrations = _filter_integrations_map(integrations)
     csrf = _get_csrf_token(request)
     return templates.TemplateResponse("integrations/partials/grid.html", {"request": request, "integrations": integrations, "services_meta": services_meta, "csrf_token": csrf})
 
