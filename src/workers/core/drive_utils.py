@@ -6,6 +6,8 @@ import json
 import logging
 import os
 import re
+import tempfile
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, Optional, Set, Tuple
@@ -21,6 +23,9 @@ logger = logging.getLogger(__name__)
 TOKEN_FILE = Path("token.json")
 TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
 
+# Thread lock for synchronizing token file access
+_token_lock = threading.Lock()
+
 
 def _parse_iso(value: Optional[str]) -> Optional[datetime]:
     if not value:
@@ -32,6 +37,7 @@ def _parse_iso(value: Optional[str]) -> Optional[datetime]:
 
 
 def _load_local_token() -> Dict[str, str]:
+    """Load token from file. Caller must hold _token_lock."""
     if not TOKEN_FILE.exists():
         raise RuntimeError(
             "token.json not found. Link your Google Drive account via the web UI or copy an access token."
@@ -43,6 +49,10 @@ def _load_local_token() -> Dict[str, str]:
 
 
 def _refresh_local_token(token_info: Dict[str, str]) -> Dict[str, str]:
+    """Refresh token with thread-safe, atomic file writes and proper permissions.
+    
+    Caller must hold _token_lock for the file write operation.
+    """
     refresh_token = token_info.get("refresh_token")
     client_id = token_info.get("client_id")
     client_secret = token_info.get("client_secret")
@@ -63,7 +73,13 @@ def _refresh_local_token(token_info: Dict[str, str]) -> Dict[str, str]:
         except RequestError as exc:
             raise RuntimeError("Failed to reach Google token endpoint") from exc
         data = response.json()
-    token_info["token"] = data.get("access_token") or data.get("token")
+    
+    # Google OAuth2 token endpoint returns "access_token" (not "token")
+    # The fallback to "token" is kept for backward compatibility with existing token files
+    access_token = data.get("access_token") or data.get("token")
+    if not access_token:
+        raise RuntimeError("Token refresh response missing access_token")
+    token_info["token"] = access_token
     expires_in = data.get("expires_in")
     expiry = None
     try:
@@ -73,26 +89,47 @@ def _refresh_local_token(token_info: Dict[str, str]) -> Dict[str, str]:
         expiry = None
     token_info["expiry"] = expiry.isoformat().replace("+00:00", "Z") if expiry else None
     token_info.setdefault("token_type", data.get("token_type", "Bearer"))
-    TOKEN_FILE.write_text(json.dumps(token_info, indent=2))
+    
+    # Atomic write with proper permissions (0o600 = owner read/write only)
+    # Note: When called from get_drive_service(), _token_lock is already held.
+    # The write is atomic via tempfile + os.replace, ensuring no corruption on interruption.
+    token_json = json.dumps(token_info, indent=2)
+    token_bytes = token_json.encode("utf-8")
+    temp_fd, temp_path = tempfile.mkstemp(dir=TOKEN_FILE.parent, text=False)
+    try:
+        os.write(temp_fd, token_bytes)
+        os.close(temp_fd)
+        os.chmod(temp_path, 0o600)  # Restrict to owner only
+        os.replace(temp_path, TOKEN_FILE)
+    except Exception:
+        try:
+            os.unlink(temp_path)
+        except Exception:
+            pass
+        raise
+    
     return token_info
 
 
 def get_drive_service() -> GoogleDriveClient:
-    token_info = _load_local_token()
-    expiry = _parse_iso(token_info.get("expiry"))
-    if expiry and expiry <= datetime.now(timezone.utc) + timedelta(seconds=60):
-        token_info = _refresh_local_token(token_info)
+    """Get Drive service with thread-safe token loading and refresh."""
+    # Use lock to prevent concurrent refresh attempts
+    with _token_lock:
+        token_info = _load_local_token()
         expiry = _parse_iso(token_info.get("expiry"))
-    access_token = token_info.get("access_token") or token_info.get("token")
-    if not access_token:
-        raise RuntimeError("token.json is missing access_token")
-    token = OAuthToken(
-        access_token=access_token,
-        refresh_token=token_info.get("refresh_token"),
-        expiry=expiry,
-        token_type=token_info.get("token_type", "Bearer"),
-    )
-    return GoogleDriveClient(token)
+        if expiry and expiry <= datetime.now(timezone.utc) + timedelta(seconds=60):
+            token_info = _refresh_local_token(token_info)
+            expiry = _parse_iso(token_info.get("expiry"))
+        access_token = token_info.get("access_token") or token_info.get("token")
+        if not access_token:
+            raise RuntimeError("token.json is missing access_token")
+        token = OAuthToken(
+            access_token=access_token,
+            refresh_token=token_info.get("refresh_token"),
+            expiry=expiry,
+            token_type=token_info.get("token_type", "Bearer"),
+        )
+        return GoogleDriveClient(token)
 
 
 def list_files_in_folder(drive_folder_id: str, service: Optional[GoogleDriveClient] = None) -> Set[str]:
@@ -183,7 +220,7 @@ def download_images(
             )
         except GoogleAPIError as exc:
             logger.error("Failed to list files for download: %s", exc)
-            break
+            raise
         for file_entry in response.get("files", []):
             name = file_entry.get("name")
             file_id = file_entry.get("id")
@@ -228,9 +265,17 @@ def download_images(
     return downloaded, failed
 
 
-def delete_images(drive_folder_id: str, image_ids: list[str], service: Optional[GoogleDriveClient] = None) -> None:
+def delete_images(drive_folder_id: str, image_ids: list[str], service: Optional[GoogleDriveClient] = None) -> Tuple[list[str], list[str]]:
+    """
+    Delete images from Google Drive folder.
+    
+    Returns:
+        Tuple[list[str], list[str]]: (deleted_file_ids, failed_file_ids)
+    """
     service = service or get_drive_service()
     valid_ids = set()
+    deleted: list[str] = []
+    failed: list[str] = []
     page_token = None
     while True:
         try:
@@ -241,7 +286,8 @@ def delete_images(drive_folder_id: str, image_ids: list[str], service: Optional[
             )
         except GoogleAPIError as exc:
             logger.error("Error validating folder %s: %s", drive_folder_id, exc)
-            return
+            # All IDs treated as failed when validation fails
+            return deleted, image_ids
         for file_entry in response.get("files", []):
             file_id = file_entry.get("id")
             if file_id:
@@ -254,8 +300,13 @@ def delete_images(drive_folder_id: str, image_ids: list[str], service: Optional[
         try:
             service.delete_file(file_id)
             logger.info("Deleted file ID: %s", file_id)
+            deleted.append(file_id)
         except GoogleAPIError as exc:
             logger.error("Failed to delete %s: %s", file_id, exc)
+            failed.append(file_id)
+    # Add IDs that weren't in the folder to failed list
+    failed.extend([fid for fid in image_ids if fid not in valid_ids])
+    return deleted, failed
 
 
 def get_folder_name(folder_id: str, service: Optional[GoogleDriveClient] = None) -> Optional[str]:

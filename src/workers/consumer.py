@@ -569,9 +569,13 @@ async def process_optimization_job(
                     original_file_ids.append(file_id)
             
             if original_file_ids:
-                await asyncio.to_thread(delete_images, folder_id, original_file_ids, service)
-                deleted_count = len(original_file_ids)
-                log_step(f"Cleanup finished: deleted {deleted_count} originals")
+                deleted_ids, failed_ids = await asyncio.to_thread(delete_images, folder_id, original_file_ids, service)
+                deleted_count = len(deleted_ids)
+                failed_count = len(failed_ids)
+                if failed_count > 0:
+                    log_step(f"Cleanup finished: deleted {deleted_count} originals, {failed_count} failed")
+                else:
+                    log_step(f"Cleanup finished: deleted {deleted_count} originals")
             else:
                 app_logger.warning(
                     f"No valid file IDs extracted for cleanup from {len(downloaded)} downloaded files",

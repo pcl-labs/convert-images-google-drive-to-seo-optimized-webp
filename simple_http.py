@@ -97,9 +97,25 @@ def request(
             final_url = resp.geturl()
             return SimpleResponse(status, headers_dict, content, final_url)
     except HTTPError as exc:
-        content = exc.read() if exc.fp else b""
-        headers_dict = {k.lower(): v for k, v in exc.headers.items()} if exc.headers else {}
-        response = SimpleResponse(exc.code, headers_dict, content, exc.geturl())
+        # Safely read content, fallback to empty bytes if reading fails
+        try:
+            content = exc.read() if exc.fp else b""
+        except Exception:
+            content = b""
+        
+        # Safely get headers using getattr
+        headers = getattr(exc, "headers", None)
+        headers_dict = {k.lower(): v for k, v in headers.items()} if headers else {}
+        
+        # Safely get URL - try geturl() first, then fallback to url attribute
+        url = getattr(exc, "geturl", lambda: None)()
+        if url is None:
+            url = getattr(exc, "url", None)
+        
+        # Safely get status code
+        status_code = getattr(exc, "code", 500)
+        
+        response = SimpleResponse(status_code, headers_dict, content, url or "")
         raise HTTPStatusError(response) from None
     except URLError as exc:
         raise RequestError(str(exc)) from exc

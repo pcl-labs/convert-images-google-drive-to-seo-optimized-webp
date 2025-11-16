@@ -5,9 +5,6 @@ Sets up required environment variables for testing.
 import os
 import pytest
 
-if "JWT_SECRET_KEY" not in os.environ:
-    os.environ["JWT_SECRET_KEY"] = "test-jwt-secret-key-for-testing-only-not-for-production"
-
 
 @pytest.fixture(scope="session", autouse=True)
 def setup_test_env():
