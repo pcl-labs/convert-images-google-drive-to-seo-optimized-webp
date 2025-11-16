@@ -1,0 +1,84 @@
+<script>
+  (function(){
+    const storageKey = 'theme-preference';
+    const classTarget = document.documentElement;
+    const media = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+    const valid = new Set(['system', 'light', 'dark']);
+
+    function readPreference(){
+      try {
+        return localStorage.getItem(storageKey);
+      } catch (_) {
+        return null;
+      }
+    }
+
+    function writePreference(value){
+      try {
+        localStorage.setItem(storageKey, value);
+      } catch (_) {
+        /* ignore */
+      }
+    }
+
+    function resolveTheme(pref){
+      if(pref === 'dark'){ return 'dark'; }
+      if(pref === 'light'){ return 'light'; }
+      if(media && typeof media.matches === 'boolean'){
+        return media.matches ? 'dark' : 'light';
+      }
+      return 'light';
+    }
+
+    function applyTheme(pref){
+      const resolved = resolveTheme(pref);
+      if(classTarget && classTarget.classList){
+        classTarget.classList.toggle('dark', resolved === 'dark');
+        classTarget.style.colorScheme = resolved;
+      }
+      return resolved;
+    }
+
+    function emit(pref, resolved){
+      window.dispatchEvent(new CustomEvent('theme-change', { detail: { theme: pref, resolved } }));
+    }
+
+    function getPreference(){
+      const stored = readPreference();
+      return valid.has(stored) ? stored : 'system';
+    }
+
+    const initialPref = getPreference();
+    const initialResolved = applyTheme(initialPref);
+    emit(initialPref, initialResolved);
+
+    window.themePreference = {
+      get: getPreference,
+      set(value){
+        const next = valid.has(value) ? value : 'system';
+        writePreference(next);
+        const resolved = applyTheme(next);
+        emit(next, resolved);
+      },
+      apply(theme){
+        const pref = valid.has(theme) ? theme : 'system';
+        return applyTheme(pref);
+      }
+    };
+
+    function handleSystemChange(){
+      if(getPreference() === 'system'){
+        const resolved = applyTheme('system');
+        emit('system', resolved);
+      }
+    }
+
+    if(media){
+      if(typeof media.addEventListener === 'function'){
+        media.addEventListener('change', handleSystemChange);
+      } else if(typeof media.addListener === 'function'){
+        media.addListener(handleSystemChange);
+      }
+    }
+  })();
+</script>
