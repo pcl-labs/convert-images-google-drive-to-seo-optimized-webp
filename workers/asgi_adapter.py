@@ -35,17 +35,29 @@ async def handle_worker_request(app, request, env, ctx):
     """
     url = str(request.url)
     split = urlsplit(url)
+    path = split.path or ""
+    query = split.query or ""
+    headers = await _extract_headers(request)
+    cf_client_ip = None
+    for header_key, header_value in headers:
+        if header_key == b"cf-connecting-ip":
+            cf_client_ip = header_value.decode("latin-1")
+            break
+    client_host = cf_client_ip or getattr(getattr(request, "client", None), "host", "")
+    client_tuple = (client_host, 0)
     scope: Dict[str, Any] = {
         "type": "http",
         "http_version": "1.1",
+        "asgi": {"version": "3.0"},
         "method": request.method,
         "scheme": split.scheme or "https",
-        "path": split.path or "/",
-        "raw_path": split.path.encode("ascii", "ignore"),
-        "query_string": split.query.encode("ascii", "ignore"),
-        "client": (split.hostname or "", 0),
+        "root_path": "",
+        "path": path or "/",
+        "raw_path": path.encode("ascii", "ignore"),
+        "query_string": query.encode("ascii", "ignore"),
+        "client": client_tuple,
         "server": (split.hostname or "", split.port or (443 if split.scheme == "https" else 80)),
-        "headers": await _extract_headers(request),
+        "headers": headers,
     }
 
     body = await _extract_body(request)
