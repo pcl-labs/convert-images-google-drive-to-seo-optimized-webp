@@ -31,6 +31,7 @@ from .database import (
     get_job,
     update_job_status,
     delete_google_tokens,
+    delete_user_account,
     create_notification,
     list_notifications,
     mark_notification_seen,
@@ -304,6 +305,48 @@ def _render_auth_page(request: Request, view_mode: str) -> Response:
     resp = templates.TemplateResponse("auth/login.html", context)
     if not request.cookies.get("csrf_token"):
         is_secure = _is_secure_request(request)
+        resp.set_cookie("csrf_token", csrf, httponly=True, samesite="lax", secure=is_secure)
+    return resp
+
+
+async def _render_account_page(
+    request: Request,
+    user: dict,
+    *,
+    status_code: int = status.HTTP_200_OK,
+    delete_error: Optional[str] = None,
+    delete_value: str = "",
+) -> Response:
+    """Render the Account page with optional deletion error context."""
+
+    csrf = _get_csrf_token(request)
+    db = ensure_db()
+    stored = None
+    try:
+        stored = await get_user_by_id(db, user.get("user_id"))  # type: ignore[arg-type]
+    except Exception:
+        stored = None
+
+    display_user = {
+        "user_id": user.get("user_id"),
+        "github_id": user.get("github_id") or ((stored or {}).get("github_id")),
+        "google_id": user.get("google_id") or ((stored or {}).get("google_id")),
+        "email": user.get("email") or ((stored or {}).get("email")),
+        "created_at": (stored or {}).get("created_at"),
+    }
+
+    context = {
+        "request": request,
+        "user": display_user,
+        "page_title": "Account",
+        "csrf_token": csrf,
+        "delete_error": delete_error,
+        "delete_value": delete_value or "",
+    }
+
+    resp = templates.TemplateResponse("account/index.html", context, status_code=status_code)
+    if not request.cookies.get("csrf_token"):
+        is_secure = settings.environment == "production" or request.url.scheme == "https"
         resp.set_cookie("csrf_token", csrf, httponly=True, samesite="lax", secure=is_secure)
     return resp
 
@@ -1239,23 +1282,47 @@ async def settings_api_key(request: Request, csrf_token: str = Form(...), user: 
 
 @router.get("/dashboard/account", response_class=HTMLResponse)
 async def account_page(request: Request, user: dict = Depends(get_current_user)):
-    csrf = _get_csrf_token(request)
+    return await _render_account_page(request, user)
+
+
+@router.post("/dashboard/account/delete")
+async def delete_account(
+    request: Request,
+    csrf_token: str = Form(...),
+    confirmation: str = Form(...),
+    user: dict = Depends(get_current_user),
+):
+    cookie_token = request.cookies.get("csrf_token")
+    if cookie_token is None or not secrets.compare_digest(str(cookie_token), str(csrf_token)):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
+
+    normalized = confirmation.strip()
+    if normalized.upper() != "DELETE":
+        return await _render_account_page(
+            request,
+            user,
+            status_code=status.HTTP_400_BAD_REQUEST,
+            delete_error="Type DELETE to confirm account deletion.",
+            delete_value=confirmation,
+        )
+
     db = ensure_db()
-    stored = None
-    try:
-        stored = await get_user_by_id(db, user["user_id"])  # type: ignore
-    except Exception:
-        stored = None
-    display_user = {
-        "user_id": user.get("user_id"),
-        "github_id": user.get("github_id") or (stored.get("github_id") if stored else None),
-        "google_id": user.get("google_id") or (stored.get("google_id") if stored else None),
-        "email": user.get("email") or (stored.get("email") if stored else None),
-        "created_at": stored.get("created_at") if stored else None,
-    }
-    context = {"request": request, "user": display_user, "page_title": "Account", "csrf_token": csrf}
-    resp = templates.TemplateResponse("account/index.html", context)
-    if not request.cookies.get("csrf_token"):
-        is_secure = settings.environment == "production" or request.url.scheme == "https"
-        resp.set_cookie("csrf_token", csrf, httponly=True, samesite="lax", secure=is_secure)
-    return resp
+    deleted = await delete_user_account(db, user["user_id"])  # type: ignore[index]
+    if not deleted:
+        return await _render_account_page(
+            request,
+            user,
+            status_code=status.HTTP_400_BAD_REQUEST,
+            delete_error="We couldn't delete your account. Please try again or contact support.",
+        )
+
+    response = RedirectResponse(url="/", status_code=status.HTTP_302_FOUND)
+    is_secure = _is_secure_request(request)
+    response.delete_cookie("access_token", path="/", samesite="lax", httponly=True, secure=is_secure)
+    response.delete_cookie(COOKIE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
+    response.delete_cookie(COOKIE_GOOGLE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
+    response.delete_cookie("google_redirect_uri", path="/", samesite="lax", httponly=True, secure=is_secure)
+    response.delete_cookie("google_integration", path="/", samesite="lax", httponly=True, secure=is_secure)
+    response.delete_cookie("google_redirect_next", path="/", samesite="lax", httponly=True, secure=is_secure)
+    response.delete_cookie("csrf_token", path="/", samesite="lax", httponly=True, secure=is_secure)
+    return response
