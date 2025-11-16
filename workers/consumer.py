@@ -105,9 +105,15 @@ async def _handle_job_failure(
     except Exception:
         previous_attempts = 0
     new_attempt = previous_attempts + 1
-    max_retries = max(1, settings.max_job_retries or 1)
+    # Interpret max_job_retries as TOTAL allowed attempts (including the first).
+    # 0 means no retries and the first failure immediately fails the job.
+    try:
+        _mr = settings.max_job_retries
+        max_attempts = 1 if _mr is None else max(0, int(_mr))
+    except Exception:
+        max_attempts = 1
 
-    if new_attempt >= max_retries:
+    if new_attempt >= max_attempts:
         await update_job_retry_state(db, job_id, new_attempt, None, error_message)
         await update_job_status(db, job_id, "failed", error=error_message)
         try:
@@ -132,7 +138,7 @@ async def _handle_job_failure(
     await update_job_retry_state(db, job_id, new_attempt, next_attempt_at, error_message)
     retry_progress = make_progress(
         "retry_waiting",
-        recent_logs=[f"retry in {retry_delay}s (attempt {new_attempt}/{max_retries})"],
+        recent_logs=[f"retry in {retry_delay}s (attempt {new_attempt}/{max_attempts})"],
     )
     await update_job_status(
         db,
