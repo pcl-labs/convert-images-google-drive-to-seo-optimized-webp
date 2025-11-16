@@ -2,6 +2,7 @@
 Authentication and authorization utilities.
 """
 
+import asyncio
 import secrets
 import hashlib
 import base64
@@ -12,11 +13,17 @@ from urllib.parse import urlencode
 import jwt
 import logging
 
+from google.oauth2 import id_token as google_id_token
+from google.auth.transport import requests as google_requests
+
 from .config import settings
 from .database import (
     Database,
     get_user_by_github_id,
+    get_user_by_google_id,
+    get_user_by_email,
     create_user,
+    update_user_identity,
     create_api_key,
     get_api_key_record_by_hash,
     get_all_api_key_records,
@@ -109,11 +116,19 @@ def hash_api_key_legacy(api_key: str) -> str:
     return hashlib.sha256(api_key.encode()).hexdigest()
 
 
-def generate_jwt_token(user_id: str, github_id: Optional[str] = None) -> str:
+def generate_jwt_token(
+    user_id: str,
+    github_id: Optional[str] = None,
+    *,
+    google_id: Optional[str] = None,
+    email: Optional[str] = None,
+) -> str:
     """Generate a JWT token for a user."""
     payload = {
         "user_id": user_id,
         "github_id": github_id,
+        "google_id": google_id,
+        "email": email,
         "exp": datetime.now(timezone.utc) + timedelta(hours=settings.jwt_expiration_hours),
         "iat": datetime.now(timezone.utc),
     }
@@ -255,16 +270,197 @@ async def authenticate_github(db: Database, code: str) -> tuple[str, Dict[str, A
     
     # Get or create user
     user = await get_user_by_github_id(db, github_id)
+    if not user and email:
+        existing = await get_user_by_email(db, email)
+        if existing:
+            user = await update_user_identity(
+                db,
+                existing["user_id"],
+                github_id=github_id,
+                email=email,
+            )
     if not user:
         # Create new user
         user_id = f"github_{github_id}"
         user = await create_user(db, user_id, github_id=github_id, email=email)
     else:
         user_id = user["user_id"]
-    
+        if email and email != user.get("email"):
+            updated = await update_user_identity(db, user_id, email=email)
+            if updated:
+                user = updated
+
     # Generate JWT token
-    jwt_token = generate_jwt_token(user_id, github_id)
-    
+    jwt_token = generate_jwt_token(
+        user_id,
+        github_id,
+        google_id=user.get("google_id"),
+        email=email or user.get("email"),
+    )
+
+    return jwt_token, user
+
+
+def get_google_login_oauth_url(redirect_uri: str) -> Tuple[str, str]:
+    """Get Google OAuth authorization URL and state token for login."""
+    if not settings.google_client_id or not settings.google_client_secret:
+        raise AuthenticationError("Google OAuth not configured")
+
+    state = secrets.token_urlsafe(16)
+    params = {
+        "client_id": settings.google_client_id,
+        "response_type": "code",
+        "scope": "openid email",
+        "redirect_uri": redirect_uri,
+        "state": state,
+        "access_type": "online",
+        "include_granted_scopes": "false",
+    }
+    query_string = urlencode(params)
+    url = f"https://accounts.google.com/o/oauth2/v2/auth?{query_string}"
+    return url, state
+
+
+async def exchange_google_login_code(code: str, redirect_uri: str) -> Dict[str, Any]:
+    """Exchange Google OAuth code for tokens for the login flow."""
+    if not settings.google_client_id or not settings.google_client_secret:
+        raise AuthenticationError("Google OAuth not configured")
+
+    data = {
+        "code": code,
+        "client_id": settings.google_client_id,
+        "client_secret": settings.google_client_secret,
+        "redirect_uri": redirect_uri,
+        "grant_type": "authorization_code",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post("https://oauth2.googleapis.com/token", data=data)
+            response.raise_for_status()
+            try:
+                return response.json()
+            except Exception as exc:
+                logger.error("Failed to parse Google token response: %s", exc)
+                raise AuthenticationError("Invalid response format from Google OAuth service") from exc
+    except httpx.HTTPStatusError as exc:
+        logger.error(
+            "HTTP error during Google login token exchange: %s %s",
+            exc.response.status_code,
+            exc.response.text,
+        )
+        raise AuthenticationError(f"Failed to exchange Google code: HTTP {exc.response.status_code}") from exc
+    except httpx.RequestError as exc:
+        logger.error("Network error during Google login token exchange: %s", exc)
+        raise AuthenticationError("Failed to connect to Google OAuth service") from exc
+
+
+async def get_google_user_info(access_token: str) -> Dict[str, Any]:
+    """Fetch Google user info via the OpenID Connect userinfo endpoint."""
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(
+                "https://openidconnect.googleapis.com/v1/userinfo",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            response.raise_for_status()
+            try:
+                return response.json()
+            except Exception as exc:
+                raise AuthenticationError(f"Failed to parse Google user JSON: {exc}") from exc
+    except httpx.HTTPStatusError as exc:
+        raise AuthenticationError(
+            f"Google userinfo HTTP error: {exc.response.status_code} {exc.response.text}"
+        ) from exc
+    except httpx.RequestError as exc:
+        raise AuthenticationError(f"Google userinfo network error: {exc}") from exc
+
+
+async def _verify_google_id_token(id_token_value: str) -> Dict[str, Any]:
+    """Verify Google ID token asynchronously."""
+    try:
+        def _verify():
+            req = google_requests.Request()
+            return google_id_token.verify_oauth2_token(
+                id_token_value,
+                req,
+                settings.google_client_id,
+            )
+        return await asyncio.to_thread(_verify)
+    except Exception as exc:
+        logger.error("Google ID token verification failed: %s", exc)
+        raise AuthenticationError("Failed to verify Google ID token") from exc
+
+
+async def authenticate_google(
+    db: Database,
+    code: str,
+    redirect_uri: str,
+) -> tuple[str, Dict[str, Any]]:
+    """Authenticate user with Google OAuth and return JWT token and user info."""
+
+    token_data = await exchange_google_login_code(code, redirect_uri)
+    id_token_value = token_data.get("id_token")
+    if not id_token_value:
+        raise AuthenticationError("No ID token received from Google")
+
+    id_info = await _verify_google_id_token(id_token_value)
+    raw_google_id = id_info.get("sub")
+    if not raw_google_id:
+        raise AuthenticationError("Google user id missing in response")
+    google_id = str(raw_google_id)
+
+    email: Optional[str] = None
+    if id_info.get("email") and (id_info.get("email_verified") is True):
+        email = id_info.get("email")
+
+    access_token = token_data.get("access_token")
+    if not email and access_token:
+        try:
+            userinfo = await get_google_user_info(access_token)
+            email_candidate = userinfo.get("email")
+            # Extra OIDC robustness: if userinfo has a 'sub', ensure it matches the ID token 'sub'
+            sub_matches = (userinfo.get("sub") is None) or (str(userinfo.get("sub")) == google_id)
+            if email_candidate and (userinfo.get("email_verified") is True) and sub_matches:
+                email = email_candidate
+        except AuthenticationError:
+            # Continue with fallback email handling below
+            pass
+
+    if not email:
+        email = f"google_user_{google_id}@accounts.google.com"
+
+    user = await get_user_by_google_id(db, google_id)
+    if user:
+        user_id = user["user_id"]
+        if email and email != user.get("email"):
+            updated = await update_user_identity(db, user_id, email=email)
+            if updated:
+                user = updated
+    else:
+        existing = await get_user_by_email(db, email) if email else None
+        if existing:
+            user = await update_user_identity(
+                db,
+                existing["user_id"],
+                google_id=google_id,
+                email=email,
+            )
+            user_id = existing["user_id"]
+        else:
+            user_id = f"google_{google_id}"
+            user = await create_user(db, user_id, google_id=google_id, email=email)
+
+    if not user:
+        raise AuthenticationError("Failed to resolve Google user account")
+
+    jwt_token = generate_jwt_token(
+        user_id,
+        user.get("github_id"),
+        google_id=user.get("google_id") or google_id,
+        email=email or user.get("email"),
+    )
+
     return jwt_token, user
 
 

@@ -46,19 +46,25 @@ class AuthCookieMiddleware(BaseHTTPMiddleware):
                 user_id = payload.get("user_id")
                 email = payload.get("email")
                 github_id = payload.get("github_id")
+                google_id = payload.get("google_id")
+                # Only backfill from DB if critical identifier (email) is missing.
+                # Avoid fetching solely for optional provider IDs (github_id/google_id).
                 if user_id and not email:
                     try:
                         db = ensure_db()
                         stored = await get_user_by_id(db, user_id)  # type: ignore
                         if stored:
                             email = stored.get("email", email)
+                            # Provider IDs remain best-effort; don't force a DB hit just for them.
                             github_id = github_id or stored.get("github_id")
+                            google_id = google_id or stored.get("google_id")
                     except Exception as exc:
                         logger.debug("AuthCookieMiddleware: failed to fetch user profile: %s", exc)
                 request.state.user = {
                     "user_id": user_id,
                     "email": email,
                     "github_id": github_id,
+                    "google_id": google_id,
                 }
                 if user_id:
                     request.state.user_id = user_id
