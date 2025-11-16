@@ -735,7 +735,8 @@ async def process_ingest_youtube_job(
         
         # Fallback to caption duration if payload duration is missing
         if duration_s is None:
-            caption_duration_raw = cap.get("duration_s") or cap.get("duration")
+            caption_duration_s = cap.get("duration_s")
+            caption_duration_raw = caption_duration_s if caption_duration_s is not None else cap.get("duration")
             duration_s = _normalize_duration(caption_duration_raw)
 
         # Validate required fields

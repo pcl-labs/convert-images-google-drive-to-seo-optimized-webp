@@ -115,6 +115,7 @@ async def ensure_document_drive_structure(
         delay = 0.5
         last_exc: Exception | None = None
         base_folder = None
+        creation_failed_after_404 = False
         for i in range(attempts):
             try:
                 base_folder = await _fetch_folder_meta(drive_service, existing_folder_id)
@@ -131,6 +132,7 @@ async def ensure_document_drive_structure(
                         break
                     except Exception as create_exc:
                         last_exc = create_exc
+                        creation_failed_after_404 = True
                         logger.error(
                             "drive_folder_creation_failed_after_404",
                             exc_info=True,
@@ -151,11 +153,22 @@ async def ensure_document_drive_structure(
                 delay *= 2
         if base_folder is None:
             # Retries exhausted; surface the original failure
-            logger.error(
-                "drive_existing_folder_fetch_failed_final",
-                exc_info=True,
-                extra={"user_id": user_id, "folder_id": existing_folder_id},
-            )
+            if creation_failed_after_404:
+                logger.error(
+                    "drive_folder_creation_failed_after_404_final",
+                    exc_info=True,
+                    extra={
+                        "user_id": user_id,
+                        "folder_id": existing_folder_id,
+                        "sanitized_name": _sanitize_folder_name(name),
+                    },
+                )
+            else:
+                logger.error(
+                    "drive_existing_folder_fetch_failed_final",
+                    exc_info=True,
+                    extra={"user_id": user_id, "folder_id": existing_folder_id},
+                )
             raise last_exc if last_exc else RuntimeError("Failed to fetch existing Drive folder")
     else:
         base_folder = await _create_drive_folder(
