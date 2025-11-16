@@ -269,11 +269,11 @@ class Database:
             # D1 path: execute DELETE and get affected rows from changes count
             try:
                 result = await self.db.prepare(query).bind(cutoff_param).run()
-                # D1's run() returns result with changes property indicating affected rows
-                changes = result.changes if hasattr(result, 'changes') else (
-                    result.meta.changes if hasattr(result, 'meta') and hasattr(result.meta, 'changes') else 0
-                )
-                return int(changes) if changes is not None else 0
+                # D1's run() returns result with rows_written property indicating affected rows
+                if hasattr(result, 'meta') and hasattr(result.meta, 'rows_written'):
+                    rows_written = result.meta.rows_written
+                    return int(rows_written) if rows_written is not None else 0
+                return 0
             except Exception as e:
                 logger.error(f"Cleanup old step_invocations failed (D1): {e}")
                 return 0

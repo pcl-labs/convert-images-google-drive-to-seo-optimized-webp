@@ -29,9 +29,11 @@ def compose_download_name(name: str, file_id: str, ext: str, sep: str = FILENAME
     if sep in name:
         raise ValueError(f"name must not contain separator {sep!r}, got: {name!r}")
     
-    # Validate file_id does not contain separator
-    escaped_sep = re.escape(sep)
-    if re.search(escaped_sep, file_id):
+    # Validate file_id matches expected pattern (alphanumeric, underscore, dash)
+    if not re.match(r'^[A-Za-z0-9_-]+$', file_id):
+        raise ValueError(f"file_id must match pattern ^[A-Za-z0-9_-]+$, got: {file_id!r}")
+    # Explicitly guard against separator in file_id
+    if sep in file_id:
         raise ValueError(f"file_id must not contain separator {sep!r}, got: {file_id!r}")
     
     ext = ext if ext.startswith(".") else f".{ext}"

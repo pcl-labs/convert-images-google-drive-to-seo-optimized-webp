@@ -36,13 +36,19 @@ def _get_fernet_key() -> bytes:
 
 def _get_fernet() -> Fernet:
     """Get or create the Fernet instance (cached).
-    Thread-safe lazy initialization using a module-level lock.
+    Thread-safe lazy initialization using double-checked locking.
     Invalidates cache if settings.encryption_key has changed at runtime.
     """
     global _fernet_instance, _cached_key_str
     
+    # Fast path: return cached instance if available and key unchanged
+    current_key_str = (settings.encryption_key or "").strip()
+    if _fernet_instance is not None and _cached_key_str == current_key_str:
+        return _fernet_instance
+    
+    # Slow path: acquire lock and re-check (double-checked locking)
     with _fernet_lock:
-        # Compute current key string while holding the lock
+        # Re-check under lock in case another thread just initialized
         current_key_str = (settings.encryption_key or "").strip()
         
         # Check if key has changed (reacts to runtime settings updates)
@@ -58,7 +64,6 @@ def _get_fernet() -> Fernet:
             _fernet_instance = Fernet(key)
             _cached_key_str = current_key_str
         
-        # Return the instance before releasing the lock
         return _fernet_instance
 
 

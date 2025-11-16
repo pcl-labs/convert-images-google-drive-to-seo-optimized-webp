@@ -63,8 +63,40 @@ def _split_sentences(text: str) -> List[str]:
         r'(https?://[^\s]+|www\.[^\s]+|[a-zA-Z0-9-]+\.[a-zA-Z]{2,}(?:/[^\s]*)?)',
         re.IGNORECASE
     )
+    # Trailing punctuation characters to trim (sentence-ending punctuation)
+    # Exclude URL-valid punctuation like ? # & = / which are part of URL structure
+    trailing_punctuation = '.,:;!?)]}\'"'
+    
     for match in url_pattern.finditer(text):
-        matches.append((match.start(), match.end(), match.group(0)))
+        url_text = match.group(0)
+        start_pos = match.start()
+        end_pos = match.end()
+        
+        # Trim trailing punctuation, but preserve valid URL structure
+        # Valid URL punctuation includes: / ? # & = % + - _ ~ @ :
+        # We'll trim sentence-ending punctuation from the end
+        cleaned_url = url_text
+        original_length = len(url_text)
+        
+        # Trim trailing punctuation characters one by one from the end
+        # Stop if we encounter a character that's part of URL structure
+        while cleaned_url:
+            last_char = cleaned_url[-1]
+            # Stop trimming if we hit a valid URL structure character
+            if last_char in '/?#&=%+-_~@:':
+                break
+            # Stop trimming if we hit alphanumeric or other non-punctuation
+            if last_char.isalnum() or last_char not in trailing_punctuation:
+                break
+            # Trim this trailing punctuation character
+            cleaned_url = cleaned_url[:-1]
+        
+        # Update end position if we trimmed characters
+        trimmed_count = original_length - len(cleaned_url)
+        if trimmed_count > 0:
+            end_pos = start_pos + len(cleaned_url)
+        
+        matches.append((start_pos, end_pos, cleaned_url))
     
     # Pattern 2: Email addresses
     email_pattern = re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b')
@@ -102,8 +134,8 @@ def _split_sentences(text: str) -> List[str]:
         for match in abbrev_re.finditer(text):
             matches.append((match.start(), match.end(), match.group(0)))
     
-    # Pattern 7: Single letter abbreviations (e.g., "A.", "B.", "X.")
-    single_letter_pattern = re.compile(r'\b[A-Z]\.')
+    # Pattern 7: Single letter abbreviations (e.g., "A.", "B.", "X.", "a.", "i.")
+    single_letter_pattern = re.compile(r'\b[A-Za-z]\.')
     for match in single_letter_pattern.finditer(text):
         # Only mask if followed by space or end of string (not another letter)
         pos = match.end()

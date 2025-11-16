@@ -81,6 +81,20 @@ KIND_MAP = {
     "generate_blog": "Blog",
 }
 
+
+def _validate_csrf(request: Request, form_token: Optional[str]) -> None:
+    """Validate CSRF token from cookie against form token.
+    
+    Raises HTTPException with 403 status if either token is missing or tokens don't match.
+    Uses timing-safe comparison via hmac.compare_digest.
+    """
+    cookie_token = request.cookies.get("csrf_token")
+    if not cookie_token or not form_token:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
+    if not hmac.compare_digest(str(cookie_token), str(form_token)):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
+
+
 router = APIRouter()
 
 # Templates are at project root, not in src/workers
@@ -1172,12 +1186,7 @@ async def create_job_html(
     csrf_token: str = Form(...),
     user: dict = Depends(get_current_user),
 ):
-    cookie_token = request.cookies.get("csrf_token")
-    # Normalize both values to handle None, then use timing-safe comparison
-    cookie_token_normalized = cookie_token or ""
-    csrf_token_normalized = csrf_token or ""
-    if not secrets.compare_digest(cookie_token_normalized, csrf_token_normalized):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
+    _validate_csrf(request, csrf_token)
 
     db = ensure_db()
     _, queue = ensure_services()
@@ -1219,9 +1228,7 @@ async def create_drive_document_form(
     csrf_token: str = Form(...),
     user: dict = Depends(get_current_user),
 ):
-    cookie_token = request.cookies.get("csrf_token")
-    if not cookie_token or not csrf_token or not hmac.compare_digest(str(cookie_token), str(csrf_token)):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
+    _validate_csrf(request, csrf_token)
     db = ensure_db()
     source = (drive_source or "").strip()
     if not source:
@@ -1248,7 +1255,7 @@ async def create_youtube_document_form(
     user: dict = Depends(get_current_user),
 ):
     cookie_token = request.cookies.get("csrf_token")
-    if not cookie_token or not hmac.compare_digest(str(cookie_token), str(csrf_token)):
+    if cookie_token is None or csrf_token is None or not hmac.compare_digest(str(cookie_token), str(csrf_token)):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
     db = ensure_db()
     url = (youtube_url or "").strip()
@@ -1280,11 +1287,7 @@ async def create_text_document_form(
     csrf_token: str = Form(...),
     user: dict = Depends(get_current_user),
 ):
-    cookie_token = request.cookies.get("csrf_token")
-    cookie_token_str = str(cookie_token or "")
-    csrf_token_str = str(csrf_token or "")
-    if not hmac.compare_digest(cookie_token_str, csrf_token_str):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
+    _validate_csrf(request, csrf_token)
     db = ensure_db()
     _, queue = ensure_services()
     body = (text_body or "").strip()

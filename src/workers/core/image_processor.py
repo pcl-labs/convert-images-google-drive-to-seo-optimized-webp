@@ -36,18 +36,21 @@ def _save_as_webp_under_size(img, max_size_kb, start_quality=80, min_quality=10,
 
 def resize_image(input_path, output_path, target_size):
     """Resize image to target_size and save to output_path."""
-    # Detect format from output_path extension
-    output_ext = os.path.splitext(output_path)[1].lower()
-    if output_ext in ('.jpg', '.jpeg'):
-        detected_format = 'JPEG'
-    elif output_ext == '.png':
-        detected_format = 'PNG'
-    else:
-        # Default to JPEG since image is converted to RGB
-        detected_format = 'JPEG'
-    
     with Image.open(input_path) as img:
-        img = img.convert('RGB')
+        # Check if original image has alpha channel
+        has_alpha = 'A' in img.mode
+        output_ext = os.path.splitext(output_path)[1].lower()
+        
+        # Only use PNG format if source has alpha AND output extension is .png
+        if has_alpha and output_ext == '.png':
+            # Preserve alpha channel by converting to RGBA
+            img = img.convert('RGBA')
+            detected_format = 'PNG'
+        else:
+            # Convert to RGB and always use JPEG format
+            img = img.convert('RGB')
+            detected_format = 'JPEG'
+        
         img = img.resize(target_size, Image.Resampling.LANCZOS)
         img.save(output_path, format=detected_format)
 
@@ -125,14 +128,15 @@ def process_image(input_path, output_dir, overwrite=False, skip_existing=False, 
                 v += 1
                 attempts += 1
             else:
-                # Fall back to timestamp-based unique name if max attempts exceeded
-                timestamp = int(time.time())
+                # Fall back to high-precision timestamp-based unique name if max attempts exceeded
+                # Use nanosecond precision + process ID to ensure uniqueness across concurrent processes
+                unique_id = f"{time.time_ns()}_{os.getpid()}"
                 if seo_prefix:
-                    fallback_name = f"{seo_prefix}-{name}_{timestamp}.webp"
+                    fallback_name = f"{seo_prefix}-{name}_{unique_id}.webp"
                 else:
-                    fallback_name = f"{name}_{timestamp}.webp"
+                    fallback_name = f"{name}_{unique_id}.webp"
                 output_path = os.path.join(output_dir, fallback_name)
-                logger.warning(f"Max version attempts ({max_attempts}) exceeded for {name}, using timestamp fallback: {fallback_name}")
+                logger.warning(f"Max version attempts ({max_attempts}) exceeded for {name}, using high-precision timestamp fallback: {fallback_name}")
         elif not overwrite:
             logger.info(f"Skipping (exists, no overwrite): {output_path}")
             return output_path, 'skipped'
