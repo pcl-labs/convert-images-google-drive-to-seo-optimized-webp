@@ -58,11 +58,17 @@
           {% if media %}
             <div>
               <dt class="text-contentMuted uppercase text-xs tracking-wide">Media folder</dt>
-              <dd>
-                <a href="{{ media.webViewLink }}" target="_blank" rel="noopener" class="text-primary hover:text-primary/80">
-                  {{ media.name or drive_meta.media_folder_id or 'Open' }}
-                </a>
-              </dd>
+              {% set media = document.metadata.drive.media if document.metadata and document.metadata.get('drive') else {} %}
+              {% if media and media.webViewLink %}
+                <dd>
+                  <a href="{{ media.webViewLink }}" target="_blank" rel="noopener" class="text-primary hover:text-primary/80">
+                    {{ media.name or (document.metadata.drive.media_folder_id) or 'Media' }}
+                  </a>
+                </dd>
+              {% else %}
+                <dd class="break-all">{{ (media.name) or (document.metadata.drive.media_folder_id) or 'Media' }}</dd>
+              {% endif %}
+              <dd class="text-xs text-contentMuted">ID: {{ (media.id) or (document.metadata.drive.media_folder_id) or '—' }}</dd>
             </div>
           {% endif %}
         </dl>

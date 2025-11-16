@@ -55,7 +55,12 @@ async def ensure_drive_workspace(db, user_id: str):
         )
         files = (resp or {}).get("files") or []
         root = files[0] if files else None
-    except Exception:
+    except Exception as exc:
+        logger.warning(
+            "failed_to_search_workspace_root",
+            exc_info=True,
+            extra={"error": str(exc), "hint": "drive appProperties query"},
+        )
         root = None
 
     if not root:
