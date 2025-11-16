@@ -65,3 +65,5 @@ You’re working in the repo `convert-image-webp-optimizer-google-drive`. Comple
 Each theme can be pulled into its own PR.
 
 Priority note: Cloudflare deployment & ops is next (queue integration, bindings, observability). Export connectors and billing will follow immediately after (some work can proceed in parallel once the queue path is in place).
+
+Ops check: This PR intentionally touches docs to validate CI/CD and deployment readiness.
