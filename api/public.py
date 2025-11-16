@@ -18,10 +18,13 @@ logger = get_logger(__name__)
 
 
 def _get_github_oauth_redirect(request: Request) -> tuple[str, str]:
-    if settings.base_url:
-        redirect_uri = f"{settings.base_url.rstrip('/')}/auth/github/callback"
+    if settings.base_url and settings.base_url.strip():
+        stripped_base = settings.base_url.strip()
+        redirect_uri = f"{stripped_base.rstrip('/')}/auth/github/callback"
+        logger.debug(f"Using base_url from settings for GitHub OAuth: {stripped_base} -> redirect_uri: {redirect_uri}")
     else:
         redirect_uri = str(request.url.replace(path="/auth/github/callback", query=""))
+        logger.debug(f"base_url not set, using request URL for GitHub OAuth -> redirect_uri: {redirect_uri}")
     from . import auth as auth_module
     return auth_module.get_github_oauth_url(redirect_uri)
 
@@ -43,9 +46,14 @@ def _build_github_oauth_response(request: Request, auth_url: str, state: str) ->
 
 
 def _google_login_redirect_uri(request: Request) -> str:
-    if settings.base_url:
-        return f"{settings.base_url.rstrip('/')}/auth/google/login/callback"
-    return str(request.url.replace(path="/auth/google/login/callback", query=""))
+    if settings.base_url and settings.base_url.strip():
+        base = settings.base_url.strip()
+        redirect_uri = f"{base.rstrip('/')}/auth/google/login/callback"
+        logger.debug(f"Using base_url from settings for Google login: {base} -> redirect_uri: {redirect_uri}")
+        return redirect_uri
+    redirect_uri = str(request.url.replace(path="/auth/google/login/callback", query=""))
+    logger.debug(f"base_url not set, using request URL for Google login -> redirect_uri: {redirect_uri}")
+    return redirect_uri
 
 
 def _get_google_login_oauth_redirect(request: Request) -> tuple[str, str]:

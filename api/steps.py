@@ -11,6 +11,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, model_validator
 
+ 
+
 from .deps import ensure_db, get_current_user
 from .database import (
     get_document,
@@ -19,10 +21,15 @@ from .database import (
     get_step_invocation,
     save_step_invocation,
 )
-from api.google_oauth import build_youtube_service_for_user
+from api.google_oauth import build_youtube_service_for_user, build_docs_service_for_user, build_drive_service_for_user
 from core.youtube_api import fetch_video_metadata, YouTubeAPIError
 from core.youtube_captions import fetch_captions_text, YouTubeCaptionsError
 from core.ai_modules import generate_outline, organize_chapters, compose_blog, default_title_from_outline
+from core.google_async import execute_google_request
+from api.app_logging import get_logger
+from googleapiclient.errors import HttpError  # type: ignore
+
+logger = get_logger(__name__)
 
 
 router = APIRouter(prefix="/api/v1/steps", tags=["Steps"])
@@ -117,6 +124,88 @@ async def _load_document_text(db, user_id: str, document_id: str) -> Dict[str, A
     if not doc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
     return doc
+
+
+def _dict_from_field(value) -> Dict[str, Any]:
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            return {}
+    if isinstance(value, dict):
+        return value
+    return {}
+
+
+async def _sync_drive_doc_after_persist(
+    db,
+    user_id: str,
+    document: Dict[str, Any],
+    updates: Dict[str, Any],
+):
+    metadata = _dict_from_field(document.get("metadata"))
+    drive_block = metadata.get("drive") if isinstance(metadata, dict) else {}
+    if not isinstance(drive_block, dict):
+        drive_block = {}
+    drive_file_id = document.get("drive_file_id") or drive_block.get("file_id")
+    if not drive_file_id:
+        return
+    new_text = updates.get("raw_text")
+    if new_text is None:
+        new_text = document.get("raw_text")
+    if new_text is None:
+        return
+    try:
+        docs_service = await build_docs_service_for_user(db, user_id)
+        drive_service = await build_drive_service_for_user(db, user_id)
+    except ValueError as exc:
+        logger.warning("drive_docs_unlinked", extra={"document_id": document.get("document_id"), "error": str(exc)})
+        return
+    try:
+        current_doc = await execute_google_request(docs_service.documents().get(documentId=drive_file_id))
+        body_content = (current_doc.get("body", {}) or {}).get("content", []) or []
+        end_index = body_content[-1].get("endIndex", len(new_text) + 1) if body_content else len(new_text) + 1
+    except Exception:
+        logger.exception("drive_docs_get_failed", extra={"drive_file_id": drive_file_id, "document_id": document.get("document_id")})
+        end_index = len(new_text) + 1
+    requests = [
+        {"deleteContentRange": {"range": {"startIndex": 1, "endIndex": max(1, end_index)}}},
+        {"insertText": {"location": {"index": 1}, "text": new_text}},
+    ]
+    try:
+        await execute_google_request(
+            docs_service.documents().batchUpdate(documentId=drive_file_id, body={"requests": requests})
+        )
+        drive_meta = await execute_google_request(
+            drive_service.files().get(fileId=drive_file_id, fields='id, headRevisionId, parents')
+        )
+    except Exception:
+        logger.exception(
+            "drive_docs_sync_failed",
+            extra={"drive_file_id": drive_file_id, "document_id": document.get("document_id")},
+        )
+        return
+    desired_stage = (updates.get("metadata") or {}).get("drive_stage") if isinstance(updates.get("metadata"), dict) else None
+    desired_stage = desired_stage or drive_block.get("stage") or metadata.get("drive_stage") or "draft"
+    metadata["drive_stage"] = desired_stage
+    drive_block.update(
+        {
+            "revision_id": drive_meta.get("headRevisionId"),
+            "external_edit_detected": False,
+            "stage": desired_stage,
+        }
+    )
+    metadata["drive"] = drive_block
+    await update_document(
+        db,
+        document.get("document_id"),
+        {
+            "metadata": metadata,
+            "drive_revision_id": drive_meta.get("headRevisionId"),
+        },
+    )
 
 
 @router.post("/transcript.fetch")
@@ -335,7 +424,7 @@ async def document_persist(request: Request, payload: DocumentPersistRequest, us
     if maybe_cached:
         return maybe_cached
 
-    await _load_document_text(db, user["user_id"], payload.document_id)
+    document = await _load_document_text(db, user["user_id"], payload.document_id)
     updates: Dict[str, Any] = {}
     if payload.raw_text is not None:
         updates["raw_text"] = payload.raw_text
@@ -343,6 +432,12 @@ async def document_persist(request: Request, payload: DocumentPersistRequest, us
         updates["metadata"] = payload.metadata
     if updates:
         await update_document(db, payload.document_id, updates)
+        updated_doc = dict(document)
+        if "metadata" in updates:
+            updated_doc["metadata"] = updates["metadata"]
+        if "raw_text" in updates:
+            updated_doc["raw_text"] = updates["raw_text"]
+        await _sync_drive_doc_after_persist(db, user["user_id"], updated_doc, updates)
     response_body = {"document_id": payload.document_id, "updated": list(updates.keys())}
     if payload.job_id:
         await record_usage_event(
