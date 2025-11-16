@@ -1010,33 +1010,46 @@ async def process_drive_change_poll_job(
             file_id = doc.get("drive_file_id")
             if not file_id:
                 continue
-            drive_meta = await execute_google_request(
-                drive_service.files().get(fileId=file_id, fields='id, headRevisionId, modifiedTime')
-            )
-            revision_id = drive_meta.get("headRevisionId")
-            if revision_id and revision_id != doc.get("drive_revision_id"):
-                changed.append((doc, revision_id))
-                metadata = _parse_document_metadata(doc)
-                drive_block = metadata.get("drive") if isinstance(metadata, dict) else {}
-                if not isinstance(drive_block, dict):
-                    drive_block = {}
-                drive_block.update(
-                    {
-                        "external_edit_detected": True,
-                        "pending_revision_id": revision_id,
-                        "pending_modified_time": drive_meta.get("modifiedTime"),
-                    }
+            try:
+                drive_meta = await execute_google_request(
+                    drive_service.files().get(fileId=file_id, fields='id, headRevisionId, modifiedTime')
                 )
-                metadata["drive"] = drive_block
-                await update_document(db, doc.get("document_id"), {"metadata": metadata})
-                await _enqueue_drive_ingest_followup(
-                    db,
-                    user_id,
-                    doc.get("document_id"),
-                    file_id,
-                    revision_id,
-                    queue_producer,
+                drive_meta = drive_meta or {}
+                revision_id = (drive_meta or {}).get("headRevisionId")
+                if revision_id and revision_id != doc.get("drive_revision_id"):
+                    changed.append((doc, revision_id))
+                    metadata = _parse_document_metadata(doc)
+                    drive_block = metadata.get("drive") if isinstance(metadata, dict) else {}
+                    if not isinstance(drive_block, dict):
+                        drive_block = {}
+                    drive_block.update(
+                        {
+                            "external_edit_detected": True,
+                            "pending_revision_id": revision_id,
+                            "pending_modified_time": (drive_meta or {}).get("modifiedTime"),
+                        }
+                    )
+                    metadata["drive"] = drive_block
+                    await update_document(db, doc.get("document_id"), {"metadata": metadata})
+                    await _enqueue_drive_ingest_followup(
+                        db,
+                        user_id,
+                        doc.get("document_id"),
+                        file_id,
+                        revision_id,
+                        queue_producer,
+                    )
+            except Exception as exc:
+                app_logger.error(
+                    "drive_poll_doc_failed",
+                    exc_info=True,
+                    extra={
+                        "document_id": doc.get("document_id"),
+                        "file_id": file_id,
+                        "error": str(exc),
+                    },
                 )
+                continue
         await set_job_output(
             db,
             job_id,

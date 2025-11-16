@@ -11,6 +11,6 @@ def register_heif_opener(
     color_profile: str | None = None,
     decode_threads: int | None = None,
     **kwargs: Any,
-):  # pragma: no cover - helper only
+)-> None:  # pragma: no cover - helper only
     """Lightweight stub matching the upstream signature."""
     return None

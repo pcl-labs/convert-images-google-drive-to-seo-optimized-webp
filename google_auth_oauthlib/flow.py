@@ -17,10 +17,11 @@ class Flow:
 
     def authorization_url(self, **kwargs: Any) -> Tuple[str, Dict[str, Any]]:
         """Generate Google OAuth authorization URL."""
-        web_config = self.client_config.get("web", {})
-        client_id = web_config.get("client_id")
-        auth_uri = web_config.get("auth_uri", "https://accounts.google.com/o/oauth2/v2/auth")
-        redirect_uri = self.redirect_uri or web_config.get("redirect_uris", [None])[0]
+        config = self.client_config.get("web") or self.client_config.get("installed") or {}
+        client_id = config.get("client_id")
+        auth_uri = config.get("auth_uri", "https://accounts.google.com/o/oauth2/v2/auth")
+        redirect_uris = config.get("redirect_uris") or []
+        redirect_uri = self.redirect_uri or (redirect_uris[0] if redirect_uris else None)
         
         if not client_id or not redirect_uri:
             raise ValueError("client_id and redirect_uri are required")
@@ -45,6 +46,7 @@ class Flow:
 class InstalledAppFlow(Flow):  # pragma: no cover - helper only
     @classmethod
     def from_client_secrets_file(cls, filename: str, scopes: list[str]):
+        """Stub implementation that records the file path for later handling."""
         return cls(client_config={"installed": {"client_secrets_file": filename}}, scopes=scopes)
 
     def run_local_server(self, **kwargs: Any):

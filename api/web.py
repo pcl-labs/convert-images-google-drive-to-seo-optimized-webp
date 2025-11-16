@@ -15,6 +15,7 @@ from starlette.templating import Jinja2Templates
 from starlette.responses import Response, StreamingResponse
 from typing import Optional, Dict, Any
 import os
+import asyncio
 import uuid
 import logging
 import json
@@ -570,6 +571,7 @@ def _drive_sync_overview(
 
 
 async def _export_version_to_drive(db, user_id: str, document: dict, version: dict) -> dict:
+    """Push a document version into Drive using per-request HTTP clients for thread-safety."""
     docs_service = await build_docs_service_for_user(db, user_id)
     drive_service = await build_drive_service_for_user(db, user_id)
     metadata = document.get("metadata") or {}
@@ -588,16 +590,34 @@ async def _export_version_to_drive(db, user_id: str, document: dict, version: di
         created = await execute_google_request(
             docs_service.documents().create(body={"title": title or f"Quill Draft {document.get('document_id')}"})
         )
-        drive_file_id = (created or {}).get("documentId")
+        if not created:
+            logger.error(
+                "drive_create_doc_failed",
+                extra={"document_id": document.get("document_id"), "user_id": user_id},
+                exc_info=True,
+            )
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Failed to create Google Doc")
+        drive_file_id = created.get("documentId")
+        if not drive_file_id:
+            logger.error(
+                "drive_create_doc_missing_id",
+                extra={"document_id": document.get("document_id"), "user_id": user_id, "created": created},
+            )
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Google Doc creation returned no documentId")
     text_body = version.get("body_mdx") or version.get("body_html") or ""
     try:
         current_doc = await execute_google_request(docs_service.documents().get(documentId=drive_file_id))
         body_content = (current_doc.get("body", {}) or {}).get("content", []) or []
-        end_index = body_content[-1].get("endIndex", len(text_body) + 1) if body_content else len(text_body) + 1
-    except Exception:
-        end_index = len(text_body) + 1
+        end_index = body_content[-1].get("endIndex", max(2, len(text_body) + 1)) if body_content else 2
+    except Exception as exc:
+        logger.warning(
+            "Failed to get current document for end_index calculation, using fallback",
+            exc_info=True,
+            extra={"drive_file_id": drive_file_id, "error": str(exc)}
+        )
+        end_index = 2
     requests = [
-        {"deleteContentRange": {"range": {"startIndex": 1, "endIndex": max(1, end_index)}}},
+        {"deleteContentRange": {"range": {"startIndex": 1, "endIndex": max(2, end_index)}}},
         {"insertText": {"location": {"index": 1}, "text": text_body}},
     ]
     await execute_google_request(
@@ -614,15 +634,23 @@ async def _export_version_to_drive(db, user_id: str, document: dict, version: di
         }
     )
     metadata["drive"] = drive_block
-    await update_document(
-        db,
-        document.get("document_id"),
-        {
-            "metadata": metadata,
-            "drive_file_id": drive_file_id,
-            "drive_revision_id": drive_meta.get("headRevisionId"),
-        },
-    )
+    try:
+        await update_document(
+            db,
+            document.get("document_id"),
+            {
+                "metadata": metadata,
+                "drive_file_id": drive_file_id,
+                "drive_revision_id": drive_meta.get("headRevisionId"),
+            },
+        )
+    except Exception as exc:
+        logger.error(
+            "Failed to update document after Drive export",
+            exc_info=True,
+            extra={"document_id": document.get("document_id"), "drive_file_id": drive_file_id},
+        )
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to record Drive export")
     return {"file_id": drive_file_id, "revision_id": drive_meta.get("headRevisionId")}
 
 
@@ -851,7 +879,8 @@ async def documents_page(request: Request, page: int = 1, user: dict = Depends(g
         try:
             drive_workspace = await get_drive_workspace(db, user["user_id"])  # type: ignore
             if not drive_workspace:
-                drive_workspace = await ensure_drive_workspace(db, user["user_id"])
+                logger.info("drive_workspace_missing_sched_provision", extra={"user_id": user["user_id"]})
+                asyncio.create_task(ensure_drive_workspace(db, user["user_id"]))
         except Exception as exc:
             logger.warning(
                 "drive_workspace_lookup_failed",
@@ -1356,7 +1385,10 @@ async def integration_detail(service: str, request: Request, user: dict = Depend
         is_connected = bool(integrations.get("drive", {}).get("connected"))
         if is_connected:
             try:
-                drive_workspace = await ensure_drive_workspace(db, user["user_id"])
+                drive_workspace = await get_drive_workspace(db, user["user_id"])  # type: ignore
+                if not drive_workspace:
+                    logger.info("drive_workspace_missing_sched_provision", extra={"user_id": user["user_id"]})
+                    asyncio.create_task(ensure_drive_workspace(db, user["user_id"]))
             except Exception as exc:
                 logger.warning("drive_workspace_provision_failed", exc_info=True, extra={"user_id": user["user_id"], "error": str(exc)})
         docs, _ = await _load_document_views(db, user["user_id"], page=1, page_size=50)

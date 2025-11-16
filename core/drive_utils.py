@@ -417,9 +417,11 @@ def extract_drive_file_id_from_input(file_input: str, service=None) -> str:
         file_obj = service.files().get(fileId=candidate_id, fields='id, mimeType').execute()
     except HttpError as exc:
         if exc.resp.status == 404:
-            raise ValueError("Drive document not found; ensure the Quill workspace folder is shared.") from exc
+            raise ValueError("Drive document not found; ensure the document is shared and accessible.") from exc
         raise
-    mime_type = (file_obj or {}).get('mimeType')
+    if not isinstance(file_obj, dict):
+        raise ValueError("Drive API did not return file metadata.")
+    mime_type = file_obj.get('mimeType')
     if mime_type != 'application/vnd.google-apps.document':
-        raise ValueError("Provided ID is not a Google Doc; see docs/DEPLOYMENT.md#drive-workspace-setup")
+        raise ValueError("Provided ID is not a Google Doc; ensure a valid Google Docs file ID is used.")
     return candidate_id
