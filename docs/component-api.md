@@ -379,23 +379,44 @@ Example:
 
 ### Color Tokens
 
-All colors are defined as RGB values in `assets/css/input.css`:
+All colors are defined as RGB values in `assets/css/input.css`. The semantic tokens stay the same, but their values change based
+on whether the document root is in light mode (`:root`) or dark mode (`.dark`).
 
-- `--bg`: Page background (2 6 23 - slate-950)
-- `--surface`: Card/panel background (15 23 42 - slate-900)
-- `--surface-muted`: Muted surface background (30 41 59 - slate-800)
-- `--border`: Border color (31 41 55 - slate-800)
-- `--content`: Primary text color (226 232 240 - slate-200)
-- `--content-muted`: Muted text color (148 163 184 - slate-400)
-- `--primary`: Primary brand color (2 132 199 - sky-600)
+**Google Light Theme (`:root`)**
+
+- `--bg`: Page background (248 249 250 - #f8f9fa)
+- `--surface`: Card/panel background (255 255 255 - #ffffff)
+- `--surface-muted`: Muted surface background (241 243 244 - #f1f3f4)
+- `--border`: Border color (218 220 224 - #dadce0)
+- `--content`: Primary text color (32 33 36 - #202124)
+- `--content-muted`: Muted text color (95 99 104 - #5f6368)
+- `--primary`: Primary brand color (26 115 232 - #1a73e8)
 - `--primary-contrast`: Primary text on primary background (255 255 255)
-- `--destructive`: Error/destructive color (225 29 72 - rose-600)
+- `--destructive`: Error/destructive color (217 48 37 - #d93025)
 - `--destructive-contrast`: Text on destructive background (255 255 255)
-- `--accent`: Success/accent color (34 197 94 - green-500)
-- `--accent-contrast`: Text on accent background (5 46 22)
-- `--warning`: Warning color (234 179 8 - yellow-500)
-- `--warning-contrast`: Text on warning background (66 32 6)
-- `--ring`: Focus ring color (56 189 248 - sky-400)
+- `--accent`: Success/accent color (52 168 83 - #34a853)
+- `--accent-contrast`: Text on accent background (15 57 24)
+- `--warning`: Warning color (251 188 5 - #fbbc05)
+- `--warning-contrast`: Text on warning background (60 40 0 - #3c2800)
+- `--ring`: Focus ring color (66 133 244 - #4285f4)
+
+**Google Dark Theme (`.dark`)**
+
+- `--bg`: Page background (32 33 36 - #202124)
+- `--surface`: Card/panel background (41 42 45 - #292a2d)
+- `--surface-muted`: Muted surface background (60 64 67 - #3c4043)
+- `--border`: Border color (95 99 104 - #5f6368)
+- `--content`: Primary text color (232 234 237 - #e8eaed)
+- `--content-muted`: Muted text color (189 193 198 - #bdc1c6)
+- `--primary`: Primary brand color (138 180 248 - #8ab4f8)
+- `--primary-contrast`: Primary text on primary background (32 33 36 - #202124)
+- `--destructive`: Error/destructive color (242 139 130 - #f28b82)
+- `--destructive-contrast`: Text on destructive background (32 33 36 - #202124)
+- `--accent`: Success/accent color (129 201 149 - #81c995)
+- `--accent-contrast`: Text on accent background (32 33 36 - #202124)
+- `--warning`: Warning color (253 214 99 - #fdd663)
+- `--warning-contrast`: Text on warning background (32 33 36 - #202124)
+- `--ring`: Focus ring color (138 180 248 - #8ab4f8)
 
 ### Token Naming Convention
 
