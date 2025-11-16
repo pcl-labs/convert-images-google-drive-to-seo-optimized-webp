@@ -75,7 +75,14 @@ class Settings(BaseSettings):
     cf_queue_dlq: Optional[str] = None  # Optional Cloudflare dead letter queue name
     
     # Job Configuration
-    max_job_retries: int = 3
+    max_job_retries: int = Field(
+        default=3,
+        description=(
+            "Maximum total number of job attempts (including the initial attempt). "
+            "This value represents the total attempts, not the number of additional retries. "
+            "For example, max_job_retries=2 means two total attempts: one initial attempt + one retry."
+        )
+    )
     job_timeout_seconds: int = 3600  # 1 hour
     
     # CORS - accept string or list, will be converted to list

@@ -49,9 +49,6 @@ You’re working in the repo `convert-image-webp-optimizer-google-drive`. Comple
 
 (Keep the existing Sections 2–6 as-is; they follow once Section 1 subsections land.)
 
-Let me know if you’d like any tweaks to the wording or additional milestones before I start editing the file.
-
-
 ## 2. Editor & Pipeline Polish
 - **Composable steps in UI**: surface outline/chapters regenerate options that call the `/api/v1/steps/*` endpoints individually so product teams (or agents) can tweak only a portion of a document without re-running the entire pipeline.
 - **Inline diffing**: show how a regenerated section differs from the previous version (simple Markdown diff) before committing it as a new version row.
