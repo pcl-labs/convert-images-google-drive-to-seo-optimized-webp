@@ -266,19 +266,19 @@ def test_ingest_youtube_queue_flow(monkeypatch):
                     "thumbnails": {},
                     "category_id": "24",
                     "tags": ["queue", "demo"],
-                    "url": "https://youtu.be/queue1234567",
+                    "url": "https://youtu.be/queue123456",
                 },
             }
 
             def _fake_fetch_metadata(service, video_id):
                 assert service is fake_service
-                assert video_id == "queue1234567"
+                assert video_id == "queue123456"
                 return metadata_bundle
 
             monkeypatch.setattr("src.workers.api.protected.fetch_video_metadata", _fake_fetch_metadata)
             def _fake_fetch_captions(service, video_id, langs):
                 assert service is fake_service
-                assert video_id == "queue1234567"
+                assert video_id == "queue123456"
                 assert "en" in langs
                 return {"success": True, "text": fake_text, "lang": "en", "source": "captions"}
 
@@ -286,7 +286,7 @@ def test_ingest_youtube_queue_flow(monkeypatch):
             monkeypatch.setattr("src.workers.consumer.notify_job", AsyncMock(return_value=None))
 
             job_status = await start_ingest_youtube_job(
-                db, stub_queue, user_id, "https://youtu.be/queue1234567"
+                db, stub_queue, user_id, "https://youtu.be/queue123456"
             )
             job_row = await get_job(db, job_status.job_id, user_id)
 
@@ -307,7 +307,7 @@ def test_ingest_youtube_queue_flow(monkeypatch):
             assert doc.get("raw_text") == fake_text
             metadata = _parse_metadata(doc.get("metadata"))
             assert metadata["transcript"]["duration_s"] == 90
-            assert metadata["youtube"]["video_id"] == "queue1234567"
+            assert metadata["youtube"]["video_id"] == "queue123456"
         finally:
             job_id = job_row["job_id"] if job_row else None
             await db.execute("DELETE FROM usage_events WHERE job_id = ?", ((job_id or ""),))
@@ -347,7 +347,7 @@ def test_ingest_youtube_retry_and_dlq(monkeypatch):
                 "thumbnails": {},
                 "category_id": "24",
                 "tags": ["retry"],
-                "url": "https://youtu.be/queue1234567",
+                "url": "https://youtu.be/queue123456",
             },
         }
 
@@ -360,7 +360,7 @@ def test_ingest_youtube_retry_and_dlq(monkeypatch):
         monkeypatch.setattr("src.workers.consumer.process_ingest_youtube_job", failing_process)
 
         job_status = await start_ingest_youtube_job(
-            db, stub_queue, user_id, "https://youtu.be/queue1234567"
+            db, stub_queue, user_id, "https://youtu.be/queue123456"
         )
         message = stub_queue.messages[0]
 

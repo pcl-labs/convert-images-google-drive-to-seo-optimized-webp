@@ -43,8 +43,9 @@ def _get_fernet() -> Fernet:
     
     # Fast path: return cached instance if available and key unchanged
     current_key_str = (settings.encryption_key or "").strip()
-    if _fernet_instance is not None and _cached_key_str == current_key_str:
-        return _fernet_instance
+    inst = _fernet_instance
+    if inst is not None and _cached_key_str == current_key_str:
+        return inst
     
     # Slow path: acquire lock and re-check (double-checked locking)
     with _fernet_lock:
