@@ -97,6 +97,7 @@ async def exchange_google_code(
     """
     if not settings.google_client_id or not settings.google_client_secret:
         raise ValueError("Google OAuth not configured")
+    integration_key = _normalize_integration(integration)
     flow = Flow.from_client_config(
         client_config={
             "web": {
@@ -107,7 +108,7 @@ async def exchange_google_code(
                 "redirect_uris": [redirect_uri],
             }
         },
-        scopes=_scopes_for_integration(integration),
+        scopes=_scopes_for_integration(integration_key),
     )
     flow.redirect_uri = redirect_uri
     
@@ -297,6 +298,18 @@ async def build_drive_service_for_user(db: Database, user_id: str):
         missing_scope_message="Google account missing Drive access; please reconnect",
         service_name="drive",
         service_version="v3",
+    )
+
+
+async def build_docs_service_for_user(db: Database, user_id: str):
+    """Build a Google Docs v1 service using the Drive integration token."""
+    return await _build_google_service_for_user(
+        db,
+        user_id,
+        integration="drive",
+        missing_scope_message="Google account missing Docs access; reconnect Drive integration",
+        service_name="docs",
+        service_version="v1",
     )
 
 

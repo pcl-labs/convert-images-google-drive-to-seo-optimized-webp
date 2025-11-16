@@ -89,8 +89,10 @@ class AuthCookieMiddleware(BaseHTTPMiddleware):
 class RateLimitMiddleware(BaseHTTPMiddleware):
     """Simple in-memory rate limiting (for production, use Redis/KV)."""
     
-    def __init__(self, app: ASGIApp):
+    def __init__(self, app: ASGIApp, max_per_minute: int, max_per_hour: int):
         super().__init__(app)
+        self.max_per_minute = max_per_minute
+        self.max_per_hour = max_per_hour
         self.requests: dict[str, list[float]] = {}
         self.lock = threading.Lock()
         self.cleanup_interval = 300  # Clean up every 5 minutes
@@ -125,11 +127,11 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             
             # Check per-minute limit
             recent_minute = [req_time for req_time in requests if now - req_time < 60]
-            if len(recent_minute) >= settings.rate_limit_per_minute:
+            if len(recent_minute) >= self.max_per_minute:
                 return True
             
             # Check per-hour limit
-            if len(requests) >= settings.rate_limit_per_hour:
+            if len(requests) >= self.max_per_hour:
                 return True
             
             # Add current request
@@ -184,23 +186,32 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 class CORSMiddleware(BaseHTTPMiddleware):
     """Handle CORS preflight requests and append CORS headers to all responses."""
     
+    def __init__(self, app: ASGIApp, allow_origins: list[str], allow_credentials: bool = True, allow_methods: list[str] = None, allow_headers: list[str] = None):
+        super().__init__(app)
+        self.allow_origins = allow_origins
+        self.allow_credentials = allow_credentials
+        self.allow_methods = allow_methods or ["*"]
+        self.allow_headers = allow_headers or ["*"]
+    
     async def dispatch(self, request: Request, call_next: Callable):
         origin = request.headers.get("Origin")
-        allowed = origin and (origin in settings.cors_origins or "*" in settings.cors_origins)
+        allowed = origin and (origin in self.allow_origins or "*" in self.allow_origins)
         
         if request.method == "OPTIONS":
             response = Response()
             if allowed:
                 response.headers["Access-Control-Allow-Origin"] = origin
-                response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
-                response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type"
-                response.headers["Access-Control-Allow-Credentials"] = "true"
+                response.headers["Access-Control-Allow-Methods"] = ", ".join(self.allow_methods) if isinstance(self.allow_methods, list) else self.allow_methods
+                response.headers["Access-Control-Allow-Headers"] = ", ".join(self.allow_headers) if isinstance(self.allow_headers, list) else self.allow_headers
+                if self.allow_credentials:
+                    response.headers["Access-Control-Allow-Credentials"] = "true"
             return response
         
         response = await call_next(request)
         if allowed:
             response.headers["Access-Control-Allow-Origin"] = origin
-            response.headers["Access-Control-Allow-Credentials"] = "true"
-            response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type"
-            response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+            if self.allow_credentials:
+                response.headers["Access-Control-Allow-Credentials"] = "true"
+            response.headers["Access-Control-Allow-Headers"] = ", ".join(self.allow_headers) if isinstance(self.allow_headers, list) else self.allow_headers
+            response.headers["Access-Control-Allow-Methods"] = ", ".join(self.allow_methods) if isinstance(self.allow_methods, list) else self.allow_methods
         return response

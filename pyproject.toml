@@ -1,0 +1,25 @@
+[project]
+name = "quill-api"
+version = "0.1.0"
+description = "Production-ready API for optimizing images from Google Drive to WebP format"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi",
+    "starlette",
+    "pydantic",
+    "pydantic-settings",
+    "httpx",
+    "pyjwt",
+    "google-api-python-client",
+    "google-auth",
+    "google-auth-httplib2",
+    "google-auth-oauthlib",
+    "tqdm",
+    "cryptography",
+]
+
+[dependency-groups]
+dev = [
+    "workers-py",
+]
+

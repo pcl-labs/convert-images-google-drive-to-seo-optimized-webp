@@ -1,2 +1,5 @@
 requirements.txt
+requirements.txt.local
+cf-requirements.txt
+cf-requirements.txt.backup
 node_modules

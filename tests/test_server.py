@@ -10,13 +10,13 @@ from fastapi.testclient import TestClient
 @pytest.fixture
 def client():
     """Create test client fixture."""
-    from api.main import app
+    from src.workers.api.main import app
     return TestClient(app)
 
 
 def test_app_imports():
     """Test that the application can be imported successfully."""
-    from api.main import app
+    from src.workers.api.main import app
     assert app is not None
     assert app.title is not None
     assert hasattr(app, "title")
@@ -33,7 +33,7 @@ def test_test_client_creation(client):
 
 def test_app_has_middleware():
     """Test that the app has middleware configured."""
-    from api.main import app
+    from src.workers.api.main import app
     # FastAPI stores middleware in app.user_middleware
     assert hasattr(app, "user_middleware")
     assert len(app.user_middleware) > 0
@@ -41,7 +41,7 @@ def test_app_has_middleware():
 
 def test_app_has_exception_handlers():
     """Test that the app has exception handlers configured."""
-    from api.main import app
+    from src.workers.api.main import app
     assert hasattr(app, "exception_handlers")
     # Should have handlers for APIException and general Exception
     assert len(app.exception_handlers) > 0

@@ -7,10 +7,10 @@ import sys
 import os
 import json
 import traceback
-from core.drive_utils import extract_folder_id_from_input, is_valid_drive_file_id
-from core.filename_utils import sanitize_folder_name, parse_download_name, FILENAME_ID_SEPARATOR, make_output_dir_name
-from core.constants import TEMP_DIR, FAIL_LOG_PATH, DEFAULT_EXTENSIONS
-from core.extension_utils import detect_extensions_in_dir
+from src.workers.core.drive_utils import extract_folder_id_from_input, is_valid_drive_file_id
+from src.workers.core.filename_utils import sanitize_folder_name, parse_download_name, FILENAME_ID_SEPARATOR, make_output_dir_name
+from src.workers.core.constants import TEMP_DIR, FAIL_LOG_PATH, DEFAULT_EXTENSIONS
+from src.workers.core.extension_utils import detect_extensions_in_dir
 
 def load_cache(cache_path):
     if os.path.exists(cache_path):

@@ -12,6 +12,8 @@ from .config import settings
 
 # Cache the Fernet instance to avoid recreating it on every call
 _fernet_instance: Fernet | None = None
+# Track the key string used to create the cached instance for invalidation
+_cached_key_str: str | None = None
 # Module-level lock to ensure thread-safe lazy initialization of the Fernet instance
 _fernet_lock = threading.Lock()
 
@@ -35,14 +37,28 @@ def _get_fernet_key() -> bytes:
 def _get_fernet() -> Fernet:
     """Get or create the Fernet instance (cached).
     Thread-safe lazy initialization using a module-level lock and double-checked locking.
+    Invalidates cache if settings.encryption_key has changed at runtime.
     """
-    global _fernet_instance
+    global _fernet_instance, _cached_key_str
+    
+    # Check if key has changed (reacts to runtime settings updates)
+    current_key_str = (settings.encryption_key or "").strip()
+    if _fernet_instance is not None and _cached_key_str is not None:
+        if current_key_str != _cached_key_str:
+            # Key changed, invalidate cache
+            with _fernet_lock:
+                _fernet_instance = None
+                _cached_key_str = None
+    
     if _fernet_instance is not None:
         return _fernet_instance
+    
     with _fernet_lock:
+        # Double-check after acquiring lock
         if _fernet_instance is None:
             key = _get_fernet_key()
             _fernet_instance = Fernet(key)
+            _cached_key_str = current_key_str
     return _fernet_instance
 
 

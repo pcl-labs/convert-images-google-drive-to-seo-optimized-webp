@@ -1,9 +1,15 @@
-{% macro card(title=None, actions=None) %}
+{% macro card(title=None, actions=None, action_url=None, action_label=None, action_target=None) %}
   <div class="surface rounded-lg overflow-hidden">
-    {% if title or actions %}
+    {% if title or actions or (action_url and action_label) %}
     <div class="px-4 py-3 border-b border-border flex items-center justify-between">
       <div class="font-semibold text-content">{{ title }}</div>
-      {% if actions %}
+      {% if action_url and action_label %}
+      <div class="flex items-center gap-2">
+        <a href="{{ action_url }}" class="text-sm text-primary hover:text-primary/80" {% if action_target %}target="{{ action_target }}"{% endif %}>
+          {{ action_label }}
+        </a>
+      </div>
+      {% elif actions %}
       <div class="flex items-center gap-2">{{ actions|safe }}</div>
       {% endif %}
     </div>

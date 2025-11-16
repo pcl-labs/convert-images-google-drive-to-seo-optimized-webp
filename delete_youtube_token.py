@@ -2,7 +2,7 @@
 """Delete YouTube token for a user to force reconnection."""
 import asyncio
 import sys
-from api.database import Database, delete_google_tokens
+from src.workers.api.database import Database, delete_google_tokens
 
 async def main():
     user_id = sys.argv[1] if len(sys.argv) > 1 else "github_5694308"
