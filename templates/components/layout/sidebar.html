@@ -3,9 +3,11 @@
   {% macro nav_links(path) %}
     {% set section = path.split('/', 2)[2] if path.startswith('/dashboard') and path|length > 11 else '' %}
     <a href="/dashboard" class="flex items-center gap-2 px-3 py-2 rounded-md {{ 'bg-surfaceMuted text-content' if path == '/dashboard' else 'text-content hover:bg-surfaceMuted' }}">Dashboard</a>
-    <a href="/dashboard/jobs" class="flex items-center gap-2 px-3 py-2 rounded-md {{ 'bg-surfaceMuted text-content' if section.startswith('jobs') else 'text-content hover:bg-surfaceMuted' }}">Jobs</a>
     <a href="/dashboard/documents" class="flex items-center gap-2 px-3 py-2 rounded-md {{ 'bg-surfaceMuted text-content' if section.startswith('documents') else 'text-content hover:bg-surfaceMuted' }}">Documents</a>
-    <a href="/dashboard/activity" class="flex items-center gap-2 px-3 py-2 rounded-md {{ 'bg-surfaceMuted text-content' if section.startswith('activity') else 'text-content hover:bg-surfaceMuted' }}">Activity</a>
+    <a href="/api/v1/jobs?limit=20" target="_blank" rel="noopener" class="flex items-center gap-2 px-3 py-2 rounded-md text-content hover:bg-surfaceMuted">
+      Activity API
+      {{ icon('open-in-new', size='h-4 w-4', class='text-contentMuted') }}
+    </a>
     <a href="/dashboard/integrations" class="flex items-center gap-2 px-3 py-2 rounded-md {{ 'bg-surfaceMuted text-content' if section.startswith('integrations') else 'text-content hover:bg-surfaceMuted' }}">Integrations</a>
     <a href="/dashboard/account" class="flex items-center gap-2 px-3 py-2 rounded-md {{ 'bg-surfaceMuted text-content' if section.startswith('account') else 'text-content hover:bg-surfaceMuted' }}">Account</a>
     <a href="/dashboard/settings" class="flex items-center gap-2 px-3 py-2 rounded-md {{ 'bg-surfaceMuted text-content' if section.startswith('settings') else 'text-content hover:bg-surfaceMuted' }}">Settings</a>

@@ -21,6 +21,12 @@ wrangler secret put GOOGLE_CLIENT_SECRET
 
 # Optional: Set redirect URI
 wrangler secret put GITHUB_REDIRECT_URI
+
+# Cloudflare Queue credentials (required when USE_INLINE_QUEUE=false)
+wrangler secret put CLOUDFLARE_ACCOUNT_ID
+wrangler secret put CLOUDFLARE_API_TOKEN
+wrangler secret put CF_QUEUE_NAME
+wrangler secret put CF_QUEUE_DLQ
 ```
 
 ### 6. Configure GitHub OAuth App
@@ -53,8 +59,13 @@ open https://your-worker.your-subdomain.workers.dev/docs
 ## Queue Configuration Modes
 
 - DB-backed inline queue (local dev): `USE_INLINE_QUEUE=true` persists jobs to the database and a local consumer polls the DB to process them. No Cloudflare Queue required. Start the consumer locally with `python workers/consumer.py --inline`.
-- Cloudflare Queues (production): `USE_INLINE_QUEUE=false` uses Cloudflare Queues. Requires `JOB_QUEUE`/`DLQ` bindings in `wrangler.toml` and secrets `CF_ACCOUNT_ID`, `CF_API_TOKEN`, plus `CF_QUEUE_NAME`/`CF_QUEUE_DLQ`.
+- Cloudflare Queues (production): `USE_INLINE_QUEUE=false` uses Cloudflare Queues. Requires `JOB_QUEUE`/`DLQ` bindings in `wrangler.toml` and secrets `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`, plus `CF_QUEUE_NAME`/`CF_QUEUE_DLQ`.
 - Validation: In production, inline mode is rejected by `api/config.py` to prevent misconfiguration.
+
+### Inline vs Cloudflare guardrails
+
+- Local fallback is acceptable only when `USE_INLINE_QUEUE=true` and when you explicitly run the inline consumer (`python workers/consumer.py --inline`). Logs will warn when we silently fall back to inline mode so operators know background workers must be running.
+- In any non-inline environment, ensure the queue bindings exist (`JOB_QUEUE`/`DLQ` in `wrangler.toml`) and the secrets listed above are present (`wrangler secret list` should show them). The API now logs a pointer to this document when enqueue fails (`docs/DEPLOYMENT.md#queue-configuration-modes`).
 
 ## Queue Verification & Troubleshooting
 
@@ -66,7 +77,7 @@ open https://your-worker.your-subdomain.workers.dev/docs
 3. If jobs remain `pending`:
    - Confirm `USE_INLINE_QUEUE` is set correctly for the environment.
    - Verify `wrangler.toml` queue bindings match actual queue names.
-   - Ensure `CF_ACCOUNT_ID`/`CF_API_TOKEN` are set and token has Queues:Edit.
+   - Ensure `CLOUDFLARE_ACCOUNT_ID`/`CLOUDFLARE_API_TOKEN` are set and token has Queues:Edit.
    - Inspect errors emitted by `CloudflareQueueAPI.send` (status/response body).
 
 ## Environment Variables
@@ -89,8 +100,8 @@ These are set as secrets in Cloudflare Workers:
 For local development with the DB-backed inline queue:
 
 - `USE_INLINE_QUEUE=true` - Use the DB-backed inline queue (jobs are persisted in the database and polled by the local consumer). This is the default for local dev.
-- `CF_ACCOUNT_ID` - Cloudflare account ID (from `wrangler whoami`)
-- `CF_API_TOKEN` - Cloudflare API token (created in dashboard, step 2 above)
+- `CLOUDFLARE_ACCOUNT_ID` - Cloudflare account ID (from `wrangler whoami`)
+- `CLOUDFLARE_API_TOKEN` - Cloudflare API token (created in dashboard, step 2 above)
 - `CF_QUEUE_NAME=quill-jobs` - Primary queue name
 - `CF_QUEUE_DLQ=quill-dlq` - Dead letter queue name
 
