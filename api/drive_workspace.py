@@ -44,19 +44,30 @@ async def ensure_drive_workspace(db, user_id: str):
     if existing:
         return existing
     drive_service = await build_drive_service_for_user(db, user_id)  # type: ignore
-    root = await _create_drive_folder(drive_service, "Quill")
+    root = None
+    try:
+        query = (
+            "mimeType = 'application/vnd.google-apps.folder' and "
+            "trashed = false and appProperties has { key='quill_workspace' and value='true' }"
+        )
+        resp = await execute_google_request(
+            drive_service.files().list(q=query, pageSize=1, fields="files(id,name,webViewLink)")
+        )
+        files = (resp or {}).get("files") or []
+        root = files[0] if files else None
+    except Exception:
+        root = None
+
+    if not root:
+        root = await _create_drive_folder(drive_service, "Quill")
     root_id = _require_drive_id(root, "Workspace root folder")
-    drafts = await _create_drive_folder(drive_service, "Drafts", root_id)
-    drafts_id = _require_drive_id(drafts, "Workspace drafts folder")
-    published = await _create_drive_folder(drive_service, "Published", root_id)
-    published_id = _require_drive_id(published, "Workspace published folder")
-    metadata = {"root": root, "drafts": drafts, "published": published}
+    metadata = {"root": root}
     workspace = await upsert_drive_workspace(
         db,
         user_id,
         root_id,
-        drafts_id,
-        published_id,
+        root_id,
+        root_id,
         metadata=metadata,
     )
     return workspace
@@ -134,12 +145,8 @@ async def ensure_document_drive_structure(
         )
 
     base_folder_id = _require_drive_id(base_folder, "Document workspace folder")
-    drafts_folder = await _ensure_child_folder(drive_service, base_folder_id, "Drafts")
-    drafts_folder_id = _require_drive_id(drafts_folder, "Document drafts folder")
     media_folder = await _ensure_child_folder(drive_service, base_folder_id, "Media")
     media_folder_id = _require_drive_id(media_folder, "Document media folder")
-    published_folder = await _ensure_child_folder(drive_service, base_folder_id, "Published")
-    published_folder_id = _require_drive_id(published_folder, "Document published folder")
 
     doc_title = _sanitize_folder_name(name)
     created_doc = await execute_google_request(docs_service.documents().create(body={"title": doc_title}))
@@ -152,7 +159,7 @@ async def ensure_document_drive_structure(
     drive_doc_meta = await execute_google_request(
         drive_service.files().update(
             fileId=doc_id,
-            addParents=drafts_folder_id,
+            addParents=base_folder_id,
             removeParents="root",
             fields="id, headRevisionId, webViewLink",
         )
@@ -165,9 +172,7 @@ async def ensure_document_drive_structure(
 
     return {
         "folder": base_folder,
-        "drafts": drafts_folder,
         "media": media_folder,
-        "published": published_folder,
         "file": {
             "id": drive_file_id,
             "revision_id": drive_doc_meta.get("headRevisionId"),

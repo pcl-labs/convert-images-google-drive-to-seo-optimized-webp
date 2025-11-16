@@ -27,6 +27,7 @@ from core.youtube_captions import fetch_captions_text, YouTubeCaptionsError
 from core.ai_modules import generate_outline, organize_chapters, compose_blog, default_title_from_outline
 from core.google_async import execute_google_request
 from api.app_logging import get_logger
+from googleapiclient.errors import HttpError  # type: ignore
 
 logger = get_logger(__name__)
 
@@ -166,59 +167,29 @@ async def _sync_drive_doc_after_persist(
         current_doc = await execute_google_request(docs_service.documents().get(documentId=drive_file_id))
         body_content = (current_doc.get("body", {}) or {}).get("content", []) or []
         end_index = body_content[-1].get("endIndex", len(new_text) + 1) if body_content else len(new_text) + 1
-    except Exception as e:
-        logger.exception("drive_docs_get_failed", extra={"drive_file_id": drive_file_id})
+    except Exception:
+        logger.exception("drive_docs_get_failed", extra={"drive_file_id": drive_file_id, "document_id": document.get("document_id")})
         end_index = len(new_text) + 1
     requests = [
         {"deleteContentRange": {"range": {"startIndex": 1, "endIndex": max(1, end_index)}}},
         {"insertText": {"location": {"index": 1}, "text": new_text}},
     ]
-    await execute_google_request(
-        docs_service.documents().batchUpdate(documentId=drive_file_id, body={"requests": requests})
-    )
-    drive_meta = await execute_google_request(
-        drive_service.files().get(fileId=drive_file_id, fields='id, headRevisionId, parents')
-    )
+    try:
+        await execute_google_request(
+            docs_service.documents().batchUpdate(documentId=drive_file_id, body={"requests": requests})
+        )
+        drive_meta = await execute_google_request(
+            drive_service.files().get(fileId=drive_file_id, fields='id, headRevisionId, parents')
+        )
+    except Exception:
+        logger.exception(
+            "drive_docs_sync_failed",
+            extra={"drive_file_id": drive_file_id, "document_id": document.get("document_id")},
+        )
+        return
     desired_stage = (updates.get("metadata") or {}).get("drive_stage") if isinstance(updates.get("metadata"), dict) else None
     desired_stage = desired_stage or drive_block.get("stage") or metadata.get("drive_stage") or "draft"
-    workspace = metadata.get("drive_workspace") if isinstance(metadata, dict) else {}
-    drafts_folder = workspace.get("drafts_folder_id") if isinstance(workspace, dict) else None
-    published_folder = workspace.get("published_folder_id") if isinstance(workspace, dict) else None
-    try:
-        add_list: List[str] = []
-        remove_list: List[str] = []
-        if desired_stage == "published":
-            if published_folder:
-                add_list.append(published_folder)
-            if drafts_folder:
-                remove_list.append(drafts_folder)
-        else:
-            if drafts_folder:
-                add_list.append(drafts_folder)
-            if published_folder:
-                remove_list.append(published_folder)
-
-        add_str = ",".join([p for p in add_list if p])
-        remove_str = ",".join([p for p in remove_list if p])
-
-        update_kwargs = {"fileId": drive_file_id}
-        if add_str:
-            update_kwargs["addParents"] = add_str
-        if remove_str:
-            update_kwargs["removeParents"] = remove_str
-
-        if len(update_kwargs) > 1:
-            await execute_google_request(
-                drive_service.files().update(**update_kwargs)
-            )
-    except Exception:
-        logger.info(
-            "drive_workspace_move_failed",
-            extra={
-                "document_id": document.get("document_id"),
-                "doc_hint": "docs/DEPLOYMENT.md#drive-workspace-setup",
-            },
-        )
+    metadata["drive_stage"] = desired_stage
     drive_block.update(
         {
             "revision_id": drive_meta.get("headRevisionId"),

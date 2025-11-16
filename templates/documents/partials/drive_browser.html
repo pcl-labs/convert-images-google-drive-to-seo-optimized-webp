@@ -48,33 +48,35 @@
           {% for doc in overview.documents %}
             <article class="rounded-lg border border-border p-3 bg-surface/40 text-sm">
               <div class="flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
-                <div>
+                <div class="space-y-1">
                   <p class="text-xs uppercase tracking-wide text-contentMuted">{{ doc.source_label }}</p>
-                  <p class="text-content font-semibold">{{ doc.title or doc.document_id }}</p>
+                  <div class="flex items-center gap-2">
+                    <p class="text-content font-semibold">{{ doc.title or doc.document_id }}</p>
+                    {% if doc.stage %}
+                      <span class="text-[11px] uppercase tracking-wide text-contentMuted border border-border px-2 py-0.5 rounded-full">
+                        {{ doc.stage|capitalize }}
+                      </span>
+                    {% endif %}
+                  </div>
                 </div>
                 <div class="flex flex-wrap gap-2 text-xs">
                   {% if doc.drive.folder_link %}
-                    <a href="{{ doc.drive.folder_link }}" target="_blank" rel="noopener" class="inline-flex items-center px-2 py-1 rounded-md border border-border text-primary hover:text-primary/80">Workspace</a>
+                    <a href="{{ doc.drive.folder_link }}" target="_blank" rel="noopener" class="inline-flex items-center px-2 py-1 rounded-md border border-border text-primary hover:text-primary/80">Folder</a>
                   {% endif %}
-                  {% if doc.drive.draft_link %}
-                    <a href="{{ doc.drive.draft_link }}" target="_blank" rel="noopener" class="inline-flex items-center px-2 py-1 rounded-md border border-border text-primary hover:text-primary/80">Draft Doc</a>
+                  {% if doc.drive.doc_link %}
+                    <a href="{{ doc.drive.doc_link }}" target="_blank" rel="noopener" class="inline-flex items-center px-2 py-1 rounded-md border border-border text-primary hover:text-primary/80">Google Doc</a>
                   {% endif %}
-                  <a href="/dashboard/documents/{{ doc.document_id }}" class="inline-flex items-center px-2 py-1 rounded-md border border-border hover:bg-surface/60">View in Quill</a>
+                  {% if doc.drive.media_link %}
+                    <a href="{{ doc.drive.media_link }}" target="_blank" rel="noopener" class="inline-flex items-center px-2 py-1 rounded-md border border-border hover:border-primary hover:text-primary">Media</a>
+                  {% endif %}
+                  <a href="/dashboard/documents/{{ doc.document_id }}" class="inline-flex items-center px-2 py-1 rounded-md border border-border hover:bg-surface/60">Open in Quill</a>
                 </div>
-              </div>
-              <div class="mt-2 flex flex-wrap gap-2 text-xs text-contentMuted">
-                {% if doc.drive.media_link %}
-                  <a href="{{ doc.drive.media_link }}" target="_blank" rel="noopener" class="inline-flex items-center px-2 py-1 rounded-md border border-border hover:border-primary hover:text-primary">Media</a>
-                {% endif %}
-                {% if doc.drive.published_link %}
-                  <a href="{{ doc.drive.published_link }}" target="_blank" rel="noopener" class="inline-flex items-center px-2 py-1 rounded-md border border-border hover:border-primary hover:text-primary">Published</a>
-                {% endif %}
               </div>
             </article>
           {% endfor %}
         </div>
       {% else %}
-        <p class="text-sm text-contentMuted">No Drive documents yet. Link a folder to initialize the workspace.</p>
+        <p class="text-sm text-contentMuted">No Drive documents yet. Launch an ingest from the dashboard.</p>
       {% endif %}
     </div>
   </div>

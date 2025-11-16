@@ -1,3 +1,4 @@
+{% from 'components/elements/badge.html' import badge %}
 <div id="documents-table" class="space-y-3">
   {% if flash %}
     {% from 'components/elements/alert.html' import alert %}
@@ -8,9 +9,8 @@
   {% for document in documents %}
     {% set drive_meta = document.metadata.drive if document.metadata and document.metadata.get('drive') else {} %}
     {% set folder = drive_meta.folder or {} %}
-    {% set drafts = drive_meta.drafts or {} %}
     {% set media = drive_meta.media or {} %}
-    {% set published = drive_meta.published or {} %}
+    {% set drive_stage = drive_meta.stage if drive_meta else None %}
     <article class="surface rounded-lg p-4 space-y-4">
       <div class="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
         <div>
@@ -22,6 +22,11 @@
         </div>
         <div class="text-xs text-contentMuted md:text-right">
           <p>Created {{ document.created_at or '—' }}</p>
+          {% if drive_stage %}
+            <div class="mt-1">
+              {{ badge(drive_stage|capitalize, status='completed' if drive_stage == 'published' else 'default') }}
+            </div>
+          {% endif %}
         </div>
       </div>
       <div class="grid gap-4 text-sm text-content sm:grid-cols-3">
@@ -45,16 +50,14 @@
         <div class="space-y-2">
           <p class="text-xs uppercase tracking-wide text-contentMuted">Drive assets</p>
           <div class="flex flex-wrap gap-2 text-xs">
-            {% if drafts.webViewLink or drive_meta.web_view_link %}
-              <a href="{{ drafts.webViewLink or drive_meta.web_view_link }}" target="_blank" rel="noopener" class="inline-flex items-center px-2 py-1 rounded-md border border-border hover:border-primary hover:text-primary">Draft Doc</a>
+            {% if drive_meta.web_view_link %}
+              <a href="{{ drive_meta.web_view_link }}" target="_blank" rel="noopener" class="inline-flex items-center px-2 py-1 rounded-md border border-border hover:border-primary hover:text-primary">Google Doc</a>
             {% endif %}
             {% if media.webViewLink %}
               <a href="{{ media.webViewLink }}" target="_blank" rel="noopener" class="inline-flex items-center px-2 py-1 rounded-md border border-border hover:border-primary hover:text-primary">Media</a>
             {% endif %}
-            {% if published.webViewLink %}
-              <a href="{{ published.webViewLink }}" target="_blank" rel="noopener" class="inline-flex items-center px-2 py-1 rounded-md border border-border hover:border-primary hover:text-primary">Published</a>
-            {% endif %}
-            {% if not (drafts or media or published) %}
+            {% set has_assets = (drive_meta.web_view_link or media.webViewLink) %}
+            {% if not has_assets %}
               <span class="text-contentMuted">No Drive assets yet</span>
             {% endif %}
           </div>
