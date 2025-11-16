@@ -1,13 +1,13 @@
 # Cloudflare Workers configuration
 
 name = "quill-api"
-main = "api/main.py"
+main = "workers/main.py"
 compatibility_date = "2024-01-01"
 compatibility_flags = ["python_workers"]
 
 # Python runtime
 [build]
-command = "pip install -r requirements.txt"
+command = "pip install -r cf-requirements.txt"
 
 # Environment variables
 [vars]
@@ -50,4 +50,3 @@ binding = "DLQ"
 # Limits
 [limits]
 cpu_ms = 50000  # 50 seconds CPU time
-

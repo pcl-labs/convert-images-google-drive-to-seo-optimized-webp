@@ -1,0 +1,69 @@
+"""
+Helpers for adapting Cloudflare Worker bindings into our Settings object.
+"""
+
+from __future__ import annotations
+
+import os
+from typing import Any, Dict
+
+from api.config import Settings, replace_settings, settings as global_settings
+
+
+WORKER_DB_BINDING = "DB"
+WORKER_QUEUE_BINDING = "JOB_QUEUE"
+WORKER_DLQ_BINDING = "DLQ"
+WORKER_KV_BINDING = "KV"
+
+
+def _string_bindings_from_env(env: Any) -> Dict[str, str]:
+    """
+    Extract string environment variables from the Worker env object so
+    BaseSettings can pick them up on instantiation.
+    """
+    string_values: Dict[str, str] = {}
+
+    if env is None:
+        return string_values
+
+    for attr in dir(env):
+        if attr.startswith("_"):
+            continue
+        try:
+            value = getattr(env, attr)
+        except AttributeError:
+            continue
+
+        if isinstance(value, str):
+            string_values[attr] = value
+
+    return string_values
+
+
+def apply_worker_env(env: Any) -> Settings:
+    """
+    Convert Cloudflare Worker env bindings into our Settings object and
+    update the shared module-level settings in-place.
+    """
+    string_env = _string_bindings_from_env(env)
+    for key, value in string_env.items():
+        os.environ[key] = value
+
+    worker_kwargs = {}
+    if hasattr(env, WORKER_DB_BINDING):
+        worker_kwargs["d1_database"] = getattr(env, WORKER_DB_BINDING)
+    if hasattr(env, WORKER_QUEUE_BINDING):
+        worker_kwargs["queue"] = getattr(env, WORKER_QUEUE_BINDING)
+    if hasattr(env, WORKER_DLQ_BINDING):
+        worker_kwargs["dlq"] = getattr(env, WORKER_DLQ_BINDING)
+    if hasattr(env, WORKER_KV_BINDING):
+        worker_kwargs["kv_namespace"] = getattr(env, WORKER_KV_BINDING)
+
+    # Instantiate a new Settings to evaluate BaseSettings sources with the
+    # freshly injected os.environ values, then mutate the global instance.
+    new_settings = Settings(**worker_kwargs)
+    replace_settings(new_settings)
+    return global_settings
+
+
+__all__ = ["apply_worker_env"]
