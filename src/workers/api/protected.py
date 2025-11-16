@@ -7,7 +7,6 @@ import secrets
 import json
 import asyncio
 from datetime import datetime, timezone
-from urllib.parse import urlparse
 
 from .config import settings
 from .models import (
@@ -30,8 +29,6 @@ from .models import (
     DocumentVersionDetail,
     DocumentExportRequest,
     DocumentExportResponse,
-    IngestDriveRequest,
-    DriveChangePollRequest,
 )
 from .database import (
     create_job_extended,
@@ -60,8 +57,9 @@ from .google_oauth import (
 from .constants import COOKIE_GOOGLE_OAUTH_STATE
 from .app_logging import get_logger
 from .exceptions import JobNotFoundError
-from src.workers.core.drive_utils import extract_folder_id_from_input
-from src.workers.core.youtube_api import fetch_video_metadata, YouTubeAPIError
+from ..core.drive_utils import extract_folder_id_from_input
+from ..core.google_clients import GoogleAPIError
+from ..core.youtube_api import fetch_video_metadata, YouTubeAPIError
 from .deps import (
     ensure_db,
     ensure_services,
@@ -69,17 +67,13 @@ from .deps import (
     parse_job_progress,
 )
 from .utils import enqueue_job_with_guard
-from src.workers.core.url_utils import parse_youtube_video_id
-from .drive_workspace import ensure_drive_workspace, ensure_document_drive_structure
+from ..core.url_utils import parse_youtube_video_id
 from .database import get_usage_summary, list_usage_events, count_usage_events
 from fastapi import Query
 
 logger = get_logger(__name__)
 
 router = APIRouter()
-
-# Canonical Drive stage constant
-DRIVE_STAGE_DRAFT = "draft"
 
 
 def _parse_job_progress_model(progress_str: str) -> JobProgress:
@@ -101,7 +95,7 @@ def _summarize_google_tokens(rows: list[dict]) -> dict:
     return summary
 
 
-def _parse_db_datetime(value) -> Optional[datetime]:
+def _parse_db_datetime(value):
     if isinstance(value, datetime):
         return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
     if isinstance(value, str) and value:
@@ -109,17 +103,8 @@ def _parse_db_datetime(value) -> Optional[datetime]:
             dt = datetime.fromisoformat(value)
             return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
         except Exception:
-            logger.warning(
-                "Failed to parse datetime string",
-                extra={"value": value, "error_type": "parse_failure"}
-            )
-            return None
-    if value is not None:
-        logger.warning(
-            "Invalid datetime value type",
-            extra={"value": value, "value_type": type(value).__name__}
-        )
-    return None
+            pass
+    return datetime.now(timezone.utc)
 
 
 def _coerce_document_metadata(doc: dict) -> dict:
@@ -158,14 +143,8 @@ def _serialize_document(doc: dict) -> Document:
         content_format=parsed.get("content_format"),
         frontmatter=_json_field(parsed.get("frontmatter"), {}),
         latest_version_id=parsed.get("latest_version_id"),
-        drive_file_id=parsed.get("drive_file_id"),
-        drive_revision_id=parsed.get("drive_revision_id"),
         created_at=_parse_db_datetime(parsed.get("created_at")),
         updated_at=_parse_db_datetime(parsed.get("updated_at")),
-        drive_folder_id=parsed.get("drive_folder_id"),
-        drive_drafts_folder_id=parsed.get("drive_drafts_folder_id"),
-        drive_media_folder_id=parsed.get("drive_media_folder_id"),
-        drive_published_folder_id=parsed.get("drive_published_folder_id"),
     )
 
 
@@ -188,21 +167,18 @@ def _version_payload(row: dict) -> dict:
 
 def _version_summary_model(row: dict) -> DocumentVersionSummary:
     data = _version_payload(row)
-    created_at = data["created_at"] or datetime.now(timezone.utc)
     return DocumentVersionSummary(
         version_id=data["version_id"],
         document_id=data["document_id"],
         version=data["version"],
         content_format=data["content_format"],
         frontmatter=data["frontmatter"],
-        created_at=created_at,
+        created_at=data["created_at"],
     )
 
 
 def _version_detail_model(row: dict) -> DocumentVersionDetail:
     data = _version_payload(row)
-    created_at = data["created_at"] or datetime.now(timezone.utc)
-    data["created_at"] = created_at
     return DocumentVersionDetail(**data)
 
 
@@ -216,101 +192,32 @@ async def _load_document_for_user(db, document_id: str, user_id: str) -> dict:
 def _drive_folder_from_document(doc: dict) -> str:
     if doc.get("source_type") not in {"drive", "drive_folder"}:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Document is not backed by a Drive folder")
-    metadata = doc.get("metadata") or {}
-    if isinstance(metadata, str):
-        try:
-            metadata = json.loads(metadata)
-        except Exception:
-            metadata = {}
-    folder_id = (
-        doc.get("drive_folder_id")
-        or doc.get("source_ref")
-        or metadata.get("drive_folder_id")
-        or (metadata.get("drive") or {}).get("folder_id")
-    )
+    folder_id = doc.get("source_ref") or doc["metadata"].get("drive_folder_id")
     if not folder_id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Document is missing Drive folder metadata")
     return folder_id
 
-
-def _drive_file_from_document(doc: dict) -> tuple[str, Optional[str]]:
-    metadata = doc.get("metadata") or {}
-    if isinstance(metadata, str):
-        try:
-            metadata = json.loads(metadata)
-        except Exception:
-            metadata = {}
-    drive_meta = metadata.get("drive") if isinstance(metadata, dict) else {}
-    if not isinstance(drive_meta, dict):
-        drive_meta = {}
-    file_id = doc.get("drive_file_id") or drive_meta.get("file_id") or metadata.get("drive_file_id")
-    if not file_id:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Document is not linked to a Drive file yet")
-    revision = doc.get("drive_revision_id") or drive_meta.get("revision_id")
-    return str(file_id), revision
-
 async def create_drive_document_for_user(db, user_id: str, drive_source: str) -> Document:
-    # Import locally to avoid hard dependency issues if google client is absent in some envs
-    try:
-        from googleapiclient.errors import HttpError  # type: ignore
-    except Exception:
-        class _GoogleHttpError(Exception):
-            pass
-        HttpError = _GoogleHttpError  # type: ignore
-
-    folder_id = None
     try:
         service = await build_drive_service_for_user(db, user_id)  # type: ignore
         folder_id = extract_folder_id_from_input(drive_source, service=service)
-    except (ValueError, HttpError):
-        folder_id = None
+    except (ValueError, GoogleAPIError) as e:
+        logger.error("drive_folder_prepare_error", exc_info=True, extra={"user_id": user_id, "drive_source": drive_source})
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Google not linked or folder not accessible") from None
     except HTTPException:
         raise
-    except Exception:
+    except Exception as e:
         logger.error("drive_folder_unexpected_error", exc_info=True, extra={"user_id": user_id, "drive_source": drive_source})
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to create Drive document") from None
-
-    try:
-        structure = await ensure_document_drive_structure(
-            db,
-            user_id,
-            name=drive_source,
-            existing_folder_id=folder_id,
-        )
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.error("drive_document_structure_failed", exc_info=True, extra={"user_id": user_id, "input": drive_source})
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to prepare Drive workspace") from exc
-
-    drive_file = structure["file"]
-    media_folder = structure.get("media")
-    drive_meta = {
-        "folder": structure["folder"],
-        "folder_id": structure["folder"]["id"],
-        "media": media_folder,
-        "media_folder_id": (media_folder or {}).get("id"),
-        "file_id": drive_file.get("id"),
-        "revision_id": drive_file.get("revision_id"),
-        "web_view_link": drive_file.get("webViewLink"),
-        "stage": DRIVE_STAGE_DRAFT,
-    }
-
     document_id = str(uuid.uuid4())
     doc = await create_document(
         db,
         document_id=document_id,
         user_id=user_id,
         source_type="drive",
-        source_ref=structure["folder"]["id"],
+        source_ref=folder_id,
         raw_text=None,
-        metadata={"input": drive_source, "drive": drive_meta},
-        drive_file_id=drive_file.get("id"),
-        drive_revision_id=drive_file.get("revision_id"),
-        drive_folder_id=structure["folder"]["id"],
-        drive_drafts_folder_id=None,
-        drive_media_folder_id=(media_folder or {}).get("id"),
-        drive_published_folder_id=None,
+        metadata={"input": drive_source},
     )
     return _serialize_document(doc)
 
@@ -385,106 +292,14 @@ async def start_ingest_youtube_job(db, queue, user_id: str, url: str) -> JobStat
             extra={"job_id": job_id, "document_id": document_id, "reason": "queue unavailable", "exception": str(enqueue_exception) if enqueue_exception else None},
         )
     progress = _parse_job_progress_model(progress_str=job_row.get("progress", "{}"))
-    created_at = _parse_db_datetime(job_row.get("created_at")) or datetime.now(timezone.utc)
     return JobStatus(
         job_id=job_id,
         user_id=user_id,
         status=JobStatusEnum.PENDING,
         progress=progress,
-        created_at=created_at,
+        created_at=_parse_db_datetime(job_row.get("created_at")),
         job_type=JobType.INGEST_YOUTUBE.value,
         document_id=document_id,
-    )
-
-
-async def start_ingest_drive_job(db, queue, user_id: str, document_id: str) -> JobStatus:
-    doc = await _load_document_for_user(db, document_id, user_id)
-    file_id, revision = _drive_file_from_document(doc)
-    job_id = str(uuid.uuid4())
-    payload = {"drive_file_id": file_id, "drive_revision_id": revision}
-    job_row = await create_job_extended(
-        db,
-        job_id,
-        user_id,
-        job_type=JobType.INGEST_DRIVE.value,
-        document_id=document_id,
-        payload=payload,
-    )
-    message = {
-        "job_id": job_id,
-        "user_id": user_id,
-        "job_type": JobType.INGEST_DRIVE.value,
-        "document_id": document_id,
-        "drive_file_id": file_id,
-        "drive_revision_id": revision,
-    }
-    enqueued, enqueue_exception, should_fail = await enqueue_job_with_guard(
-        queue,
-        job_id,
-        user_id,
-        message,
-        allow_inline_fallback=False,
-    )
-    if should_fail:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Queue unavailable for Drive ingest; try again later")
-    if not enqueued:
-        logger.warning(
-            "drive_ingest_queue_unavailable",
-            extra={"job_id": job_id, "document_id": document_id, "doc_hint": "docs/DEPLOYMENT.md#queue-configuration-modes", "exception": str(enqueue_exception) if enqueue_exception else None},
-        )
-    progress = _parse_job_progress_model(progress_str=job_row.get("progress", "{}"))
-    created_at = _parse_db_datetime(job_row.get("created_at")) or datetime.now(timezone.utc)
-    return JobStatus(
-        job_id=job_id,
-        user_id=user_id,
-        status=JobStatusEnum.PENDING,
-        progress=progress,
-        created_at=created_at,
-        job_type=JobType.INGEST_DRIVE.value,
-        document_id=document_id,
-    )
-
-
-async def start_drive_change_poll_job(db, queue, user_id: str, document_ids: Optional[list[str]] = None) -> JobStatus:
-    job_id = str(uuid.uuid4())
-    payload = {"document_ids": document_ids} if document_ids else None
-    job_row = await create_job_extended(
-        db,
-        job_id,
-        user_id,
-        job_type=JobType.DRIVE_CHANGE_POLL.value,
-        payload=payload,
-    )
-    message = {
-        "job_id": job_id,
-        "user_id": user_id,
-        "job_type": JobType.DRIVE_CHANGE_POLL.value,
-    }
-    if document_ids:
-        message["document_ids"] = document_ids
-    enqueued, enqueue_exception, should_fail = await enqueue_job_with_guard(
-        queue,
-        job_id,
-        user_id,
-        message,
-        allow_inline_fallback=False,
-    )
-    if should_fail:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Queue unavailable for Drive change polling")
-    if not enqueued:
-        logger.warning(
-            "drive_change_poll_enqueue_failed",
-            extra={"job_id": job_id, "doc_hint": "docs/DEPLOYMENT.md#queue-configuration-modes", "exception": str(enqueue_exception) if enqueue_exception else None},
-        )
-    progress = _parse_job_progress_model(progress_str=job_row.get("progress", "{}"))
-    created_at = _parse_db_datetime(job_row.get("created_at")) or datetime.now(timezone.utc)
-    return JobStatus(
-        job_id=job_id,
-        user_id=user_id,
-        status=JobStatusEnum.PENDING,
-        progress=progress,
-        created_at=created_at,
-        job_type=JobType.DRIVE_CHANGE_POLL.value,
     )
 
 
@@ -524,13 +339,12 @@ async def start_ingest_text_job(db, queue, user_id: str, text: str, title: Optio
             extra={"job_id": job_id, "document_id": document_id, "reason": "queue unavailable", "exception": str(enqueue_exception) if enqueue_exception else None},
         )
     progress = _parse_job_progress_model(progress_str=job_row.get("progress", "{}"))
-    created_at = _parse_db_datetime(job_row.get("created_at")) or datetime.now(timezone.utc)
     return JobStatus(
         job_id=job_id,
         user_id=user_id,
         status=JobStatusEnum.PENDING,
         progress=progress,
-        created_at=created_at,
+        created_at=_parse_db_datetime(job_row.get("created_at")),
         job_type=JobType.INGEST_TEXT.value,
         document_id=document_id,
     )
@@ -563,16 +377,12 @@ async def google_auth_start(
 ):
     try:
         integration_key = normalize_google_integration(integration)
-        # Check if base_url is set and not empty/whitespace
-        if settings.base_url and settings.base_url.strip():
+        if settings.base_url:
             redirect_uri = f"{settings.base_url.rstrip('/')}/auth/google/callback"
-            logger.info(f"Using base_url from settings: {settings.base_url} -> redirect_uri: {redirect_uri}")
         else:
             redirect_uri = str(request.url.replace(path="/auth/google/callback", query=""))
-            logger.info(f"base_url not set (value: {repr(settings.base_url)}), using request URL -> redirect_uri: {redirect_uri}")
         state = secrets.token_urlsafe(16)
         auth_url = get_google_oauth_url(state, redirect_uri, integration=integration_key)
-        logger.debug(f"Generated Google OAuth URL with redirect_uri: {redirect_uri}")
 
         is_secure = settings.environment == "production" or request.url.scheme == "https"
         response = RedirectResponse(url=auth_url)
@@ -604,21 +414,8 @@ async def google_auth_start(
             path="/",
         )
         redirect_path = redirect or f"/dashboard/integrations/{integration_key}"
-        # Validate redirect path to prevent protocol-relative URLs and external redirects
-        safe_default = f"/dashboard/integrations/{integration_key}"
-        if redirect_path:
-            # Reject protocol-relative URLs (e.g., '//evil.com')
-            if redirect_path.startswith("//"):
-                redirect_path = safe_default
-            else:
-                # Parse URL to ensure it's a safe internal path-only redirect
-                parsed = urlparse(redirect_path)
-                if parsed.scheme or parsed.netloc or not parsed.path.startswith("/"):
-                    redirect_path = safe_default
-                else:
-                    redirect_path = parsed.path
-        else:
-            redirect_path = safe_default
+        if not redirect_path.startswith("/"):
+            redirect_path = f"/dashboard/integrations/{integration_key}"
         response.set_cookie(
             key="google_redirect_next",
             value=redirect_path,
@@ -654,7 +451,7 @@ async def google_auth_callback(code: str, state: str, request: Request, user: di
         await exchange_google_code(db, user["user_id"], code, redirect_uri, integration=integration_key)
         is_secure = settings.environment == "production" or request.url.scheme == "https"
         next_path = request.cookies.get("google_redirect_next") or f"/dashboard/integrations/{integration_key}"
-        if not next_path.startswith("/") or next_path.startswith("//"):
+        if not next_path.startswith("/"):
             next_path = f"/dashboard/integrations/{integration_key}"
         response = RedirectResponse(url=next_path, status_code=status.HTTP_302_FOUND)
         response.delete_cookie(key=COOKIE_GOOGLE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
@@ -812,14 +609,13 @@ async def create_document_export_endpoint(document_id: str, request: DocumentExp
         target=request.target.value,
         payload=request.metadata,
     )
-    created_at = _parse_db_datetime(row.get("created_at")) or datetime.now(timezone.utc)
     return DocumentExportResponse(
         export_id=row.get("export_id"),
         status=row.get("status"),
         target=request.target,
         version_id=row.get("version_id"),
         document_id=row.get("document_id"),
-        created_at=created_at,
+        created_at=_parse_db_datetime(row.get("created_at")),
     )
 
 
@@ -868,13 +664,12 @@ async def start_optimize_job(
             },
         )
     progress = _parse_job_progress_model(progress_str=job_row.get("progress", "{}"))
-    created_at = _parse_db_datetime(job_row.get("created_at")) or datetime.now(timezone.utc)
     return JobStatus(
         job_id=job_id,
         user_id=user_id,
         status=JobStatusEnum.PENDING,
         progress=progress,
-        created_at=created_at,
+        created_at=_parse_db_datetime(job_row.get("created_at")),
         job_type=JobType.OPTIMIZE_DRIVE.value,
         document_id=document_id,
     )
@@ -923,13 +718,12 @@ async def start_generate_blog_job(
             },
         )
     progress = _parse_job_progress_model(progress_str=job_row.get("progress", "{}"))
-    created_at = _parse_db_datetime(job_row.get("created_at")) or datetime.now(timezone.utc)
     return JobStatus(
         job_id=job_id,
         user_id=user_id,
         status=JobStatusEnum.PENDING,
         progress=progress,
-        created_at=created_at,
+        created_at=_parse_db_datetime(job_row.get("created_at")),
         job_type=JobType.GENERATE_BLOG.value,
         document_id=document_id,
     )
@@ -967,13 +761,12 @@ async def get_job_status(job_id: str, user: dict = Depends(get_current_user)):
     if not job:
         raise JobNotFoundError(job_id)
     progress = _parse_job_progress_model(progress_str=job.get("progress", "{}"))
-    created_at = _parse_db_datetime(job.get("created_at")) or datetime.now(timezone.utc)
     return JobStatus(
         job_id=job["job_id"],
         user_id=job["user_id"],
         status=JobStatusEnum(job["status"]),
         progress=progress,
-        created_at=created_at,
+        created_at=_parse_db_datetime(job.get("created_at")),
         completed_at=_parse_db_datetime(job.get("completed_at")) if job.get("completed_at") else None,
         error=job.get("error"),
         job_type=job.get("job_type"),
@@ -993,14 +786,13 @@ async def list_user_jobs(page: int = 1, page_size: int = 20, status_filter: Opti
     job_statuses = []
     for job in jobs_list:
         progress = _parse_job_progress_model(progress_str=job.get("progress", "{}"))
-        created_at = _parse_db_datetime(job.get("created_at")) or datetime.now(timezone.utc)
         job_statuses.append(
             JobStatus(
                 job_id=job["job_id"],
                 user_id=job["user_id"],
                 status=JobStatusEnum(job["status"]),
                 progress=progress,
-                created_at=created_at,
+                created_at=_parse_db_datetime(job.get("created_at")),
                 completed_at=_parse_db_datetime(job.get("completed_at")) if job.get("completed_at") else None,
                 error=job.get("error"),
                 job_type=job.get("job_type"),
@@ -1016,20 +808,6 @@ async def ingest_youtube(req: IngestYouTubeRequest, user: dict = Depends(get_cur
     db = ensure_db()
     queue = ensure_services()[1]
     return await start_ingest_youtube_job(db, queue, user["user_id"], str(req.url))
-
-
-@router.post("/ingest/drive", response_model=JobStatus, tags=["Ingestion"])
-async def ingest_drive(req: IngestDriveRequest, user: dict = Depends(get_current_user)):
-    db = ensure_db()
-    queue = ensure_services()[1]
-    return await start_ingest_drive_job(db, queue, user["user_id"], req.document_id)
-
-
-@router.post("/ingest/drive/poll", response_model=JobStatus, tags=["Ingestion"])
-async def ingest_drive_poll(req: DriveChangePollRequest, user: dict = Depends(get_current_user)):
-    db = ensure_db()
-    queue = ensure_services()[1]
-    return await start_drive_change_poll_job(db, queue, user["user_id"], req.document_ids)
 
 
 @router.post("/ingest/text", response_model=JobStatus, tags=["Ingestion"])

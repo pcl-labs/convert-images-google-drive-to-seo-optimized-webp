@@ -13,7 +13,7 @@ import logging
 import datetime
 from typing import Dict, Any, Optional, Protocol
 
-import httpx
+from simple_http import AsyncSimpleClient
 
 from .config import settings
 
@@ -32,12 +32,12 @@ class CloudflareQueueAPI:
         self.account_id = account_id
         self.api_token = api_token
         self.queue_name = queue_name
-        self._client: Optional[httpx.AsyncClient] = None
+        self._client: Optional[AsyncSimpleClient] = None
 
     @property
-    def client(self) -> httpx.AsyncClient:
+    def client(self) -> AsyncSimpleClient:
         if self._client is None:
-            self._client = httpx.AsyncClient(timeout=10)
+            self._client = AsyncSimpleClient(timeout=10)
         return self._client
 
     @property
@@ -66,7 +66,6 @@ class CloudflareQueueAPI:
 
     async def close(self) -> None:
         if self._client:
-            await self._client.aclose()
             self._client = None
 
 
