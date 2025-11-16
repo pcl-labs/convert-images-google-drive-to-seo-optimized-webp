@@ -1,9 +1,27 @@
+"""Pytest configuration and fixtures for tests.
+
+This module keeps the environment deterministic and adds a lightweight
+``pytest.mark.asyncio`` implementation so we can run async tests without
+installing pytest-asyncio (blocked by the sandbox proxy).
 """
-Pytest configuration and fixtures for tests.
-Sets up required environment variables for testing.
-"""
+
+from __future__ import annotations
+
+import asyncio
+import inspect
 import os
+import sys
+from pathlib import Path
+
+from unittest.mock import AsyncMock
+
 import pytest
+
+# Add src/workers to PYTHONPATH for local development
+# This allows imports like "from api.main" to work locally
+_workers_path = Path(__file__).parent.parent / "src" / "workers"
+if _workers_path.exists() and str(_workers_path) not in sys.path:
+    sys.path.insert(0, str(_workers_path))
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -23,4 +41,39 @@ def setup_test_env():
         os.environ.pop("JWT_SECRET_KEY", None)
     else:
         os.environ["JWT_SECRET_KEY"] = original
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "asyncio: run the test inside an event loop")
+    if not hasattr(pytest, "AsyncMock"):
+        pytest.AsyncMock = AsyncMock
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_pyfunc_call(pyfuncitem):
+    marker = pyfuncitem.get_closest_marker("asyncio")
+    if marker is None:
+        return None
+
+    func = pyfuncitem.obj
+    if not inspect.iscoroutinefunction(func):
+        return None
+
+    loop = asyncio.new_event_loop()
+    old_loop = None
+    try:
+        try:
+            old_loop = asyncio.get_event_loop()
+        except RuntimeError:
+            old_loop = None
+        asyncio.set_event_loop(loop)
+        argnames = getattr(pyfuncitem._fixtureinfo, "argnames", ()) or ()
+        call_kwargs = {name: pyfuncitem.funcargs[name] for name in argnames if name in pyfuncitem.funcargs}
+        loop.run_until_complete(func(**call_kwargs))
+    finally:
+        try:
+            asyncio.set_event_loop(old_loop)
+        finally:
+            loop.close()
+    return True
 

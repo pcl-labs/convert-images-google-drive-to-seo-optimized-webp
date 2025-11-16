@@ -2,7 +2,7 @@
 """Extract Google OAuth access token from database for testing."""
 import asyncio
 import sys
-from api.database import Database, get_google_token
+from src.workers.api.database import Database, get_google_token
 
 async def main():
     # Extract user_id from JWT or use provided user_id

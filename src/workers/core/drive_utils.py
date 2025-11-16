@@ -273,7 +273,7 @@ def download_images(drive_folder_id, local_temp_dir, extensions=DEFAULT_EXTENSIO
                 break
         except HttpError as error:
             logger.error(f"An error occurred during download: {error}")
-            break
+            raise
     if fail_log_path and failed:
         with open(fail_log_path, 'a') as flog:
             for fname in failed:
@@ -282,16 +282,26 @@ def download_images(drive_folder_id, local_temp_dir, extensions=DEFAULT_EXTENSIO
         return downloaded, failed, filename_to_file_id
     return downloaded, failed
 
-def delete_images(drive_folder_id, image_ids, service=None):
+def delete_images(drive_folder_id, image_ids, service=None) -> int:
     """Delete images from Google Drive folder by image_ids.
     
     Validates that all image_ids belong to the specified folder before deletion.
     Files not found in the folder will be skipped with a warning.
+    
+    Args:
+        drive_folder_id: Google Drive folder ID
+        image_ids: List of file IDs to delete
+        service: Optional Drive service instance
+    
+    Returns:
+        int: Number of successfully deleted files
+    
+    Raises:
+        HttpError: If folder listing fails (re-raised from API)
     """
     service = service or get_drive_service()
     deleted_count = 0
     not_found_count = 0
-    error_count = 0
     skipped_count = 0
     
     # Validate folder and build set of valid file IDs
@@ -314,8 +324,7 @@ def delete_images(drive_folder_id, image_ids, service=None):
                 break
     except HttpError as error:
         logger.error(f"Error validating folder: {error}")
-        error_count += len(image_ids)
-        return
+        raise
     
     # Filter to only validated IDs
     validated_ids = []
@@ -339,17 +348,18 @@ def delete_images(drive_folder_id, image_ids, service=None):
                 not_found_count += 1
             else:
                 logger.error(f"Failed to delete file ID {file_id}: {e}")
-                error_count += 1
+                # Continue with next file, don't increment deleted_count
         except Exception as e:
             logger.error(f"Failed to delete file ID {file_id}: {e}")
-            error_count += 1
+            # Continue with next file, don't increment deleted_count
     
     # Print summary
     logger.info("Deletion summary:")
     logger.info(f"  Successfully deleted: {deleted_count}")
     logger.info(f"  Not found (already deleted): {not_found_count}")
     logger.info(f"  Skipped (not in folder): {skipped_count}")
-    logger.info(f"  Errors: {error_count}")
+    
+    return deleted_count
 
 def get_folder_name(folder_id, service=None):
     """Fetch the name of a Google Drive folder by its ID."""
@@ -402,3 +412,26 @@ def is_valid_drive_file_id(file_id: str) -> bool:
     if not re.match(r"^[a-zA-Z0-9_-]+$", file_id):
         return False
     return True
+
+
+def extract_drive_file_id_from_input(file_input: str, service=None) -> str:
+    """Normalize Drive file share links/IDs and validate they reference a Google Doc."""
+    match = re.search(r"/d/([\w-]+)", file_input)
+    if not match and "id=" in file_input:
+        match = re.search(r"id=([\w-]+)", file_input)
+    candidate_id = match.group(1) if match else file_input.strip()
+    if not is_valid_drive_file_id(candidate_id):
+        raise ValueError("Invalid Google Drive document link or ID format.")
+    service = service or get_drive_service()
+    try:
+        file_obj = service.files().get(fileId=candidate_id, fields='id, mimeType').execute()
+    except HttpError as exc:
+        if exc.resp.status == 404:
+            raise ValueError("Drive document not found; ensure the document is shared and accessible.") from exc
+        raise
+    if not isinstance(file_obj, dict):
+        raise ValueError("Drive API did not return file metadata.")
+    mime_type = file_obj.get('mimeType')
+    if mime_type != 'application/vnd.google-apps.document':
+        raise ValueError("Provided ID is not a Google Doc; ensure a valid Google Docs file ID is used.")
+    return candidate_id

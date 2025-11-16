@@ -55,6 +55,7 @@ def apply_worker_env(env: Any) -> Settings:
         "GITHUB_CLIENT_SECRET",
         "GOOGLE_CLIENT_ID",
         "GOOGLE_CLIENT_SECRET",
+        "ENCRYPTION_KEY",
         "USE_INLINE_QUEUE",
         "CLOUDFLARE_ACCOUNT_ID",
         "CLOUDFLARE_API_TOKEN",

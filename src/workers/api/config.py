@@ -92,6 +92,7 @@ class Settings(BaseSettings):
     # Transcript Configuration
     transcript_langs: Union[str, list[str]] = Field(default="en,en-US,en-GB")
 
+
     @field_validator("encryption_key")
     @classmethod
     def validate_encryption_key(cls, v: Optional[str]) -> Optional[str]:

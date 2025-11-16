@@ -1,9 +1,12 @@
 {% extends "base.html" %}
 {% set page_title = 'Dashboard' %}
 {% from 'components/layout/page.html' import page_container, page_header %}
+{% from 'components/elements/input.html' import input %}
+{% from 'components/elements/button.html' import button %}
+{% from 'components/elements/card.html' import card %}
 {% block content %}
 {% call page_container() %}
-  {{ page_header('Dashboard', 'Overview and quick actions') }}
+  {{ page_header('Dashboard', 'Kick off ingests and monitor automation jobs') }}
 
   <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
     <div class="bg-surfaceMuted rounded-xl p-4">
@@ -20,14 +23,66 @@
     </div>
   </div>
 
-  {% from 'components/elements/card.html' import card %}
+  <div id="dashboard-flash"></div>
+
+  <div class="grid gap-4 lg:grid-cols-3">
+    {% call card(title='Link Drive Folder') %}
+      <p class="text-xs text-contentMuted mb-2">Automatically build Quill workspace folders inside Drive.</p>
+      <div class="flex items-center justify-between mb-3">
+        <small class="text-contentMuted">Requires Google Drive</small>
+        {% if drive_connected %}
+          {% from 'components/elements/badge.html' import badge %}
+          {{ badge('Connected', status='completed') }}
+        {% else %}
+          <a href="/auth/google/start?integration=drive&redirect=/dashboard" class="text-xs text-primary hover:text-primary/80">Connect Google</a>
+        {% endif %}
+      </div>
+      <form class="space-y-3" hx-post="/dashboard/documents/drive" hx-target="#dashboard-flash" hx-swap="innerHTML">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+        {{ input('drive_source', label='Drive folder link or ID', placeholder='https://drive.google.com/drive/folders/...', attrs='required' + (' disabled' if not drive_connected else '')) }}
+        {{ button('Register Document', variant='primary', attrs='type=\"submit\" class=\"w-full\"' + (' disabled' if not drive_connected else '')) }}
+      </form>
+    {% endcall %}
+
+    {% call card(title='Ingest YouTube Video') %}
+      <p class="text-xs text-contentMuted mb-2">Capture transcripts + metadata for AI blog generation.</p>
+      <div class="flex items-center justify-between mb-3">
+        <small class="text-contentMuted">Requires YouTube scopes</small>
+        {% if youtube_connected %}
+          {% from 'components/elements/badge.html' import badge %}
+          {{ badge('Connected', status='completed') }}
+        {% else %}
+          <a href="/auth/google/start?integration=youtube&redirect=/dashboard" class="text-xs text-primary hover:text-primary/80">Connect YouTube</a>
+        {% endif %}
+      </div>
+      <form class="space-y-3" hx-post="/dashboard/documents/youtube" hx-target="#dashboard-flash" hx-swap="innerHTML">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+        {{ input('youtube_url', label='YouTube URL', type='url', placeholder='https://www.youtube.com/watch?v=...', attrs='required' + (' disabled' if not youtube_connected else '')) }}
+        {{ button('Queue Transcript & Chapters', variant='primary', attrs='type=\"submit\" class=\"w-full\"' + (' disabled' if not youtube_connected else '')) }}
+      </form>
+    {% endcall %}
+
+    {% call card(title='Paste Raw Text') %}
+      <p class="text-xs text-contentMuted mb-2">Drop outlines or transcripts to keep everything in sync with Drive.</p>
+      <form class="space-y-3" hx-post="/dashboard/documents/text" hx-target="#dashboard-flash" hx-swap="innerHTML">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+        {{ input('title', label='Title (optional)', placeholder='My interview notes') }}
+        <div class="space-y-1">
+          <label for="text_body" class="text-sm text-contentMuted">Text</label>
+          <textarea id="text_body" name="text_body" rows="5" class="field w-full rounded-lg" placeholder="Paste article, transcript, or outline..." required></textarea>
+        </div>
+        {{ button('Create Document', variant='primary', attrs='type=\"submit\" class=\"w-full\"') }}
+      </form>
+    {% endcall %}
+  </div>
+
   {% call card(title="Launch workflows") %}
     <p class="text-sm text-content">
-      Use the Documents page to ingest content, then call the API to kick off any long-running workflow. This dashboard stays light so mobile users can focus on the next action.
+      Run Drive optimizations or blog generation jobs once content is registered. Watch the stats above and trigger work from the API or CLI when drafts are ready.
     </p>
     <div class="mt-3 flex flex-wrap gap-2">
-      <a href="/dashboard/documents" class="btn-primary">Manage documents</a>
-      <a href="/dashboard/integrations" class="btn-secondary">Link integrations</a>
+      <a href="/dashboard/documents" class="btn-primary">View documents</a>
+      <a href="/dashboard/integrations" class="btn-secondary">Manage integrations</a>
     </div>
   {% endcall %}
 
@@ -44,7 +99,6 @@
 
   {% call card(title="Developer Docs") %}
     <div class="flex flex-wrap gap-3 text-sm">
-      {% from 'components/elements/button.html' import button %}
       <a href="/docs" class="btn-secondary">Swagger UI</a>
       <a href="/redoc" class="btn-secondary">ReDoc</a>
       <a href="/openapi.json" class="btn-secondary">OpenAPI JSON</a>

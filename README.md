@@ -13,6 +13,7 @@ Create SEO Ranking blogs from YouTube. Ship fast, flexible, and SEO-optimized bl
 - **Duplicate Prevention**: Skips files that already exist in Drive
 - **Automatic Cleanup**: Optionally deletes original images after optimization
 - **Error Handling**: Comprehensive error logging and retry mechanisms
+- **Drive Workspace Sync**: Connecting Google Drive provisions a Quill workspace (root/Drafts/Published) so documents stay mirrored between Drive and the app.
 
 ## Installation
 
@@ -27,11 +28,14 @@ cd convert-images-google-drive-to-seo-optimized-webp
 pip install -r requirements.txt
 ```
 
-3. Set up Google Drive + YouTube Data APIs:
+3. Set up Google Drive + Docs + YouTube Data APIs:
    - Go to [Google Cloud Console](https://console.cloud.google.com/)
    - Create a new project or select existing one
-   - Enable both the **Google Drive API** and the **YouTube Data API v3** on the same project
-   - Create OAuth 2.0 credentials (web application) and configure the consent screen to include Drive + YouTube read-only scopes
+   - Enable the **Google Drive API**, **Google Docs API**, and **YouTube Data API v3** on the same project
+   - Create OAuth 2.0 credentials (web application) and configure the consent screen to include the Drive + Docs scopes Quill uses:
+     - `https://www.googleapis.com/auth/drive`
+     - `https://www.googleapis.com/auth/documents`
+     - (YouTube ingestion continues to use `https://www.googleapis.com/auth/youtube.force-ssl`)
    - Download the credentials and save as `credentials.json` in the project root
 
 ## Usage
@@ -194,6 +198,14 @@ Visit `http://localhost:8000/docs` in your browser for interactive API testing.
   - `/auth/google/start?integration=youtube` enables YouTube ingestion.
 - During ingestion the API fetches metadata (title, description, duration, thumbnails, etc.) from the YouTube Data API and stores it with the document. If Google revokes access or the API denies the request, the job will fail up front with a descriptive error instead of silently falling back to unofficial scraping.
 - Transcripts are still retrieved from captions, but the authoritative duration + channel metadata always comes from the official API.
+
+### Drive workspace sync
+
+- When you connect Google Drive, Quill now creates a dedicated workspace inside your Drive account: `Quill/` with nested `Drafts/` and `Published/` folders.
+- Every Drive-backed document now gets its own subfolder inside that workspace (e.g., `Quill/<slug>/`) with nested `Drafts/`, `Media/`, and `Published/` folders. Quill automatically creates a Google Doc inside `Drafts` to serve as the canonical draft, and drops generated assets into `Media`.
+- When you export or mark a document ready, the final artifact lands inside that document’s `Published/` folder while Quill continues to track the same Drive file ID.
+- The integration detail page (`/dashboard/integrations/drive`) shows real-time workspace data (folder links, latest synced file, document counts) so you always know what’s connected.
+- This automation requires the Drive + Docs scopes listed above; if you add them to your OAuth client you’ll be prompted to re-consent the next time you reconnect Drive.
 
 ### Command Line Arguments
 

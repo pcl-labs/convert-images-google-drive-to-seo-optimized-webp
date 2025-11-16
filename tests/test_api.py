@@ -6,7 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 from unittest.mock import patch
 
-from api.constants import COOKIE_GOOGLE_OAUTH_STATE
+from src.workers.api.constants import COOKIE_GOOGLE_OAUTH_STATE
 
 # Note: These are basic structure tests
 # Full integration tests would require D1 database and queue setup
@@ -15,7 +15,7 @@ from api.constants import COOKIE_GOOGLE_OAUTH_STATE
 @pytest.fixture
 def client():
     """Create test client."""
-    from api.main import app
+    from src.workers.api.main import app
     return TestClient(app)
 
 
@@ -51,7 +51,7 @@ def test_jobs_endpoint_requires_auth(client):
 def test_github_auth_redirect(client):
     """Test GitHub OAuth redirect."""
     mock_url = "https://github.com/login/oauth/authorize?test=1"
-    with patch('api.auth.get_github_oauth_url', return_value=(mock_url, "test_state_token")) as mock_get_url:
+    with patch('src.workers.api.auth.get_github_oauth_url', return_value=(mock_url, "test_state_token")) as mock_get_url:
         response = client.get("/auth/github/start", follow_redirects=False)
         # Should redirect (302, 303, or 307)
         assert response.status_code in [302, 303, 307]
@@ -64,7 +64,7 @@ def test_github_auth_redirect(client):
 def test_google_login_start_redirect(client):
     """Test Google login OAuth redirect."""
     mock_url = "https://accounts.google.com/o/oauth2/v2/auth?test=1"
-    with patch('api.auth.get_google_login_oauth_url', return_value=(mock_url, "state")) as mock_get_url:
+    with patch('src.workers.api.auth.get_google_login_oauth_url', return_value=(mock_url, "state")) as mock_get_url:
         response = client.get("/auth/google/login/start", follow_redirects=False)
         assert response.status_code in [302, 303, 307]
         assert response.headers['Location'] == mock_url
@@ -79,7 +79,7 @@ def test_google_login_start_post_requires_csrf(client):
 def test_google_login_start_post_redirect(client):
     mock_url = "https://accounts.google.com/o/oauth2/v2/auth?test=2"
     client.cookies.set("csrf_token", "token")
-    with patch('api.auth.get_google_login_oauth_url', return_value=(mock_url, "state")):
+    with patch('src.workers.api.auth.get_google_login_oauth_url', return_value=(mock_url, "state")):
         response = client.post("/auth/google/login/start", data={"csrf_token": "token"}, follow_redirects=False)
         assert response.status_code in [302, 303, 307]
         assert response.headers['Location'] == mock_url
@@ -87,7 +87,7 @@ def test_google_login_start_post_redirect(client):
 
 def test_google_oauth_start_redirects_when_configured(client):
     """Test that Google OAuth start endpoint redirects when configured; skip otherwise."""
-    from api.config import settings
+    from src.workers.api.config import settings
     if not settings.google_client_id or not settings.google_client_secret:
         import pytest
         pytest.skip("Google OAuth not configured")
@@ -121,8 +121,8 @@ def test_providers_status_requires_auth(client):
 
 def test_google_oauth_url_generation():
     """Test that Google OAuth URL generation function works when configured."""
-    from api.google_oauth import get_google_oauth_url
-    from api.config import settings
+    from src.workers.api.google_oauth import get_google_oauth_url
+    from src.workers.api.config import settings
     import secrets
     
     # Only test if Google OAuth is configured
