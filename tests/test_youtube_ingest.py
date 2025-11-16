@@ -313,7 +313,8 @@ def test_ingest_youtube_queue_flow(monkeypatch):
             await db.execute("DELETE FROM usage_events WHERE job_id = ?", ((job_id or ""),))
             if job_id:
                 await db.execute("DELETE FROM jobs WHERE job_id = ?", (job_id,))
-            await db.execute("DELETE FROM documents WHERE user_id = ?", (user_id,))
+            # Precise cleanup: remove only the document created by this test
+            await db.execute("DELETE FROM documents WHERE document_id = ?", (job_status.document_id,))
             await db.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
 
     asyncio.run(_run())
