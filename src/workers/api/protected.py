@@ -225,12 +225,12 @@ async def create_drive_document_for_user(db, user_id: str, drive_source: str) ->
     try:
         service = await build_drive_service_for_user(db, user_id)  # type: ignore
         folder_id = extract_folder_id_from_input(drive_source, service=service)
-    except (ValueError, GoogleAPIError) as e:
+    except (ValueError, GoogleAPIError):
         logger.error("drive_folder_prepare_error", exc_info=True, extra={"user_id": user_id, "drive_source": drive_source})
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Google not linked or folder not accessible") from None
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         logger.error("drive_folder_unexpected_error", exc_info=True, extra={"user_id": user_id, "drive_source": drive_source})
         raise
     document_id = str(uuid.uuid4())

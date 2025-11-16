@@ -18,6 +18,13 @@ from .google_clients import GoogleAPIError, GoogleDriveClient, OAuthToken
 from .constants import DEFAULT_EXTENSIONS
 from .extension_utils import normalize_extensions
 
+# Import settings with try/except for CLI fallback compatibility
+try:
+    from ..api.config import settings
+except ImportError:
+    # CLI fallback: settings may not be available in CLI context
+    settings = None
+
 logger = logging.getLogger(__name__)
 
 TOKEN_FILE = Path("token.json")
@@ -52,10 +59,19 @@ def _refresh_local_token(token_info: Dict[str, str]) -> Dict[str, str]:
     """Refresh token with thread-safe, atomic file writes and proper permissions.
     
     Caller must hold _token_lock for the file write operation.
+    
+    Reads client_id/client_secret from environment/secrets (via settings) first,
+    falling back to token_info for CLI compatibility.
     """
     refresh_token = token_info.get("refresh_token")
-    client_id = token_info.get("client_id")
-    client_secret = token_info.get("client_secret")
+    # Prefer environment/secrets over token.json for client credentials
+    if settings and settings.google_client_id and settings.google_client_secret:
+        client_id = settings.google_client_id
+        client_secret = settings.google_client_secret
+    else:
+        # CLI fallback: read from token.json if settings not available
+        client_id = token_info.get("client_id")
+        client_secret = token_info.get("client_secret")
     if not refresh_token or not client_id or not client_secret:
         raise RuntimeError("Cannot refresh Google token; missing refresh_token or client credentials")
     payload = {
@@ -97,22 +113,50 @@ def _refresh_local_token(token_info: Dict[str, str]) -> Dict[str, str]:
     token_bytes = token_json.encode("utf-8")
     temp_fd, temp_path = tempfile.mkstemp(dir=TOKEN_FILE.parent, text=False)
     try:
-        os.write(temp_fd, token_bytes)
-        os.close(temp_fd)
-        os.chmod(temp_path, 0o600)  # Restrict to owner only
-        os.replace(temp_path, TOKEN_FILE)
-    except Exception:
         try:
-            os.unlink(temp_path)
+            os.write(temp_fd, token_bytes)
+            # Close the file descriptor immediately after successful write
+            os.close(temp_fd)
+            temp_fd = None  # Mark as closed to avoid double-close in finally
+            os.chmod(temp_path, 0o600)  # Restrict to owner only
+            os.replace(temp_path, TOKEN_FILE)
         except Exception:
-            pass
-        raise
+            try:
+                os.unlink(temp_path)
+            except Exception:
+                pass
+            raise
+    finally:
+        # Always close the file descriptor if it's still open (e.g., if write failed)
+        # Wrap in try/except to ignore double-close errors or bad descriptor values
+        if temp_fd is not None:
+            try:
+                os.close(temp_fd)
+            except (OSError, ValueError):
+                # Ignore errors from closing (e.g., already closed or bad descriptor)
+                pass
     
     return token_info
 
 
-def get_drive_service() -> GoogleDriveClient:
-    """Get Drive service with thread-safe token loading and refresh."""
+def get_drive_service(token: Optional[OAuthToken] = None) -> GoogleDriveClient:
+    """Get Drive service with thread-safe token loading and refresh.
+    
+    Args:
+        token: Optional OAuthToken to use. If provided, uses this token directly.
+               If None, falls back to loading from token.json (CLI fallback only).
+    
+    Returns:
+        GoogleDriveClient instance
+        
+    Note:
+        In production/worker contexts, pass a token built from DB credentials.
+        token.json is only used as a CLI fallback when token is not provided.
+    """
+    if token is not None:
+        return GoogleDriveClient(token)
+    
+    # CLI fallback: load from token.json
     # Use lock to prevent concurrent refresh attempts
     with _token_lock:
         token_info = _load_local_token()
