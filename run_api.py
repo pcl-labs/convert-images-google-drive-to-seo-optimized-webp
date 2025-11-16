@@ -42,7 +42,7 @@ if __name__ == "__main__":
                 os.environ["PYTHONPATH"] = workers_path_str
     
     uvicorn.run(
-        "api.main:app",  # String import required for reload
+        "src.workers.api.main:app",  # Full module path for proper package resolution
         host=os.getenv("HOST", "127.0.0.1"),  # Default to localhost for security
         port=8000,
         reload=True,  # Auto-reload on code changes

@@ -43,7 +43,7 @@ from src.workers.core.drive_utils import (
     is_valid_drive_file_id,
 )
 from src.workers.core.image_processor import process_image
-from api.database import (
+from src.workers.api.database import (
     Database,
     update_job_status,
     update_document,
@@ -55,9 +55,9 @@ from api.database import (
     update_job_retry_state,
     create_job_extended,
 )
-from api.config import settings
-from api.cloudflare_queue import QueueProducer
-from api.google_oauth import build_youtube_service_for_user, build_docs_service_for_user
+from src.workers.api.config import settings
+from src.workers.api.cloudflare_queue import QueueProducer
+from src.workers.api.google_oauth import build_youtube_service_for_user, build_docs_service_for_user, build_drive_service_for_user
 from src.workers.core.youtube_captions import fetch_captions_text
 from src.workers.core.ai_modules import (
     generate_outline,
@@ -68,12 +68,11 @@ from src.workers.core.ai_modules import (
     generate_image_prompts,
     markdown_to_html,
 )
-from api.notifications import notify_job
-from api.app_logging import setup_logging, get_logger
+from src.workers.api.notifications import notify_job
+from src.workers.api.app_logging import setup_logging, get_logger
 from src.workers.core.filename_utils import FILENAME_ID_SEPARATOR, sanitize_folder_name, parse_download_name, make_output_dir_name
 from src.workers.core.constants import TEMP_DIR, FAIL_LOG_PATH
 from src.workers.core.extension_utils import normalize_extensions, detect_extensions_in_dir
-from api.google_oauth import build_drive_service_for_user
 from src.workers.core.google_async import execute_google_request
 from src.workers.core.google_docs_text import google_doc_to_text, text_to_html
 

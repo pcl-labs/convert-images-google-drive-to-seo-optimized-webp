@@ -222,6 +222,72 @@ async def create_drive_document_for_user(db, user_id: str, drive_source: str) ->
     return _serialize_document(doc)
 
 
+async def start_ingest_drive_job(db, queue, user_id: str, document_id: str) -> JobStatus:
+    """Start a Drive ingest job for an existing document."""
+    document = await get_document(db, document_id, user_id=user_id)
+    if not document:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    
+    # Parse metadata from document
+    raw_metadata = document.get("metadata")
+    if isinstance(raw_metadata, str):
+        try:
+            metadata = json.loads(raw_metadata)
+        except (json.JSONDecodeError, ValueError):
+            metadata = {}
+    elif isinstance(raw_metadata, dict):
+        metadata = raw_metadata
+    else:
+        metadata = {}
+    
+    drive_block = metadata.get("drive") if isinstance(metadata, dict) else {}
+    drive_file_id = document.get("drive_file_id") or (drive_block.get("file_id") if isinstance(drive_block, dict) else None)
+    
+    if not drive_file_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Document does not have an associated Drive file"
+        )
+    
+    job_id = str(uuid.uuid4())
+    job_row = await create_job_extended(
+        db,
+        job_id,
+        user_id,
+        job_type=JobType.INGEST_DRIVE.value,
+        document_id=document_id,
+        payload={"drive_file_id": drive_file_id},
+    )
+    
+    payload = {
+        "job_id": job_id,
+        "user_id": user_id,
+        "job_type": JobType.INGEST_DRIVE.value,
+        "document_id": document_id,
+        "drive_file_id": drive_file_id,
+    }
+    
+    enqueued, enqueue_exception, should_fail = await enqueue_job_with_guard(queue, job_id, user_id, payload, allow_inline_fallback=False)
+    if should_fail:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Queue unavailable or enqueue failed; background processing is required in production.")
+    if not enqueued:
+        logger.warning(
+            "Drive ingestion job created but not enqueued",
+            extra={"job_id": job_id, "document_id": document_id, "reason": "queue unavailable", "exception": str(enqueue_exception) if enqueue_exception else None},
+        )
+    
+    progress = _parse_job_progress_model(progress_str=job_row.get("progress", "{}"))
+    return JobStatus(
+        job_id=job_id,
+        user_id=user_id,
+        status=JobStatusEnum.PENDING,
+        progress=progress,
+        created_at=_parse_db_datetime(job_row.get("created_at")),
+        job_type=JobType.INGEST_DRIVE.value,
+        document_id=document_id,
+    )
+
+
 async def start_ingest_youtube_job(db, queue, user_id: str, url: str) -> JobStatus:
     clean_url = (url or "").strip()
     video_id = parse_youtube_video_id(clean_url)
