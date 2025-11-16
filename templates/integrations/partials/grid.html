@@ -1,5 +1,5 @@
 {% from 'components/elements/integration_card.html' import integration_card %}
-{% from 'components/elements/integration_icon.html' import integration_icon %}
+{% from 'components/icons/brand_icon.html' import brand_icon %}
 
 <div class="space-y-8" id="integrations-grid-inner">
   <section class="space-y-3">
@@ -39,7 +39,7 @@
         {% if not (data and (data.connected or data.needs_reconnect)) %}
           <a href="/dashboard/integrations/{{ s.key }}" class="surface rounded-md p-4 hover:bg-surfaceMuted/50 transition-colors flex items-center gap-3">
             <div class="h-10 w-10 rounded-md bg-surfaceMuted border border-border p-2.5">
-              {{ integration_icon(s.key) }}
+              {{ brand_icon(s.key) }}
             </div>
             <div class="min-w-0">
               <div class="text-content font-medium truncate">{{ s.name }}</div>
