@@ -1,6 +1,7 @@
 import asyncio
 import json
 import uuid
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import HTTPException
@@ -125,13 +126,13 @@ async def test_process_ingest_drive_job_persists_text(monkeypatch):
     drive_stub = _StubDriveService("rev-2")
     monkeypatch.setattr(
         "src.workers.consumer.build_docs_service_for_user",
-        pytest.AsyncMock(return_value=docs_stub),
+        AsyncMock(return_value=docs_stub),
     )
     monkeypatch.setattr(
         "src.workers.consumer.build_drive_service_for_user",
-        pytest.AsyncMock(return_value=drive_stub),
+        AsyncMock(return_value=drive_stub),
     )
-    monkeypatch.setattr("src.workers.consumer.notify_job", pytest.AsyncMock(return_value=None))
+    monkeypatch.setattr("src.workers.consumer.notify_job", AsyncMock(return_value=None))
 
     await process_ingest_drive_job(db, job_id, user_id, document_id, file_id)
     stored = await get_document(db, document_id, user_id=user_id)
@@ -166,9 +167,9 @@ async def test_drive_change_poll_marks_external_and_triggers_ingest(monkeypatch)
     drive_stub = _StubDriveService("rev-9")
     monkeypatch.setattr(
         "src.workers.consumer.build_drive_service_for_user",
-        pytest.AsyncMock(return_value=drive_stub),
+        AsyncMock(return_value=drive_stub),
     )
-    called = pytest.AsyncMock()
+    called = AsyncMock()
     monkeypatch.setattr("src.workers.consumer.process_ingest_drive_job", called)
 
     await process_drive_change_poll_job(db, job_id, user_id, [document_id], queue_producer=None)
