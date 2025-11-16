@@ -7,10 +7,7 @@ import logging
 from PIL import Image
 import io
 import json
-import pillow_heif
 from .constants import PORTRAIT_SIZE, LANDSCAPE_SIZE, DEFAULT_MAX_SIZE_KB
-
-pillow_heif.register_heif_opener()
 
 # Sizes and defaults are defined in core.constants
 

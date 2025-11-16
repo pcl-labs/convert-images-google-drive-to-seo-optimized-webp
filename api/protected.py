@@ -58,6 +58,7 @@ from .constants import COOKIE_GOOGLE_OAUTH_STATE
 from .app_logging import get_logger
 from .exceptions import JobNotFoundError
 from core.drive_utils import extract_folder_id_from_input
+from core.google_clients import GoogleAPIError
 from core.youtube_api import fetch_video_metadata, YouTubeAPIError
 from .deps import (
     ensure_db,
@@ -197,18 +198,10 @@ def _drive_folder_from_document(doc: dict) -> str:
     return folder_id
 
 async def create_drive_document_for_user(db, user_id: str, drive_source: str) -> Document:
-    # Import locally to avoid hard dependency issues if google client is absent in some envs
-    try:
-        from googleapiclient.errors import HttpError  # type: ignore
-    except Exception:
-        class _GoogleHttpError(Exception):
-            pass
-        HttpError = _GoogleHttpError  # type: ignore
-
     try:
         service = await build_drive_service_for_user(db, user_id)  # type: ignore
         folder_id = extract_folder_id_from_input(drive_source, service=service)
-    except (ValueError, HttpError) as e:
+    except (ValueError, GoogleAPIError) as e:
         logger.error("drive_folder_prepare_error", exc_info=True, extra={"user_id": user_id, "drive_source": drive_source})
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Google not linked or folder not accessible") from None
     except HTTPException:

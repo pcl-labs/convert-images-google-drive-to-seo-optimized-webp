@@ -203,21 +203,7 @@ def main():
 
     # Handle reauth flag (do this before any folder ID logic)
     if args.reauth:
-        if os.path.exists('token.json'):
-            try:
-                os.remove('token.json')
-                print('Removed token.json for re-authentication.')
-            except OSError as e:
-                print(f"Error: Failed to delete token.json: {type(e).__name__}: {e}")
-                sys.exit(1)
-        # Trigger auth flow and exit
-        from core.drive_utils import get_drive_service
-        try:
-            get_drive_service()
-        except Exception as e:
-            print(f"Error: Re-authentication failed: {type(e).__name__}: {e}")
-            sys.exit(1)
-        print('Re-authentication complete.')
+        print("Re-auth is now handled via the web UI. Please link your Google Drive account from the dashboard.")
         sys.exit(0)
 
     # Enforce --drive-folder is required for all other operations

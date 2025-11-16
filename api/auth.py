@@ -2,19 +2,17 @@
 Authentication and authorization utilities.
 """
 
-import asyncio
 import secrets
 import hashlib
 import base64
-import httpx
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, Tuple
 from urllib.parse import urlencode
 import jwt
 import logging
 
-from google.oauth2 import id_token as google_id_token
-from google.auth.transport import requests as google_requests
+from simple_http import AsyncSimpleClient, HTTPStatusError, RequestError
+
 
 from .config import settings
 from .database import (
@@ -153,7 +151,7 @@ def verify_jwt_token(token: str) -> Dict[str, Any]:
 async def get_github_user_info(access_token: str) -> Dict[str, Any]:
     """Get user information from GitHub using access token with robust error handling."""
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with AsyncSimpleClient(timeout=10.0) as client:
             response = await client.get(
                 "https://api.github.com/user",
                 headers={"Authorization": f"Bearer {access_token}"},
@@ -163,9 +161,9 @@ async def get_github_user_info(access_token: str) -> Dict[str, Any]:
                 return response.json()
             except Exception as e:
                 raise AuthenticationError(f"Failed to parse GitHub user JSON: {e}")
-    except httpx.HTTPStatusError as e:
+    except HTTPStatusError as e:
         raise AuthenticationError(f"GitHub userinfo HTTP error: {e.response.status_code} {e.response.text}")
-    except httpx.RequestError as e:
+    except RequestError as e:
         raise AuthenticationError(f"GitHub userinfo network error: {e}")
 
 
@@ -174,7 +172,7 @@ async def get_github_primary_email(access_token: str) -> Optional[str]:
     Requires the user:email scope. Returns None if not available.
     """
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with AsyncSimpleClient(timeout=10.0) as client:
             resp = await client.get(
                 "https://api.github.com/user/emails",
                 headers={"Authorization": f"Bearer {access_token}"},
@@ -190,9 +188,9 @@ async def get_github_primary_email(access_token: str) -> Optional[str]:
                 any_verified = next((e for e in emails if e.get("verified")), None)
                 if any_verified and any_verified.get("email"):
                     return any_verified["email"]
-    except httpx.HTTPStatusError as e:
+    except HTTPStatusError as e:
         logger.warning(f"GitHub emails HTTP error: {e.response.status_code} {e.response.text}")
-    except httpx.RequestError as e:
+    except RequestError as e:
         logger.warning(f"GitHub emails network error: {e}")
     except Exception as e:
         logger.warning(f"GitHub emails parse error: {e}")
@@ -205,7 +203,7 @@ async def exchange_github_code(code: str) -> Dict[str, Any]:
         raise AuthenticationError("GitHub OAuth not configured")
     
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with AsyncSimpleClient(timeout=10.0) as client:
             response = await client.post(
                 "https://github.com/login/oauth/access_token",
                 data={
@@ -230,10 +228,10 @@ async def exchange_github_code(code: str) -> Dict[str, Any]:
                 raise AuthenticationError(f"GitHub OAuth error: {error_msg}")
             
             return json_data
-    except httpx.RequestError as e:
+    except RequestError as e:
         logger.error(f"Network error during GitHub token exchange: {e}")
         raise AuthenticationError("Failed to connect to GitHub OAuth service")
-    except httpx.HTTPStatusError as e:
+    except HTTPStatusError as e:
         logger.error(f"HTTP error during GitHub token exchange: {e.response.status_code}")
         raise AuthenticationError(f"Failed to exchange GitHub code: HTTP {e.response.status_code}")
 
@@ -335,7 +333,7 @@ async def exchange_google_login_code(code: str, redirect_uri: str) -> Dict[str, 
     }
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with AsyncSimpleClient(timeout=10.0) as client:
             response = await client.post("https://oauth2.googleapis.com/token", data=data)
             response.raise_for_status()
             try:
@@ -343,14 +341,14 @@ async def exchange_google_login_code(code: str, redirect_uri: str) -> Dict[str, 
             except Exception as exc:
                 logger.error("Failed to parse Google token response: %s", exc)
                 raise AuthenticationError("Invalid response format from Google OAuth service") from exc
-    except httpx.HTTPStatusError as exc:
+    except HTTPStatusError as exc:
         logger.error(
             "HTTP error during Google login token exchange: %s %s",
             exc.response.status_code,
             exc.response.text,
         )
         raise AuthenticationError(f"Failed to exchange Google code: HTTP {exc.response.status_code}") from exc
-    except httpx.RequestError as exc:
+    except RequestError as exc:
         logger.error("Network error during Google login token exchange: %s", exc)
         raise AuthenticationError("Failed to connect to Google OAuth service") from exc
 
@@ -358,7 +356,7 @@ async def exchange_google_login_code(code: str, redirect_uri: str) -> Dict[str, 
 async def get_google_user_info(access_token: str) -> Dict[str, Any]:
     """Fetch Google user info via the OpenID Connect userinfo endpoint."""
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with AsyncSimpleClient(timeout=10.0) as client:
             response = await client.get(
                 "https://openidconnect.googleapis.com/v1/userinfo",
                 headers={"Authorization": f"Bearer {access_token}"},
@@ -368,28 +366,34 @@ async def get_google_user_info(access_token: str) -> Dict[str, Any]:
                 return response.json()
             except Exception as exc:
                 raise AuthenticationError(f"Failed to parse Google user JSON: {exc}") from exc
-    except httpx.HTTPStatusError as exc:
+    except HTTPStatusError as exc:
         raise AuthenticationError(
             f"Google userinfo HTTP error: {exc.response.status_code} {exc.response.text}"
         ) from exc
-    except httpx.RequestError as exc:
+    except RequestError as exc:
         raise AuthenticationError(f"Google userinfo network error: {exc}") from exc
 
 
 async def _verify_google_id_token(id_token_value: str) -> Dict[str, Any]:
-    """Verify Google ID token asynchronously."""
+    """Verify Google ID token via the official tokeninfo endpoint."""
     try:
-        def _verify():
-            req = google_requests.Request()
-            return google_id_token.verify_oauth2_token(
-                id_token_value,
-                req,
-                settings.google_client_id,
+        async with AsyncSimpleClient(timeout=10.0) as client:
+            response = await client.get(
+                "https://oauth2.googleapis.com/tokeninfo",
+                params={"id_token": id_token_value},
             )
-        return await asyncio.to_thread(_verify)
-    except Exception as exc:
-        logger.error("Google ID token verification failed: %s", exc)
-        raise AuthenticationError("Failed to verify Google ID token") from exc
+            response.raise_for_status()
+            payload = response.json()
+    except HTTPStatusError as exc:
+        raise AuthenticationError(
+            f"Google tokeninfo HTTP error: {exc.response.status_code} {exc.response.text}"
+        ) from exc
+    except RequestError as exc:
+        raise AuthenticationError(f"Google tokeninfo network error: {exc}") from exc
+    audience = payload.get("aud")
+    if settings.google_client_id and audience != settings.google_client_id:
+        raise AuthenticationError("Google token audience mismatch")
+    return payload
 
 
 async def authenticate_google(
