@@ -77,6 +77,9 @@ logger = get_logger(__name__)
 
 router = APIRouter()
 
+# Canonical Drive stage constant
+DRIVE_STAGE_DRAFT = "draft"
+
 
 def _parse_job_progress_model(progress_str: str) -> JobProgress:
     data = parse_job_progress(progress_str) or {}
@@ -277,7 +280,7 @@ async def create_drive_document_for_user(db, user_id: str, drive_source: str) ->
         "file_id": drive_file.get("id"),
         "revision_id": drive_file.get("revision_id"),
         "web_view_link": drive_file.get("webViewLink"),
-        "stage": "draft",
+        "stage": DRIVE_STAGE_DRAFT,
     }
 
     document_id = str(uuid.uuid4())
@@ -288,7 +291,7 @@ async def create_drive_document_for_user(db, user_id: str, drive_source: str) ->
         source_type="drive",
         source_ref=structure["folder"]["id"],
         raw_text=None,
-        metadata={"input": drive_source, "drive_stage": "draft", "drive": drive_meta},
+        metadata={"input": drive_source, "drive": drive_meta},
         drive_file_id=drive_file.get("id"),
         drive_revision_id=drive_file.get("revision_id"),
         drive_folder_id=structure["folder"]["id"],

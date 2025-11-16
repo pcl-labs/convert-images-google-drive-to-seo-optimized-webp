@@ -2,12 +2,20 @@
 from __future__ import annotations
 
 import os
+import sys
 import json
 import time
 import hmac
 import hashlib
 from datetime import datetime, timezone
 from typing import Any, Dict
+
+# Best-effort: load .env so ENVIRONMENT/DEBUG are available during import in dev
+try:  # pragma: no cover - optional convenience
+    from dotenv import load_dotenv  # type: ignore
+    load_dotenv()
+except Exception:
+    pass
 
 
 class ExpiredSignatureError(Exception):
@@ -105,8 +113,12 @@ def decode(token: str, key: str, algorithms=None) -> Dict[str, Any]:
         raise InvalidTokenError(str(exc)) from exc
 
 
-# Fail loudly if stub is imported outside test environments
-if os.getenv("PYTEST_CURRENT_TEST") is None and os.getenv("TESTING") != "1":  # pragma: no cover - sanity guard
+# Fail loudly in production; allow under pytest or development convenience
+_is_pytest = ("pytest" in sys.modules) or (os.getenv("PYTEST_CURRENT_TEST") is not None)
+_env = (os.getenv("ENVIRONMENT") or "").lower().strip()
+_debug = (os.getenv("DEBUG") or "").lower().strip() in {"1", "true", "yes", "on"}
+_is_dev = _env in {"development", "dev", "local"} or _debug
+if not (_is_pytest or _is_dev):  # pragma: no cover - sanity guard
     raise RuntimeError(
-        "jwt stub is for testing only and must not be used in production. Install PyJWT for real JWT support."
+        "jwt stub is for testing/development only and must not be used in production. Install PyJWT for real JWT support."
     )
