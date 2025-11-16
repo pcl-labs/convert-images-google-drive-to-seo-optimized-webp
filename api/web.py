@@ -88,6 +88,23 @@ templates = Jinja2Templates(directory=TEMPLATES_DIR)
 # Register Jinja filter once (after templates is initialized)
 templates.env.filters["status_label"] = _status_label
 
+# Track background tasks to avoid premature garbage collection
+BACKGROUND_TASKS: set[asyncio.Task] = set()
+
+def _track_task(task: asyncio.Task) -> None:
+    BACKGROUND_TASKS.add(task)
+    def _on_done(t: asyncio.Task) -> None:
+        BACKGROUND_TASKS.discard(t)
+        try:
+            exc = t.exception()
+            if exc is not None:
+                logger.exception("background_task_failed", extra={"error": str(exc)})
+        except asyncio.CancelledError:
+            logger.info("background_task_cancelled")
+        except Exception as cb_exc:
+            logger.warning("background_task_done_callback_error", exc_info=True, extra={"error": str(cb_exc)})
+    task.add_done_callback(_on_done)
+
 # Centralized service metadata used across integrations views
 SERVICES_META = {
     "github": {
@@ -912,7 +929,8 @@ async def documents_page(request: Request, page: int = 1, user: dict = Depends(g
             drive_workspace = await get_drive_workspace(db, user["user_id"])  # type: ignore
             if not drive_workspace:
                 logger.info("drive_workspace_missing_sched_provision", extra={"user_id": user["user_id"]})
-                asyncio.create_task(_provision_workspace_background(db, user["user_id"]))
+                task = asyncio.create_task(_provision_workspace_background(db, user["user_id"]))
+                _track_task(task)
         except Exception as exc:
             logger.warning(
                 "drive_workspace_lookup_failed",
@@ -1420,7 +1438,8 @@ async def integration_detail(service: str, request: Request, user: dict = Depend
                 drive_workspace = await get_drive_workspace(db, user["user_id"])  # type: ignore
                 if not drive_workspace:
                     logger.info("drive_workspace_missing_sched_provision", extra={"user_id": user["user_id"]})
-                    asyncio.create_task(_provision_workspace_background(db, user["user_id"]))
+                    task = asyncio.create_task(_provision_workspace_background(db, user["user_id"]))
+                    _track_task(task)
             except Exception as exc:
                 logger.warning("drive_workspace_provision_failed", exc_info=True, extra={"user_id": user["user_id"], "error": str(exc)})
         docs, _ = await _load_document_views(db, user["user_id"], page=1, page_size=50)
