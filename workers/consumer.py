@@ -31,7 +31,7 @@ from typing import Dict, Any, Optional, List
 import asyncio
 import functools
 import textwrap
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from core.drive_utils import (
     download_images,
@@ -51,8 +51,10 @@ from api.database import (
     get_document,
     create_document_version,
     get_job,
+    update_job_retry_state,
 )
 from api.config import settings
+from api.cloudflare_queue import QueueProducer
 from api.google_oauth import build_youtube_service_for_user
 from core.youtube_captions import fetch_captions_text, YouTubeCaptionsError
 from core.ai_modules import (
@@ -75,6 +77,84 @@ from api.google_oauth import build_drive_service_for_user
 logger = setup_logging(level="INFO", use_json=True)
 app_logger = get_logger(__name__)
 
+
+def _retry_delay_seconds(attempt_count: int) -> int:
+    """Simple exponential backoff with cap to avoid hot-looping."""
+    attempt = max(attempt_count, 1)
+    base_delay = 5
+    delay = base_delay * (2 ** (attempt - 1))
+    return min(delay, 300)
+
+
+async def _handle_job_failure(
+    db: Database,
+    job_row: Optional[Dict[str, Any]],
+    error_message: str,
+    message: Dict[str, Any],
+    queue_producer: Optional[QueueProducer],
+) -> None:
+    if not job_row:
+        app_logger.error("Cannot handle retry for unknown job", extra={"job_id": message.get("job_id")})
+        return
+
+    job_id = job_row.get("job_id")
+    user_id = job_row.get("user_id")
+    previous_attempts = 0
+    try:
+        previous_attempts = int(job_row.get("attempt_count") or 0)
+    except Exception:
+        previous_attempts = 0
+    new_attempt = previous_attempts + 1
+    # Interpret max_job_retries as TOTAL allowed attempts (including the first).
+    # 0 means no retries and the first failure immediately fails the job.
+    try:
+        _mr = settings.max_job_retries
+        max_attempts = 1 if _mr is None else max(0, int(_mr))
+    except Exception:
+        max_attempts = 1
+
+    if new_attempt >= max_attempts:
+        await update_job_retry_state(db, job_id, new_attempt, None, error_message)
+        await update_job_status(db, job_id, "failed", error=error_message)
+        try:
+            await notify_job(
+                db,
+                user_id=user_id,
+                job_id=job_id,
+                level="error",
+                text=f"Job {job_id} failed after {new_attempt} attempts",
+            )
+        except Exception:
+            pass
+        if queue_producer:
+            try:
+                await queue_producer.send_to_dlq(job_id, error_message, message)
+            except Exception:
+                app_logger.warning("Failed to send job to DLQ", exc_info=True, extra={"job_id": job_id})
+        return
+
+    retry_delay = _retry_delay_seconds(new_attempt)
+    next_attempt_at = (datetime.now(timezone.utc) + timedelta(seconds=retry_delay)).isoformat()
+    await update_job_retry_state(db, job_id, new_attempt, next_attempt_at, error_message)
+    retry_progress = make_progress(
+        "retry_waiting",
+        recent_logs=[f"retry in {retry_delay}s (attempt {new_attempt}/{max_attempts})"],
+    )
+    await update_job_status(
+        db,
+        job_id,
+        "pending",
+        progress=retry_progress,
+        error=error_message,
+    )
+    if not settings.use_inline_queue and queue_producer is not None:
+        try:
+            await queue_producer.send_generic(message)
+        except Exception:
+            app_logger.exception(
+                "Failed to re-enqueue job for retry",
+                extra={"job_id": job_id, "attempt": new_attempt},
+            )
 
 
 
@@ -915,7 +995,7 @@ async def process_generate_blog_job(
             pass
         raise
 
-async def handle_queue_message(message: Dict[str, Any], db: Database):
+async def handle_queue_message(message: Dict[str, Any], db: Database, queue_producer: Optional[QueueProducer] = None):
     """Handle a message from the queue."""
     job_id = message.get("job_id")
     user_id = message.get("user_id")
@@ -1030,7 +1110,7 @@ async def handle_queue_message(message: Dict[str, Any], db: Database):
             app_logger.error(f"Unknown job_type '{job_type}' for job {job_id}")
     except Exception as e:
         app_logger.error(f"Failed to process job {job_id}: {e}", exc_info=True)
-        raise
+        await _handle_job_failure(db, job_row, str(e), message, queue_producer)
 
 
 async def run_inline_queue_consumer(poll_interval: float = 1.0, recover_pending: bool = True):

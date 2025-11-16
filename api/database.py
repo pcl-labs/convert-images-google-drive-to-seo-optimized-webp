@@ -6,7 +6,7 @@ import json
 import hashlib
 import uuid
 from typing import Optional, List, Dict, Any
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import logging
 import os
 import asyncio
@@ -214,6 +214,10 @@ class Database:
                 cur.execute("ALTER TABLE jobs ADD COLUMN output TEXT")
             if 'payload' not in cols:
                 cur.execute("ALTER TABLE jobs ADD COLUMN payload TEXT")
+            if 'attempt_count' not in cols:
+                cur.execute("ALTER TABLE jobs ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0")
+            if 'next_attempt_at' not in cols:
+                cur.execute("ALTER TABLE jobs ADD COLUMN next_attempt_at TEXT")
             # Helpful indexes (CREATE INDEX IF NOT EXISTS is idempotent)
             cur.execute("CREATE INDEX IF NOT EXISTS idx_jobs_job_type ON jobs(job_type)")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_jobs_document_id ON jobs(document_id)")
@@ -454,8 +458,8 @@ async def create_job_extended(
     output_json = json.dumps(output) if output is not None else None
     payload_json = json.dumps(payload) if payload is not None else None
     query = (
-        "INSERT INTO jobs (job_id, user_id, status, progress, drive_folder, extensions, job_type, document_id, output, payload) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *"
+        "INSERT INTO jobs (job_id, user_id, status, progress, drive_folder, extensions, job_type, document_id, output, payload, attempt_count, next_attempt_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL) RETURNING *"
     )
     result = await db.execute(
         query,
@@ -755,8 +759,8 @@ async def create_job(
 ) -> Dict[str, Any]:
     """Create a new job."""
     query = """
-        INSERT INTO jobs (job_id, user_id, status, progress, drive_folder, extensions)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO jobs (job_id, user_id, status, progress, drive_folder, extensions, attempt_count, next_attempt_at)
+        VALUES (?, ?, ?, ?, ?, ?, 0, NULL)
         RETURNING *
     """
     progress = json.dumps({
@@ -807,7 +811,16 @@ async def update_job_status(
     if error is not None:
         updates.append("error = ?")
         params.append(error)
-    
+
+    clear_next_attempt_states = {
+        JobStatusEnum.PROCESSING.value,
+        JobStatusEnum.COMPLETED.value,
+        JobStatusEnum.FAILED.value,
+        JobStatusEnum.CANCELLED.value,
+    }
+    if status in clear_next_attempt_states:
+        updates.append("next_attempt_at = NULL")
+
     if status in TERMINAL_JOB_STATES:
         updates.append("completed_at = datetime('now')")
     
@@ -819,6 +832,34 @@ async def update_job_status(
 async def set_job_output(db: Database, job_id: str, output: Dict[str, Any]) -> None:
     """Set final job output JSON."""
     await db.execute("UPDATE jobs SET output = ? WHERE job_id = ?", (json.dumps(output), job_id))
+
+
+async def update_job_retry_state(
+    db: Database,
+    job_id: str,
+    attempt_count: int,
+    next_attempt_at: Optional[str],
+    error: Optional[str] = None,
+) -> None:
+    """Persist retry metadata for a job."""
+    updates = ["attempt_count = ?"]
+    params: list[Any] = [attempt_count]
+    updates.append("next_attempt_at = ?")
+    params.append(next_attempt_at)
+    if error is not None:
+        updates.append("error = ?")
+        params.append(error)
+    params.append(job_id)
+    query = f"UPDATE jobs SET {', '.join(updates)} WHERE job_id = ?"
+    await db.execute(query, tuple(params))
+
+
+async def reset_job_retry_state(db: Database, job_id: str) -> None:
+    """Clear retry metadata after a successful run."""
+    await db.execute(
+        "UPDATE jobs SET attempt_count = 0, next_attempt_at = NULL WHERE job_id = ?",
+        (job_id,),
+    )
 
 
 async def list_jobs(
@@ -916,6 +957,7 @@ async def get_pending_jobs(
         SELECT * FROM jobs
         WHERE status IN ({placeholders})
         AND status != 'cancelled'
+        AND (next_attempt_at IS NULL OR next_attempt_at <= datetime('now'))
         ORDER BY created_at ASC
         LIMIT ?
     """

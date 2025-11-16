@@ -307,14 +307,14 @@ Set in `.env` or your shell as needed:
 
 **Cloudflare Queue Configuration (for local development):**
 - `USE_INLINE_QUEUE` (default: true) - Use in-memory queue for local dev. Set to `false` for production to use Cloudflare Queues
-- `CF_ACCOUNT_ID` - Cloudflare account ID (get with: `wrangler whoami`)
-- `CF_API_TOKEN` - Cloudflare API token with Queues:Edit permission (create in dashboard)
+- `CLOUDFLARE_ACCOUNT_ID` - Cloudflare account ID (get with: `wrangler whoami`)
+- `CLOUDFLARE_API_TOKEN` - Cloudflare API token with Queues:Edit permission (create in dashboard)
 - `CF_QUEUE_NAME` (default: "quill-jobs") - Cloudflare queue name
 - `CF_QUEUE_DLQ` (default: "quill-dlq") - Cloudflare dead letter queue name
 
 **Note:** For local development, set `USE_INLINE_QUEUE=true` (default). The queue will run in-memory and you can process jobs locally using `python workers/consumer.py --inline`.
 
-For production, set `USE_INLINE_QUEUE=false` and provide `CF_ACCOUNT_ID`, `CF_API_TOKEN`, and `CF_QUEUE_NAME`. See `docs/DEPLOYMENT.md` for detailed setup instructions.
+For production, set `USE_INLINE_QUEUE=false` and provide `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`, and `CF_QUEUE_NAME`. See `docs/DEPLOYMENT.md` for detailed setup instructions.
 
 **Transcripts (optional):**
 - `TRANSCRIPT_LANGS` (default: "en,en-US,en-GB") - Comma-separated language codes for YouTube transcript fetching

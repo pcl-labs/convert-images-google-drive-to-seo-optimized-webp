@@ -87,7 +87,7 @@ def _build_logout_response(request: Request, *, redirect: str = "/") -> Redirect
 @router.get("/api", tags=["Public"])
 async def root():
     # Determine queue mode for debugging
-    queue_mode = "inline" if settings.use_inline_queue else ("workers-binding" if settings.queue else ("api" if settings.cf_api_token else "none"))
+    queue_mode = "inline" if settings.use_inline_queue else ("workers-binding" if settings.queue else ("api" if settings.cloudflare_api_token else "none"))
     
     return {
         "name": settings.app_name,
