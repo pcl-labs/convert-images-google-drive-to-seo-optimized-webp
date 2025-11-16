@@ -1,202 +1,157 @@
-"""
-Configuration management for the application.
-"""
+"""Dataclass-based configuration loader."""
 
-import base64
+from __future__ import annotations
+
 import os
 import threading
-from typing import Optional, Union
-from pydantic import Field, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from dataclasses import dataclass, field, fields
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 
-class Settings(BaseSettings):
-    """Application settings."""
-    
-    model_config = SettingsConfigDict(
-        env_file=".env",
-        case_sensitive=False,
-        extra="ignore"  # Ignore extra fields from .env
-    )
+def _bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return False
 
-    @classmethod
-    def settings_customise_sources(cls, settings_cls, init_settings, env_settings, dotenv_settings, file_secret_settings):
-        # Allow tests to disable reading .env to avoid polluting constructor kwargs
-        if os.getenv("PYTEST_DISABLE_DOTENV") == "1":
-            return (init_settings, env_settings, file_secret_settings)
-        return (init_settings, env_settings, dotenv_settings, file_secret_settings)
-    
-    # Application
+
+def _int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _list(value: Any, *, default: List[str], sep: str = ",") -> List[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str):
+        items = [item.strip() for item in value.split(sep)]
+        return [item for item in items if item]
+    return list(default)
+
+
+def _load_dotenv(path: Path) -> Dict[str, str]:
+    values: Dict[str, str] = {}
+    if not path.exists():
+        return values
+    try:
+        for line in path.read_text().splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            if "=" not in stripped:
+                continue
+            key, raw = stripped.split("=", 1)
+            values[key.strip()] = raw.strip().strip('"').strip("'")
+    except Exception:
+        pass
+    return values
+
+
+@dataclass
+class Settings:
     app_name: str = "Quill API"
     app_version: str = "1.0.0"
-    environment: str = Field(default="development")
-    debug: bool = Field(default=False)
-    base_url: Optional[str] = None  # Base URL for OAuth redirects (e.g., https://api.example.com). If not set, uses request URL.
-    
-    # GitHub OAuth - pydantic-settings automatically reads from env vars matching field names (case-insensitive)
+    environment: str = "development"
+    debug: bool = False
+    base_url: Optional[str] = None
+
     github_client_id: Optional[str] = None
     github_client_secret: Optional[str] = None
-    # Note: Redirect URI is built from request URL automatically, no env var needed
-    
-    # Google OAuth (per-user linking)
     google_client_id: Optional[str] = None
     google_client_secret: Optional[str] = None
-    # Note: Redirect URI is built from request URL automatically, no env var needed
-    
-    # JWT
-    jwt_secret_key: str  # Required - must be set via JWT_SECRET_KEY env var
+
+    jwt_secret_key: Optional[str] = None
     jwt_algorithm: str = "HS256"
     jwt_expiration_hours: int = 24
-    jwt_use_cookies: bool = Field(default=True)
-    
-    # Encryption (Fernet)
-    encryption_key: Optional[str] = None  # Required in production - base64 URL-safe 32-byte key (Fernet.generate_key())
-    
-    # API Keys
+    jwt_use_cookies: bool = True
+
+    encryption_key: Optional[str] = None
+
     api_key_length: int = 32
-    pbkdf2_iterations: int = 600000  # OWASP recommendation for PBKDF2-HMAC-SHA256; can be tuned via env
-    
-    # Rate Limiting
-    rate_limit_per_minute: int = Field(default=60)
-    rate_limit_per_hour: int = Field(default=1000)
-    
-    # Cloudflare Bindings (set by Cloudflare Workers runtime)
-    d1_database: Optional[object] = None  # Will be bound at runtime
-    queue: Optional[object] = None  # Will be bound at runtime
-    dlq: Optional[object] = None  # Dead letter queue binding (DLQ)
-    kv_namespace: Optional[object] = None  # Optional KV for caching
-    
-    # Queue Configuration (Cloudflare)
-    # - use_inline_queue=true: bypass Cloudflare Queues (worker polls DB)
-    # - use_inline_queue=false: use Cloudflare Workers bindings if provided, otherwise HTTP API via cf_* fields
-    use_inline_queue: bool = Field(default=True)  # Use in-memory queue for local dev
-    cloudflare_account_id: Optional[str] = None  # Cloudflare account ID (required when use_inline_queue=false)
-    cloudflare_api_token: Optional[str] = None  # Cloudflare API token for Queue HTTP API (required when use_inline_queue=false)
-    cf_queue_name: Optional[str] = None  # Primary Cloudflare queue name used by the app
-    cf_queue_dlq: Optional[str] = None  # Optional Cloudflare dead letter queue name
-    
-    # Job Configuration
-    max_job_retries: int = Field(
-        default=3,
-        description=(
-            "Maximum total number of job attempts (including the initial attempt). "
-            "This value represents the total attempts, not the number of additional retries. "
-            "For example, max_job_retries=2 means two total attempts: one initial attempt + one retry."
-        )
-    )
-    job_timeout_seconds: int = 3600  # 1 hour
-    
-    # CORS - accept string or list, will be converted to list
-    cors_origins: Union[str, list[str]] = Field(default="http://localhost:8000")
+    pbkdf2_iterations: int = 600_000
 
-    # Transcript Configuration
-    transcript_langs: Union[str, list[str]] = Field(default="en,en-US,en-GB")
+    rate_limit_per_minute: int = 60
+    rate_limit_per_hour: int = 1000
 
+    d1_database: Optional[Any] = None
+    queue: Optional[Any] = None
+    dlq: Optional[Any] = None
+    kv_namespace: Optional[Any] = None
 
-    @field_validator("encryption_key")
-    @classmethod
-    def validate_encryption_key(cls, v: Optional[str]) -> Optional[str]:
-        """Validate ENCRYPTION_KEY is a base64 URL-safe 32-byte key."""
-        if v is None:
-            return None
-        try:
-            raw = base64.urlsafe_b64decode(v)
-        except Exception as e:
-            raise ValueError("ENCRYPTION_KEY must be base64 URL-safe encoded") from e
-        if len(raw) != 32:
-            raise ValueError("ENCRYPTION_KEY must decode to exactly 32 bytes (use Fernet.generate_key())")
-        return v
+    use_inline_queue: bool = True
+    cloudflare_account_id: Optional[str] = None
+    cloudflare_api_token: Optional[str] = None
+    cf_queue_name: Optional[str] = None
+    cf_queue_dlq: Optional[str] = None
 
-    @model_validator(mode="after")
-    def require_encryption_key_in_production(self):
-        if (self.environment or "").lower() == "production" and not self.encryption_key:
-            raise ValueError("ENCRYPTION_KEY is required in production (provide a base64 URL-safe 32-byte key)")
-        return self
-    
-    @model_validator(mode="after")
-    def validate_queue_configuration(self):
-        """Validate queue configuration based on environment."""
-        is_production = (self.environment or "").lower() == "production"
+    max_job_retries: int = 3
+    job_timeout_seconds: int = 3600
 
-        # In production, require real Cloudflare bindings (not inline queue)
-        if is_production and self.use_inline_queue:
-            raise ValueError(
-                "USE_INLINE_QUEUE=true is not allowed in production. "
-                "Production must use real Cloudflare Queue bindings. "
-                "Set USE_INLINE_QUEUE=false and ensure queue bindings are configured in wrangler.toml"
-            )
-        
-        # If using Cloudflare Queue API (not inline), require API credentials.
+    cors_origins: List[str] = field(default_factory=lambda: ["http://localhost:8000"])
+    transcript_langs: List[str] = field(default_factory=lambda: ["en"])
+
+    def __post_init__(self) -> None:
+        self.environment = (self.environment or "development").lower()
+        self.debug = _bool(self.debug)
+        self.jwt_use_cookies = _bool(self.jwt_use_cookies)
+        self.use_inline_queue = _bool(self.use_inline_queue)
+        self.rate_limit_per_minute = _int(self.rate_limit_per_minute, 60)
+        self.rate_limit_per_hour = _int(self.rate_limit_per_hour, 1000)
+        self.api_key_length = _int(self.api_key_length, 32)
+        self.pbkdf2_iterations = _int(self.pbkdf2_iterations, 600_000)
+        self.max_job_retries = _int(self.max_job_retries, 3)
+        self.job_timeout_seconds = _int(self.job_timeout_seconds, 3600)
+        self.jwt_expiration_hours = _int(self.jwt_expiration_hours, 24)
+        self.cors_origins = _list(self.cors_origins, default=["http://localhost:8000"])
+        self.transcript_langs = _list(self.transcript_langs, default=["en"])
+        if not self.jwt_secret_key:
+            raise ValueError("JWT_SECRET_KEY is required")
+        if self.environment == "production" and not self.encryption_key:
+            raise ValueError("ENCRYPTION_KEY is required in production")
+        if self.environment == "production" and self.use_inline_queue:
+            raise ValueError("USE_INLINE_QUEUE=true is not allowed in production")
         if not self.use_inline_queue:
             if not self.cloudflare_account_id:
-                raise ValueError(
-                    "CLOUDFLARE_ACCOUNT_ID is required when USE_INLINE_QUEUE=false. "
-                    "Get your account ID with: wrangler whoami"
-                )
+                raise ValueError("CLOUDFLARE_ACCOUNT_ID is required when USE_INLINE_QUEUE=false")
             if not self.cloudflare_api_token:
-                raise ValueError(
-                    "CLOUDFLARE_API_TOKEN is required when USE_INLINE_QUEUE=false. "
-                    "Create an API token in Cloudflare dashboard: https://dash.cloudflare.com/profile/api-tokens"
-                )
+                raise ValueError("CLOUDFLARE_API_TOKEN is required when USE_INLINE_QUEUE=false")
             if not self.cf_queue_name:
-                raise ValueError(
-                    "CF_QUEUE_NAME is required when USE_INLINE_QUEUE=false. "
-                    "Set to your Cloudflare queue name (e.g., 'quill-jobs')"
-                )
+                raise ValueError("CF_QUEUE_NAME is required when USE_INLINE_QUEUE=false")
 
-        return self
-
-    @model_validator(mode="after")
-    def parse_transcript_langs(self):
-        """Parse comma-separated transcript_langs string into a list."""
-        if isinstance(self.transcript_langs, str):
-            if "," in self.transcript_langs:
-                self.transcript_langs = [lang.strip() for lang in self.transcript_langs.split(",") if lang.strip()]
-            else:
-                self.transcript_langs = [self.transcript_langs.strip()] if self.transcript_langs.strip() else ["en"]
-        elif isinstance(self.transcript_langs, list):
-            if not self.transcript_langs:
-                self.transcript_langs = ["en"]
-        else:
-            self.transcript_langs = ["en"]
-        return self
-
-    @model_validator(mode="after")
-    def parse_cors_origins(self):
-        """Parse comma-separated CORS origins string into a list."""
-        if isinstance(self.cors_origins, str):
-            if "," in self.cors_origins:
-                self.cors_origins = [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
-            else:
-                self.cors_origins = [self.cors_origins.strip()] if self.cors_origins.strip() else ["http://localhost:8000"]
-        elif isinstance(self.cors_origins, list):
-            if not self.cors_origins:
-                self.cors_origins = ["http://localhost:8000"]
-        else:
-            self.cors_origins = ["http://localhost:8000"]
-        return self
-
-
-# Global settings instance
-settings = Settings()
-_settings_lock = threading.Lock()
+    @classmethod
+    def from_env(cls, **overrides: Any) -> "Settings":
+        dotenv_values: Dict[str, str] = {}
+        if os.getenv("PYTEST_DISABLE_DOTENV") != "1":
+            dotenv_values = _load_dotenv(Path(".env"))
+        data: Dict[str, Any] = {}
+        for field_info in fields(cls):
+            name = field_info.name
+            if name in overrides:
+                data[name] = overrides[name]
+                continue
+            env_key = name.upper()
+            if env_key in os.environ:
+                data[name] = os.environ[env_key]
+            elif env_key in dotenv_values:
+                data[name] = dotenv_values[env_key]
+        data.update(overrides)
+        return cls(**data)
 
 
 def replace_settings(new_settings: Settings) -> Settings:
-    """
-    Mutate the module-level Settings instance so that existing imports see
-    updated values (critical for Cloudflare Workers where env bindings are
-    injected at request time).
-    """
-    field_names = getattr(new_settings, "model_fields_set", None)
-    names_to_copy = set(field_names) if field_names else set()
-    if not names_to_copy:
-        return settings
+    field_names = {info.name for info in fields(Settings)}
     with _settings_lock:
-        for field_name in names_to_copy:
-            # Safe to bypass validation: new_settings is already validated at instantiation
-            object.__setattr__(settings, field_name, getattr(new_settings, field_name))
+        for name in field_names:
+            if hasattr(new_settings, name):
+                setattr(settings, name, getattr(new_settings, name))
     return settings
 
 
-__all__ = ["Settings", "settings", "replace_settings"]
+_settings_lock = threading.Lock()
+settings = Settings.from_env()

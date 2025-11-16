@@ -1,9 +1,11 @@
+"""YouTube Data API helpers implemented with urllib helpers."""
+
 from __future__ import annotations
 
 import datetime
 from typing import Any, Dict
 
-from googleapiclient.errors import HttpError
+from .google_clients import GoogleAPIError, YouTubeClient
 
 
 class YouTubeAPIError(Exception):
@@ -11,7 +13,6 @@ class YouTubeAPIError(Exception):
 
 
 def _parse_duration_iso8601(value: str) -> int:
-    """Parse ISO8601 duration like PT1H2M3S into seconds."""
     if not value or not value.startswith("P"):
         raise ValueError("Invalid duration")
     total = datetime.timedelta()
@@ -34,25 +35,18 @@ def _parse_duration_iso8601(value: str) -> int:
         elif ch == "M":
             if time_part:
                 minutes = amount
-            else:
-                # Months ignored
-                pass
         elif ch == "S":
             seconds = amount
         elif ch == "D":
             total += datetime.timedelta(days=amount)
-        # Ignore years/months
-    if num:
-        raise ValueError("Invalid duration: trailing digits without unit")
     total += datetime.timedelta(hours=hours, minutes=minutes, seconds=seconds)
     return int(total.total_seconds())
 
 
-def fetch_video_metadata(service, video_id: str) -> Dict[str, Any]:
+def fetch_video_metadata(client: YouTubeClient, video_id: str) -> Dict[str, Any]:
     try:
-        request = service.videos().list(part="snippet,contentDetails,status", id=video_id)
-        response = request.execute()
-    except HttpError as exc:
+        response = client.fetch_video(video_id)
+    except GoogleAPIError as exc:
         raise YouTubeAPIError(f"YouTube API error: {exc}") from exc
     items = response.get("items") or []
     if not items:
@@ -70,13 +64,12 @@ def fetch_video_metadata(service, video_id: str) -> Dict[str, Any]:
         duration_seconds = _parse_duration_iso8601(duration_iso)
     except ValueError as exc:
         raise YouTubeAPIError("Invalid duration format") from exc
-
     tags = snippet.get("tags") or []
     frontmatter = {
         "title": snippet.get("title") or "Untitled",
         "description": snippet.get("description") or "",
         "tags": tags,
-        "channel_title": snippet.get("channelTitle") or "",
+        "channel_title": snippet.get("channelTitle"),
     }
     metadata = {
         "video_id": video_id,
@@ -92,3 +85,6 @@ def fetch_video_metadata(service, video_id: str) -> Dict[str, Any]:
         "live_broadcast_content": snippet.get("liveBroadcastContent") or "",
     }
     return {"frontmatter": frontmatter, "metadata": metadata}
+
+
+__all__ = ["fetch_video_metadata", "YouTubeAPIError"]
