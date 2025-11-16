@@ -4,7 +4,9 @@ Basic API tests for the image optimizer API.
 
 import pytest
 from fastapi.testclient import TestClient
-from unittest.mock import Mock, patch
+from unittest.mock import patch
+
+from api.constants import COOKIE_GOOGLE_OAUTH_STATE
 
 # Note: These are basic structure tests
 # Full integration tests would require D1 database and queue setup
@@ -59,6 +61,30 @@ def test_github_auth_redirect(client):
         mock_get_url.assert_called_once()
 
 
+def test_google_login_start_redirect(client):
+    """Test Google login OAuth redirect."""
+    mock_url = "https://accounts.google.com/o/oauth2/v2/auth?test=1"
+    with patch('api.auth.get_google_login_oauth_url', return_value=(mock_url, "state")) as mock_get_url:
+        response = client.get("/auth/google/login/start", follow_redirects=False)
+        assert response.status_code in [302, 303, 307]
+        assert response.headers['Location'] == mock_url
+        mock_get_url.assert_called_once()
+
+
+def test_google_login_start_post_requires_csrf(client):
+    response = client.post("/auth/google/login/start", data={"csrf_token": "bad"})
+    assert response.status_code == 403
+
+
+def test_google_login_start_post_redirect(client):
+    mock_url = "https://accounts.google.com/o/oauth2/v2/auth?test=2"
+    client.cookies.set("csrf_token", "token")
+    with patch('api.auth.get_google_login_oauth_url', return_value=(mock_url, "state")):
+        response = client.post("/auth/google/login/start", data={"csrf_token": "token"}, follow_redirects=False)
+        assert response.status_code in [302, 303, 307]
+        assert response.headers['Location'] == mock_url
+
+
 def test_google_oauth_start_redirects_when_configured(client):
     """Test that Google OAuth start endpoint redirects when configured; skip otherwise."""
     from api.config import settings
@@ -73,6 +99,12 @@ def test_google_oauth_callback_requires_auth(client):
     """Test that Google OAuth callback endpoint requires authentication."""
     response = client.get("/auth/google/callback?code=test&state=test", follow_redirects=False)
     assert response.status_code == 401
+
+
+def test_google_login_callback_invalid_state(client):
+    client.cookies.set(COOKIE_GOOGLE_OAUTH_STATE, "expected")
+    response = client.get("/auth/google/login/callback?code=test&state=unexpected", follow_redirects=False)
+    assert response.status_code == 403
 
 
 def test_google_oauth_status_requires_auth(client):

@@ -82,6 +82,12 @@ class Database:
         """
         try:
             cur = conn.cursor()
+            # Ensure users table has google_id column for Google login linking
+            cur.execute("PRAGMA table_info('users')")
+            user_cols = {row[1] for row in cur.fetchall()}
+            if 'google_id' not in user_cols:
+                cur.execute("ALTER TABLE users ADD COLUMN google_id TEXT")
+            cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_id ON users(google_id)")
             # Ensure documents table
             cur.execute(
                 """
@@ -393,18 +399,25 @@ class Database:
 
 
 # User operations
-async def create_user(db: Database, user_id: str, github_id: Optional[str] = None, email: Optional[str] = None) -> Dict[str, Any]:
+async def create_user(
+    db: Database,
+    user_id: str,
+    github_id: Optional[str] = None,
+    google_id: Optional[str] = None,
+    email: Optional[str] = None,
+) -> Dict[str, Any]:
     """Create a new user."""
     query = """
-        INSERT INTO users (user_id, github_id, email)
-        VALUES (?, ?, ?)
+        INSERT INTO users (user_id, github_id, google_id, email)
+        VALUES (?, ?, ?, ?)
         ON CONFLICT(user_id) DO UPDATE SET
             github_id = COALESCE(excluded.github_id, users.github_id),
+            google_id = COALESCE(excluded.google_id, users.google_id),
             email = COALESCE(excluded.email, users.email),
             updated_at = datetime('now')
         RETURNING *
     """
-    result = await db.execute(query, (user_id, github_id, email))
+    result = await db.execute(query, (user_id, github_id, google_id, email))
     if not result:
         # If RETURNING doesn't work, fetch the user manually
         logger.warning(f"RETURNING clause didn't return result, fetching user manually: {user_id}")
@@ -474,6 +487,54 @@ async def get_user_by_github_id(db: Database, github_id: str) -> Optional[Dict[s
     query = "SELECT * FROM users WHERE github_id = ?"
     result = await db.execute(query, (github_id,))
     return dict(result) if result else None
+
+
+async def get_user_by_google_id(db: Database, google_id: str) -> Optional[Dict[str, Any]]:
+    """Get user by Google subject identifier."""
+    query = "SELECT * FROM users WHERE google_id = ?"
+    result = await db.execute(query, (google_id,))
+    return dict(result) if result else None
+
+
+async def get_user_by_email(db: Database, email: str) -> Optional[Dict[str, Any]]:
+    """Get user by email address."""
+    query = "SELECT * FROM users WHERE email = ?"
+    result = await db.execute(query, (email,))
+    return dict(result) if result else None
+
+
+async def update_user_identity(
+    db: Database,
+    user_id: str,
+    *,
+    github_id: Optional[str] = None,
+    google_id: Optional[str] = None,
+    email: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Update provider identifiers for a user and return the updated record."""
+
+    assignments = []
+    params: list[Any] = []
+    if github_id is not None:
+        assignments.append("github_id = ?")
+        params.append(github_id)
+    if google_id is not None:
+        assignments.append("google_id = ?")
+        params.append(google_id)
+    if email is not None:
+        assignments.append("email = ?")
+        params.append(email)
+
+    if not assignments:
+        return await get_user_by_id(db, user_id)
+
+    assignments.append("updated_at = datetime('now')")
+    query = f"UPDATE users SET {', '.join(assignments)} WHERE user_id = ? RETURNING *"
+    params.append(user_id)
+    result = await db.execute(query, tuple(params))
+    if result:
+        return dict(result)
+    return await get_user_by_id(db, user_id)
 
 
 # API Key operations
