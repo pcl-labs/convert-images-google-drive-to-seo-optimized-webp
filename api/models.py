@@ -129,6 +129,10 @@ class Document(BaseModel):
     latest_version_id: Optional[str] = None
     drive_file_id: Optional[str] = None
     drive_revision_id: Optional[str] = None
+    drive_folder_id: Optional[str] = None
+    drive_drafts_folder_id: Optional[str] = None
+    drive_media_folder_id: Optional[str] = None
+    drive_published_folder_id: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 

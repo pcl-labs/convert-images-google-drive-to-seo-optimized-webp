@@ -142,6 +142,10 @@ CREATE TABLE IF NOT EXISTS documents (
     content_format TEXT,
     frontmatter TEXT,
     latest_version_id TEXT,
+    drive_folder_id TEXT,
+    drive_drafts_folder_id TEXT,
+    drive_media_folder_id TEXT,
+    drive_published_folder_id TEXT,
     drive_file_id TEXT,
     drive_revision_id TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -215,7 +219,19 @@ AFTER UPDATE ON document_exports
 WHEN NEW.updated_at = OLD.updated_at
 BEGIN
     UPDATE document_exports SET updated_at = datetime('now') WHERE export_id = OLD.export_id;
-END;
+    END;
+
+-- Drive workspace metadata per user
+CREATE TABLE IF NOT EXISTS drive_workspaces (
+    user_id TEXT PRIMARY KEY,
+    root_folder_id TEXT NOT NULL,
+    drafts_folder_id TEXT NOT NULL,
+    published_folder_id TEXT NOT NULL,
+    metadata TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+);
 
 -- Enforce that documents.latest_version_id references an existing document_versions.version_id
 -- Rely on FOREIGN KEY (latest_version_id) REFERENCES document_versions(version_id) ON DELETE SET NULL

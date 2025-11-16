@@ -6,25 +6,58 @@
     </div>
   {% endif %}
   {% for document in documents %}
-    <article class="surface rounded-lg p-4 space-y-3">
+    {% set drive_meta = document.metadata.drive if document.metadata and document.metadata.get('drive') else {} %}
+    {% set folder = drive_meta.folder or {} %}
+    {% set drafts = drive_meta.drafts or {} %}
+    {% set media = drive_meta.media or {} %}
+    {% set published = drive_meta.published or {} %}
+    <article class="surface rounded-lg p-4 space-y-4">
       <div class="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-        <div class="space-y-1">
-          <a href="/dashboard/documents/{{ document.id }}" class="text-sm font-semibold text-primary hover:text-primary/80 break-all">{{ document.id }}</a>
-          <p class="text-xs text-contentMuted">Created {{ document.created_at }}</p>
+        <div>
+          <p class="text-xs uppercase tracking-wide text-contentMuted">{{ document.source_label }}</p>
+          <a href="/dashboard/documents/{{ document.id }}" class="text-base font-semibold text-primary hover:text-primary/80 break-all">
+            {{ document.frontmatter.title or document.metadata.title or document.id }}
+          </a>
+          <p class="text-xs text-contentMuted break-all">Document ID: {{ document.id }}</p>
         </div>
-        <div class="text-sm text-contentMuted break-all md:text-right">
-          <p class="text-xs uppercase tracking-wide">Origin</p>
-          <p>{{ document.origin or '—' }}</p>
+        <div class="text-xs text-contentMuted md:text-right">
+          <p>Created {{ document.created_at or '—' }}</p>
         </div>
       </div>
-      <div class="grid gap-3 text-sm text-contentMuted sm:grid-cols-2">
-        <div class="space-y-1">
-          <p class="text-xs uppercase tracking-wide">Source</p>
-          <p class="text-content">{{ document.source_label }}</p>
+      <div class="grid gap-4 text-sm text-content sm:grid-cols-3">
+        <div class="space-y-1 text-contentMuted">
+          <p class="text-xs uppercase tracking-wide">Origin</p>
+          <p class="break-all">{{ document.origin or '—' }}</p>
         </div>
         <div class="space-y-1">
-          <p class="text-xs uppercase tracking-wide">Latest Draft</p>
-          <p class="text-content">{{ document.latest_generation.title if document.latest_generation and document.latest_generation.title else document.latest_title or '—' }}</p>
+          <p class="text-xs uppercase tracking-wide text-contentMuted">Drive workspace</p>
+          {% if folder.webViewLink %}
+            <a href="{{ folder.webViewLink }}" target="_blank" rel="noopener" class="text-primary hover:text-primary/80">
+              {{ folder.name or document.drive_folder_id or 'Open folder' }}
+            </a>
+            <p class="text-xs text-contentMuted">ID: {{ folder.id or document.drive_folder_id or '—' }}</p>
+          {% elif document.drive_folder_id %}
+            <p class="break-all">{{ document.drive_folder_id }}</p>
+          {% else %}
+            <p class="text-contentMuted">No Drive folder linked</p>
+          {% endif %}
+        </div>
+        <div class="space-y-2">
+          <p class="text-xs uppercase tracking-wide text-contentMuted">Drive assets</p>
+          <div class="flex flex-wrap gap-2 text-xs">
+            {% if drafts.webViewLink or drive_meta.web_view_link %}
+              <a href="{{ drafts.webViewLink or drive_meta.web_view_link }}" target="_blank" rel="noopener" class="inline-flex items-center px-2 py-1 rounded-md border border-border hover:border-primary hover:text-primary">Draft Doc</a>
+            {% endif %}
+            {% if media.webViewLink %}
+              <a href="{{ media.webViewLink }}" target="_blank" rel="noopener" class="inline-flex items-center px-2 py-1 rounded-md border border-border hover:border-primary hover:text-primary">Media</a>
+            {% endif %}
+            {% if published.webViewLink %}
+              <a href="{{ published.webViewLink }}" target="_blank" rel="noopener" class="inline-flex items-center px-2 py-1 rounded-md border border-border hover:border-primary hover:text-primary">Published</a>
+            {% endif %}
+            {% if not (drafts or media or published) %}
+              <span class="text-contentMuted">No Drive assets yet</span>
+            {% endif %}
+          </div>
         </div>
       </div>
     </article>

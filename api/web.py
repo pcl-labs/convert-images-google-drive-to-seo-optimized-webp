@@ -44,6 +44,8 @@ from .database import (
     get_document_version,
     create_document_export,
     update_document,
+    get_drive_workspace,
+    upsert_drive_workspace,
 )
 from .auth import create_user_api_key
 from .protected import (
@@ -62,6 +64,7 @@ from .utils import normalize_ui_status
 from core.constants import GOOGLE_SCOPE_DRIVE, GOOGLE_SCOPE_YOUTUBE, GOOGLE_SCOPE_GMAIL, GOOGLE_INTEGRATION_SCOPES
 from .google_oauth import parse_google_scope_list, build_docs_service_for_user, build_drive_service_for_user
 from core.google_async import execute_google_request
+from .drive_workspace import ensure_drive_workspace
 
 logger = logging.getLogger(__name__)
 
@@ -476,36 +479,93 @@ async def _load_document_views(db, user_id: str, page: int = 1, page_size: int =
     return [_document_to_view(doc) for doc in docs], total
 
 
-def _drive_sync_overview(documents: list[dict], drive_connected: bool) -> dict:
-    drive_docs = [doc for doc in documents if (doc.get("source_type") or "").startswith("drive")]
-    latest_created = next((doc.get("created_at") for doc in drive_docs if doc.get("created_at")), None)
-    overview = {
+def _drive_document_entry(doc: dict) -> Optional[dict]:
+    if not (doc.get("source_type") or "").startswith("drive"):
+        return None
+    meta = _json_field(doc.get("metadata"), {})
+    drive_meta = meta.get("drive") if isinstance(meta, dict) else {}
+    if not isinstance(drive_meta, dict) or not drive_meta:
+        return None
+    frontmatter = _json_field(doc.get("frontmatter"), {})
+    folder = drive_meta.get("folder") or {}
+    drafts = drive_meta.get("drafts") or {}
+    media = drive_meta.get("media") or {}
+    published = drive_meta.get("published") or {}
+    title = (
+        (frontmatter.get("title") if isinstance(frontmatter, dict) else None)
+        or folder.get("name")
+        or doc.get("latest_title")
+        or doc.get("id")
+    )
+    return {
+        "document_id": doc.get("id"),
+        "title": title,
+        "frontmatter": frontmatter if isinstance(frontmatter, dict) else {},
+        "source_label": doc.get("source_label"),
+        "drive": {
+            "folder_link": folder.get("webViewLink"),
+            "folder_id": folder.get("id") or drive_meta.get("folder_id"),
+            "draft_link": drafts.get("webViewLink") or drive_meta.get("web_view_link"),
+            "draft_folder_id": drafts.get("id") or drive_meta.get("drafts_folder_id"),
+            "media_link": media.get("webViewLink"),
+            "media_folder_id": media.get("id") or drive_meta.get("media_folder_id"),
+            "published_link": published.get("webViewLink"),
+            "published_folder_id": published.get("id") or drive_meta.get("published_folder_id"),
+            "file_id": drive_meta.get("file_id"),
+            "revision_id": drive_meta.get("revision_id"),
+            "doc_link": drive_meta.get("web_view_link"),
+        },
+    }
+
+
+def _drive_sync_overview(
+    documents: list[dict],
+    drive_connected: bool,
+    workspace: Optional[dict] = None,
+) -> dict:
+    drive_entries = [entry for doc in documents for entry in [_drive_document_entry(doc)] if entry]
+    latest_created = next(
+        (
+            doc.get("created_at")
+            for doc in documents
+            if doc.get("created_at") and (doc.get("source_type") or "").startswith("drive")
+        ),
+        None,
+    )
+    overview: dict[str, Any] = {
         "connected": drive_connected,
         "status_label": "Connected" if drive_connected else "Not connected",
-        "document_count": len(drive_docs),
-        "last_synced_at": latest_created,
+        "document_count": len(drive_entries),
+        "last_synced_at": latest_created or ("Not synced yet" if drive_connected else None),
         "detail_url": "/dashboard/integrations/drive",
-        "folders": SERVICES_META.get("drive", {}).get("synced_content", []),
+        "documents": drive_entries[:12],
     }
-    if not overview["last_synced_at"]:
-        overview["last_synced_at"] = "Not synced yet" if drive_connected else None
-    if drive_docs:
-        overview["latest_document"] = drive_docs[0]
-        linked = next((doc for doc in drive_docs if doc.get("drive_file_id")), drive_docs[0])
-        meta = linked.get("metadata") or {}
-        if isinstance(meta, str):
-            try:
-                meta = json.loads(meta)
-            except Exception:
-                meta = {}
-        drive_meta = meta.get("drive") if isinstance(meta, dict) else {}
+    if drive_entries:
+        latest_doc = drive_entries[0]
+        drive_meta = latest_doc.get("drive") or {}
         overview["linked_file"] = {
-            "document_id": linked.get("id") or linked.get("document_id"),
-            "title": (linked.get("frontmatter") or {}).get("title") if isinstance(linked.get("frontmatter"), dict) else None,
-            "file_id": linked.get("drive_file_id") or drive_meta.get("file_id"),
-            "revision_id": linked.get("drive_revision_id") or drive_meta.get("revision_id"),
-            "link": (drive_meta or {}).get("web_view_link"),
+            "title": latest_doc.get("title") or latest_doc.get("document_id"),
+            "file_id": drive_meta.get("file_id"),
+            "document_id": latest_doc.get("document_id"),
+            "link": drive_meta.get("doc_link") or drive_meta.get("draft_link"),
         }
+    if workspace:
+        workspace_meta = _json_field(workspace.get("metadata"), {})
+        folders = []
+        def _folder_entry(label: str, key: str, fallback_id: Optional[str]) -> dict:
+            data = (workspace_meta or {}).get(key) if isinstance(workspace_meta, dict) else {}
+            if not isinstance(data, dict):
+                data = {}
+            return {
+                "label": label,
+                "name": data.get("name") or key.title(),
+                "id": data.get("id") or fallback_id,
+                "link": data.get("webViewLink"),
+            }
+        folders.append(_folder_entry("Workspace", "root", workspace.get("root_folder_id") if workspace else None))
+        folders.append(_folder_entry("Drafts", "drafts", workspace.get("drafts_folder_id") if workspace else None))
+        folders.append(_folder_entry("Published", "published", workspace.get("published_folder_id") if workspace else None))
+        overview["folders"] = folders
     return overview
 
 
@@ -522,7 +582,8 @@ async def _export_version_to_drive(db, user_id: str, document: dict, version: di
     if not isinstance(drive_block, dict):
         drive_block = {}
     drive_file_id = document.get("drive_file_id") or drive_block.get("file_id")
-    title = (version.get("frontmatter") or {}).get("title") if isinstance(version.get("frontmatter"), dict) else None
+    frontmatter = _json_field(version.get("frontmatter"), {})
+    title = frontmatter.get("title")
     if not drive_file_id:
         created = await execute_google_request(
             docs_service.documents().create(body={"title": title or f"Quill Draft {document.get('document_id')}"})
@@ -785,6 +846,19 @@ async def documents_page(request: Request, page: int = 1, user: dict = Depends(g
     token_map = {str(row.get("integration")).lower(): row for row in (google_tokens or []) if row.get("integration")}
     drive_connected = "drive" in token_map
     youtube_connected = "youtube" in token_map
+    drive_workspace = None
+    if drive_connected:
+        try:
+            drive_workspace = await get_drive_workspace(db, user["user_id"])  # type: ignore
+            if not drive_workspace:
+                drive_workspace = await ensure_drive_workspace(db, user["user_id"])
+        except Exception as exc:
+            logger.warning(
+                "drive_workspace_lookup_failed",
+                exc_info=True,
+                extra={"user_id": user["user_id"], "error": str(exc)},
+            )
+            drive_workspace = None
     context = {
         "request": request,
         "user": user,
@@ -793,7 +867,7 @@ async def documents_page(request: Request, page: int = 1, user: dict = Depends(g
         "csrf_token": csrf,
         "drive_connected": drive_connected,
         "youtube_connected": youtube_connected,
-        "drive_sync_overview": _drive_sync_overview(documents, drive_connected),
+        "drive_sync_overview": _drive_sync_overview(documents, drive_connected, drive_workspace),
         "page_title": "Documents",
         "flash": None,
     }
@@ -818,6 +892,11 @@ async def document_detail_page(document_id: str, request: Request, user: dict = 
     latest_version = _version_detail_row(versions_raw[0]) if versions_raw else None
     jobs = await list_jobs_by_document(db, user["user_id"], document_id, limit=25)
     csrf = _get_csrf_token(request)
+    drive_meta = {}
+    metadata = doc_view.get("metadata") or {}
+    if isinstance(metadata, dict):
+        drive_meta = metadata.get("drive") or {}
+    title_hint = (doc_view.get("frontmatter") or {}).get("title") or drive_meta.get("title")
 
     def to_job_view(job: dict) -> dict:
         status = job.get("status", "queued")
@@ -841,7 +920,8 @@ async def document_detail_page(document_id: str, request: Request, user: dict = 
         "versions": version_summaries,
         "latest_version": latest_version,
         "csrf_token": csrf,
-        "page_title": f"Document {document_id}",
+        "drive_meta": drive_meta,
+        "page_title": title_hint or f"Document {document_id}",
     }
     resp = templates.TemplateResponse("documents/detail.html", context)
     if not request.cookies.get("csrf_token"):
@@ -987,7 +1067,7 @@ async def dashboard_document_export(
             return _render_flash(request, message, "success")
         except HTTPException as exc:
             return _render_flash(request, exc.detail, "error", exc.status_code)
-        except Exception as exc:
+        except Exception:
             logger.error("drive_export_failed", exc_info=True, extra={"document_id": document_id, "doc_hint": "docs/DEPLOYMENT.md#drive-workspace-setup"})
             return _render_flash(request, "Failed to push to Google Docs", "error", status.HTTP_502_BAD_GATEWAY)
     message = f"{label} export queued (version {row.get('version_id')})"
@@ -1270,9 +1350,27 @@ async def integration_detail(service: str, request: Request, user: dict = Depend
     integrations = _build_integrations_model(tokens, github_info=github_info)
     services_meta = SERVICES_META
     csrf = _get_csrf_token(request)
+    drive_overview = None
+    drive_workspace = None
+    if service == "drive":
+        is_connected = bool(integrations.get("drive", {}).get("connected"))
+        if is_connected:
+            try:
+                drive_workspace = await ensure_drive_workspace(db, user["user_id"])
+            except Exception as exc:
+                logger.warning("drive_workspace_provision_failed", exc_info=True, extra={"user_id": user["user_id"], "error": str(exc)})
+        docs, _ = await _load_document_views(db, user["user_id"], page=1, page_size=50)
+        drive_overview = _drive_sync_overview(docs, is_connected, drive_workspace)
     return templates.TemplateResponse(
         "integrations/detail.html",
-        {"request": request, "user": user, "service": services_meta[service], "integration": integrations.get(service), "csrf_token": csrf}
+        {
+            "request": request,
+            "user": user,
+            "service": services_meta[service],
+            "integration": integrations.get(service),
+            "csrf_token": csrf,
+            "drive_overview": drive_overview,
+        }
     )
 
 

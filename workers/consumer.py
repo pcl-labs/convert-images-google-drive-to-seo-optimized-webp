@@ -268,7 +268,12 @@ async def _resolve_drive_folder(db: Database, document_id: str, user_id: str) ->
     source_type = doc.get("source_type")
     if source_type not in {"drive", "drive_folder"}:
         raise ValueError("Document is not associated with a Drive folder")
-    folder_id = doc.get("source_ref") or metadata.get("drive_folder_id")
+    folder_id = (
+        doc.get("drive_folder_id")
+        or doc.get("source_ref")
+        or metadata.get("drive_folder_id")
+        or (metadata.get("drive") or {}).get("folder_id")
+    )
     if not folder_id:
         raise ValueError("Drive folder reference missing on document")
     return folder_id

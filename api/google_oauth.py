@@ -176,7 +176,7 @@ async def exchange_google_code(
     await upsert_google_token(
         db,
         user_id=user_id,
-        integration=integration_key,
+        integration=integration,
         access_token=creds.token,
         refresh_token=getattr(creds, "refresh_token", None),
         expiry=expiry_iso,
