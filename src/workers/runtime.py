@@ -81,7 +81,7 @@ def apply_worker_env(env: Any) -> Settings:
 
     # Instantiate a new Settings to evaluate BaseSettings sources with the
     # freshly injected os.environ values, then mutate the global instance.
-    new_settings = Settings(**worker_kwargs)
+    new_settings = Settings.from_env(**worker_kwargs)
     replace_settings(new_settings)
     return new_settings
 
