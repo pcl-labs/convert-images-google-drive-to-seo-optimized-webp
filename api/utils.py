@@ -111,13 +111,14 @@ async def enqueue_job_with_guard(
             )
     else:
         logger.warning(
-            f"Queue not configured for job {job_id}",
+            f"Queue not configured for job {job_id} (docs/DEPLOYMENT.md#queue-configuration-modes)",
             extra={
                 "job_id": job_id,
                 "user_id": user_id,
                 "event": "job.enqueue_skipped",
                 "queue_configured": False,
-                "enqueued": False
+                "enqueued": False,
+                "doc_hint": "docs/DEPLOYMENT.md#queue-configuration-modes",
             }
         )
     
@@ -143,7 +144,7 @@ async def enqueue_job_with_guard(
         # In development, log warning if fallback will be used
         if (not queue_configured) or (not enqueued):
             logger.warning(
-                f"Queue unavailable for job {job_id} - fallback {'available' if allow_inline_fallback else 'not available'}",
+                f"Queue unavailable for job {job_id} - fallback {'available' if allow_inline_fallback else 'not available'} (run `python workers/consumer.py --inline` when USE_INLINE_QUEUE=true)",
                 extra={
                     "job_id": job_id,
                     "user_id": user_id,
@@ -151,6 +152,7 @@ async def enqueue_job_with_guard(
                     "environment": settings.environment,
                     "queue_configured": queue_configured,
                     "enqueued": enqueued,
+                    "doc_hint": "docs/DEPLOYMENT.md#queue-configuration-modes",
                     "fallback_available": allow_inline_fallback,
                     "error": str(enqueue_exception) if enqueue_exception else None
                 }
