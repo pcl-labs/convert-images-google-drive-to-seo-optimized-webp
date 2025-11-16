@@ -8,7 +8,7 @@
     <link rel="icon" href="{{ url_for('static', path='favicon/favicon-32x32.png') }}" sizes="32x32" type="image/png">
     <link rel="icon" href="{{ url_for('static', path='favicon/favicon-16x16.png') }}" sizes="16x16" type="image/png">
     <link rel="apple-touch-icon" href="{{ url_for('static', path='favicon/apple-touch-icon.png') }}" sizes="180x180">
-    <meta name="theme-color" content="#0f172a">
+    <meta name="theme-color" content="#1a73e8">
 
     <!-- Open Graph -->
     <meta property="og:title" content="Quill">
@@ -24,6 +24,7 @@
     <meta name="twitter:description" content="Create SEO Ranking blogs from YouTube. Ship fast, flexible, and SEO-optimized blogs with AI assist out of box. Quill brings the best of the LLM ecosystem.">
     <meta name="twitter:image" content="{{ url_for('static', path='og/og-image.png') }}">
     <title>{{ title or 'Quill' }}</title>
+    {% include 'components/scripts/theme.html' %}
     <link rel="stylesheet" href="{{ url_for('static', path='css/app.css') }}">
     <style>[x-cloak]{display:none !important;}</style>
     <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
@@ -132,7 +133,7 @@
       });
     </script>
   </head>
-  <body class="dark">
+  <body>
     <div class="min-h-screen bg-bg">
       {% include 'components/layout/sidebar.html' %}
       <div class="lg:pl-64 pt-14 lg:pt-0">
