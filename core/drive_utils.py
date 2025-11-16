@@ -402,3 +402,26 @@ def is_valid_drive_file_id(file_id: str) -> bool:
     if not re.match(r"^[a-zA-Z0-9_-]+$", file_id):
         return False
     return True
+
+
+def extract_drive_file_id_from_input(file_input: str, service=None) -> str:
+    """Normalize Drive file share links/IDs and validate they reference a Google Doc."""
+    match = re.search(r"/d/([\w-]+)", file_input)
+    if not match and "id=" in file_input:
+        match = re.search(r"id=([\w-]+)", file_input)
+    candidate_id = match.group(1) if match else file_input.strip()
+    if not is_valid_drive_file_id(candidate_id):
+        raise ValueError("Invalid Google Drive document link or ID format.")
+    service = service or get_drive_service()
+    try:
+        file_obj = service.files().get(fileId=candidate_id, fields='id, mimeType').execute()
+    except HttpError as exc:
+        if exc.resp.status == 404:
+            raise ValueError("Drive document not found; ensure the document is shared and accessible.") from exc
+        raise
+    if not isinstance(file_obj, dict):
+        raise ValueError("Drive API did not return file metadata.")
+    mime_type = file_obj.get('mimeType')
+    if mime_type != 'application/vnd.google-apps.document':
+        raise ValueError("Provided ID is not a Google Doc; ensure a valid Google Docs file ID is used.")
+    return candidate_id

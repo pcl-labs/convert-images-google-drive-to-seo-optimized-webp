@@ -176,7 +176,7 @@ async def exchange_google_code(
     await upsert_google_token(
         db,
         user_id=user_id,
-        integration=integration_key,
+        integration=integration,
         access_token=creds.token,
         refresh_token=getattr(creds, "refresh_token", None),
         expiry=expiry_iso,
@@ -297,6 +297,18 @@ async def build_drive_service_for_user(db: Database, user_id: str):
         missing_scope_message="Google account missing Drive access; please reconnect",
         service_name="drive",
         service_version="v3",
+    )
+
+
+async def build_docs_service_for_user(db: Database, user_id: str):
+    """Build a Google Docs v1 service using the Drive integration token."""
+    return await _build_google_service_for_user(
+        db,
+        user_id,
+        integration="drive",
+        missing_scope_message="Google account missing Docs access; reconnect Drive integration",
+        service_name="docs",
+        service_version="v1",
     )
 
 

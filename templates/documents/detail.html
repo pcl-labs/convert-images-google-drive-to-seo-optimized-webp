@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% from 'components/elements/input.html' import input %}
 {% from 'components/elements/button.html' import button %}
+{% from 'components/elements/badge.html' import badge %}
 {% from 'components/layout/page.html' import page_container, page_header %}
 {% block content %}
 {% call page_container() %}
@@ -17,6 +18,62 @@
 
   <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
     {% from 'components/elements/card.html' import card %}
+    {% if drive_meta %}
+      {% set folder = drive_meta.get('folder', {}) %}
+      {% set media = drive_meta.get('media', {}) %}
+      {% call card(title='Drive Workspace') %}
+        <dl class="space-y-2 text-sm">
+          <div>
+            <dt class="text-contentMuted uppercase text-xs tracking-wide">Document folder</dt>
+            <dd class="break-all">
+              {% if folder.webViewLink %}
+                <a href="{{ folder.webViewLink }}" target="_blank" rel="noopener" class="text-primary hover:text-primary/80">
+                  {{ folder.name or drive_meta.folder_id or 'Open in Drive' }}
+                </a>
+              {% else %}
+                {{ folder.name or drive_meta.folder_id or '—' }}
+              {% endif %}
+            </dd>
+          </div>
+          <div>
+            <dt class="text-contentMuted uppercase text-xs tracking-wide">Google Doc</dt>
+            <dd>
+              {% if drive_meta.web_view_link %}
+                <a href="{{ drive_meta.web_view_link }}" target="_blank" rel="noopener" class="text-primary hover:text-primary/80">Open Google Doc</a>
+              {% else %}
+                {{ drive_meta.file_id or '—' }}
+              {% endif %}
+            </dd>
+          </div>
+          <div>
+            <dt class="text-contentMuted uppercase text-xs tracking-wide">Stage</dt>
+            <dd>
+              {% if drive_meta.stage %}
+                {{ badge(drive_meta.stage|capitalize, status='completed' if drive_meta.stage == 'published' else 'default') }}
+              {% else %}
+                <span class="text-contentMuted">Not set</span>
+              {% endif %}
+            </dd>
+          </div>
+          {% if media %}
+            <div>
+              <dt class="text-contentMuted uppercase text-xs tracking-wide">Media folder</dt>
+              {% set media = document.metadata.drive.media if document.metadata and document.metadata.get('drive') else {} %}
+              {% if media and media.webViewLink %}
+                <dd>
+                  <a href="{{ media.webViewLink }}" target="_blank" rel="noopener" class="text-primary hover:text-primary/80">
+                    {{ media.name or (document.metadata.drive.media_folder_id) or 'Media' }}
+                  </a>
+                </dd>
+              {% else %}
+                <dd class="break-all">{{ (media.name) or (document.metadata.drive.media_folder_id) or 'Media' }}</dd>
+              {% endif %}
+              <dd class="text-xs text-contentMuted">ID: {{ (media.id) or (document.metadata.drive.media_folder_id) or '—' }}</dd>
+            </div>
+          {% endif %}
+        </dl>
+      {% endcall %}
+    {% endif %}
     {% call card(title='Metadata') %}
       {% if metadata_items %}
         <dl class="space-y-2 text-sm">
