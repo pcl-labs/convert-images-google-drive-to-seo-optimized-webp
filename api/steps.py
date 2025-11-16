@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, model_validator
 
-import json
+ 
 
 from .deps import ensure_db, get_current_user
 from .database import (
@@ -166,7 +166,8 @@ async def _sync_drive_doc_after_persist(
         current_doc = await execute_google_request(docs_service.documents().get(documentId=drive_file_id))
         body_content = (current_doc.get("body", {}) or {}).get("content", []) or []
         end_index = body_content[-1].get("endIndex", len(new_text) + 1) if body_content else len(new_text) + 1
-    except Exception:
+    except Exception as e:
+        logger.exception("drive_docs_get_failed", extra={"drive_file_id": drive_file_id})
         end_index = len(new_text) + 1
     requests = [
         {"deleteContentRange": {"range": {"startIndex": 1, "endIndex": max(1, end_index)}}},
@@ -184,21 +185,31 @@ async def _sync_drive_doc_after_persist(
     drafts_folder = workspace.get("drafts_folder_id") if isinstance(workspace, dict) else None
     published_folder = workspace.get("published_folder_id") if isinstance(workspace, dict) else None
     try:
-        if desired_stage == "published" and published_folder:
+        add_list: List[str] = []
+        remove_list: List[str] = []
+        if desired_stage == "published":
+            if published_folder:
+                add_list.append(published_folder)
+            if drafts_folder:
+                remove_list.append(drafts_folder)
+        else:
+            if drafts_folder:
+                add_list.append(drafts_folder)
+            if published_folder:
+                remove_list.append(published_folder)
+
+        add_str = ",".join([p for p in add_list if p])
+        remove_str = ",".join([p for p in remove_list if p])
+
+        update_kwargs = {"fileId": drive_file_id}
+        if add_str:
+            update_kwargs["addParents"] = add_str
+        if remove_str:
+            update_kwargs["removeParents"] = remove_str
+
+        if len(update_kwargs) > 1:
             await execute_google_request(
-                drive_service.files().update(
-                    fileId=drive_file_id,
-                    addParents=published_folder,
-                    removeParents=drafts_folder,
-                )
-            )
-        elif drafts_folder:
-            await execute_google_request(
-                drive_service.files().update(
-                    fileId=drive_file_id,
-                    addParents=drafts_folder,
-                    removeParents=published_folder,
-                )
+                drive_service.files().update(**update_kwargs)
             )
     except Exception:
         logger.info(

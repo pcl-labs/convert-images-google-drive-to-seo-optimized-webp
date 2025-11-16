@@ -52,11 +52,20 @@ def pytest_pyfunc_call(pyfuncitem):
         return None
 
     loop = asyncio.new_event_loop()
+    old_loop = None
     try:
+        try:
+            old_loop = asyncio.get_event_loop()
+        except RuntimeError:
+            old_loop = None
+        asyncio.set_event_loop(loop)
         argnames = getattr(pyfuncitem._fixtureinfo, "argnames", ()) or ()
         call_kwargs = {name: pyfuncitem.funcargs[name] for name in argnames if name in pyfuncitem.funcargs}
         loop.run_until_complete(func(**call_kwargs))
     finally:
-        loop.close()
+        try:
+            asyncio.set_event_loop(old_loop)
+        finally:
+            loop.close()
     return True
 
