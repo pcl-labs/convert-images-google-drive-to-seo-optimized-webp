@@ -31,9 +31,15 @@ if _workers_path.exists():
 
 if __name__ == "__main__":
     # Verify PYTHONPATH is set (should already be set above)
-    workers_path_str = str(_workers_path.resolve())
-    if workers_path_str not in os.environ.get("PYTHONPATH", ""):
-        os.environ["PYTHONPATH"] = workers_path_str
+    if _workers_path.exists():
+        workers_path_str = str(_workers_path.resolve())
+        current_pythonpath = os.environ.get("PYTHONPATH", "")
+        path_list = current_pythonpath.split(os.pathsep) if current_pythonpath else []
+        if workers_path_str not in path_list:
+            if current_pythonpath:
+                os.environ["PYTHONPATH"] = os.pathsep.join([workers_path_str, current_pythonpath])
+            else:
+                os.environ["PYTHONPATH"] = workers_path_str
     
     uvicorn.run(
         "api.main:app",  # String import required for reload

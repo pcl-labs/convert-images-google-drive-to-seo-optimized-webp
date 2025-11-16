@@ -2,6 +2,7 @@
 Custom exception classes for the application.
 """
 
+from typing import Union
 from fastapi import HTTPException, status
 
 
@@ -26,7 +27,8 @@ class AuthenticationError(APIException):
         super().__init__(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=detail,
-            error_code="AUTH_ERROR"
+            error_code="AUTH_ERROR",
+            headers={"WWW-Authenticate": "Bearer"}
         )
 
 
@@ -66,12 +68,13 @@ class APIValidationError(APIException):
 class RateLimitError(APIException):
     """Rate limit exceeded."""
     
-    def __init__(self, detail: str = "Rate limit exceeded"):
+    def __init__(self, detail: str = "Rate limit exceeded", retry_after: Union[int, str] = 60):
+        retry_after_str = str(retry_after) if isinstance(retry_after, int) else retry_after
         super().__init__(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail=detail,
             error_code="RATE_LIMIT_ERROR",
-            headers={"Retry-After": "60"}
+            headers={"Retry-After": retry_after_str}
         )
 
 

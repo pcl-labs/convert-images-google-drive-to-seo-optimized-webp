@@ -34,7 +34,7 @@ import textwrap
 from datetime import datetime, timezone, timedelta
 import uuid
 
-from core.drive_utils import (
+from src.workers.core.drive_utils import (
     download_images,
     upload_images,
     delete_images,
@@ -42,7 +42,7 @@ from core.drive_utils import (
     extract_folder_id_from_input,
     is_valid_drive_file_id,
 )
-from core.image_processor import process_image
+from src.workers.core.image_processor import process_image
 from api.database import (
     Database,
     update_job_status,
@@ -58,8 +58,8 @@ from api.database import (
 from api.config import settings
 from api.cloudflare_queue import QueueProducer
 from api.google_oauth import build_youtube_service_for_user, build_docs_service_for_user
-from core.youtube_captions import fetch_captions_text, YouTubeCaptionsError
-from core.ai_modules import (
+from src.workers.core.youtube_captions import fetch_captions_text
+from src.workers.core.ai_modules import (
     generate_outline,
     organize_chapters,
     compose_blog,
@@ -70,12 +70,12 @@ from core.ai_modules import (
 )
 from api.notifications import notify_job
 from api.app_logging import setup_logging, get_logger
-from core.filename_utils import FILENAME_ID_SEPARATOR, sanitize_folder_name, parse_download_name, make_output_dir_name
-from core.constants import TEMP_DIR, FAIL_LOG_PATH
-from core.extension_utils import normalize_extensions, detect_extensions_in_dir
+from src.workers.core.filename_utils import FILENAME_ID_SEPARATOR, sanitize_folder_name, parse_download_name, make_output_dir_name
+from src.workers.core.constants import TEMP_DIR, FAIL_LOG_PATH
+from src.workers.core.extension_utils import normalize_extensions, detect_extensions_in_dir
 from api.google_oauth import build_drive_service_for_user
-from core.google_async import execute_google_request
-from core.google_docs_text import google_doc_to_text, text_to_html
+from src.workers.core.google_async import execute_google_request
+from src.workers.core.google_docs_text import google_doc_to_text, text_to_html
 
 # Set up logging
 logger = setup_logging(level="INFO", use_json=True)
@@ -581,10 +581,22 @@ async def process_optimization_job(
         
         # Clean up local directories
         import shutil
-        if os.path.exists(temp_dir):
-            shutil.rmtree(temp_dir)
-        if os.path.exists(output_dir):
-            shutil.rmtree(output_dir)
+        try:
+            if os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir)
+        except Exception as e:
+            app_logger.warning(
+                f"Failed to cleanup temp directory: {temp_dir}",
+                extra={"path": temp_dir, "exception": str(e), "exception_type": type(e).__name__}
+            )
+        try:
+            if os.path.exists(output_dir):
+                shutil.rmtree(output_dir)
+        except Exception as e:
+            app_logger.warning(
+                f"Failed to cleanup output directory: {output_dir}",
+                extra={"path": output_dir, "exception": str(e), "exception_type": type(e).__name__}
+            )
         
         # Mark as completed
         log_step("Completed successfully")
@@ -706,15 +718,7 @@ async def process_ingest_youtube_job(
         except ValueError as exc:
             await update_job_status(db, job_id, "failed", error=str(exc))
             return
-        try:
-            cap = await asyncio.to_thread(fetch_captions_text, yt_service, youtube_video_id, langs)
-        except YouTubeCaptionsError as exc:
-            await update_job_status(db, job_id, "failed", error=str(exc))
-            try:
-                await notify_job(db, user_id=user_id, job_id=job_id, level="error", text="YouTube ingestion failed: captions unavailable")
-            except Exception:
-                pass
-            return
+        cap = await asyncio.to_thread(fetch_captions_text, yt_service, youtube_video_id, langs)
         if not cap.get("success"):
             await update_job_status(db, job_id, "failed", error=str(cap.get("error") or "captions_unavailable"))
             try:
@@ -728,6 +732,11 @@ async def process_ingest_youtube_job(
         lang = cap.get("lang") or "en"
         # Duration: authoritative API value provided in job payload/metadata
         duration_s = payload_duration
+        
+        # Fallback to caption duration if payload duration is missing
+        if duration_s is None:
+            caption_duration_raw = cap.get("duration_s") or cap.get("duration")
+            duration_s = _normalize_duration(caption_duration_raw)
 
         # Validate required fields
         if duration_s is None:

@@ -7,7 +7,7 @@ import asyncio
 from .app_logging import get_logger
 from .database import get_drive_workspace, upsert_drive_workspace
 from .google_oauth import build_drive_service_for_user, build_docs_service_for_user
-from core.google_async import execute_google_request
+from src.workers.core.google_async import execute_google_request
 
 logger = get_logger(__name__)
 
@@ -124,10 +124,23 @@ async def ensure_document_drive_structure(
                 # Detect clear not-found case (prefer resp.status if present)
                 status = getattr(getattr(exc, "resp", None), "status", None)
                 if status == 404:
-                    base_folder = await _create_drive_folder(
-                        drive_service, _sanitize_folder_name(name), workspace["root_folder_id"]
-                    )
-                    break
+                    try:
+                        base_folder = await _create_drive_folder(
+                            drive_service, _sanitize_folder_name(name), workspace["root_folder_id"]
+                        )
+                        break
+                    except Exception as create_exc:
+                        last_exc = create_exc
+                        logger.error(
+                            "drive_folder_creation_failed_after_404",
+                            exc_info=True,
+                            extra={
+                                "user_id": user_id,
+                                "folder_id": existing_folder_id,
+                                "sanitized_name": _sanitize_folder_name(name),
+                            },
+                        )
+                        break
                 # Transient error: backoff and retry
                 logger.warning(
                     "drive_existing_folder_fetch_retry",

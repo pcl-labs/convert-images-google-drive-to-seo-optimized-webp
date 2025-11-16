@@ -18,11 +18,17 @@ class JSONFormatter(logging.Formatter):
     
     def format(self, record: logging.LogRecord) -> str:
         """Format log record as JSON."""
+        # Extract safe fields first for fallback
+        timestamp = datetime.now(timezone.utc).isoformat()
+        level = record.levelname
+        logger = record.name
+        message = record.getMessage()
+        
         log_data: Dict[str, Any] = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "level": record.levelname,
-            "logger": record.name,
-            "message": record.getMessage(),
+            "timestamp": timestamp,
+            "level": level,
+            "logger": logger,
+            "message": message,
             "module": record.module,
             "function": record.funcName,
             "line": record.lineno,
@@ -48,7 +54,21 @@ class JSONFormatter(logging.Formatter):
             if key not in standard_attrs:
                 log_data[key] = value
         
-        return json.dumps(log_data)
+        try:
+            return json.dumps(log_data, default=str)
+        except (TypeError, ValueError) as e:
+            # Fallback to safe minimal JSON
+            safe_log_data = {
+                "timestamp": timestamp,
+                "level": level,
+                "logger": logger,
+                "message": message,
+                "serialization_error": {
+                    "exception": str(e),
+                    "log_data_repr": str(log_data)
+                }
+            }
+            return json.dumps(safe_log_data, default=str)
 
 
 def setup_logging(level: str = "INFO", use_json: bool = True):

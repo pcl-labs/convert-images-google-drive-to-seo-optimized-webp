@@ -35,12 +35,15 @@ def notifications_stream_response(request, db: Database, user: Dict[str, Any]) -
                 notifs = await list_notifications(db, user["user_id"], after_id=last_sent, limit=20)
                 if notifs:
                     for n in notifs:
-                        if "id" in n:
-                            last_sent = n["id"]
+                        notification_id = n.get("id")
+                        if not notification_id:
+                            logger.warning(f"Notification missing ID field, skipping: {n}")
+                            continue
+                        last_sent = notification_id
                         payload = json.dumps({
                             "type": "notification.created",
                             "data": {
-                                "id": n.get("id"),
+                                "id": notification_id,
                                 "level": n.get("level"),
                                 "text": n.get("text"),
                                 "created_at": n.get("created_at"),
@@ -56,6 +59,19 @@ def notifications_stream_response(request, db: Database, user: Dict[str, Any]) -
             raise
         except Exception:
             logger.exception("notifications_stream event_generator failed")
+            # Emit error event to client before re-raising
+            try:
+                error_payload = json.dumps({
+                    "type": "error",
+                    "data": {
+                        "message": "Notification stream error occurred",
+                    },
+                })
+                yield f"data: {error_payload}\n\n"
+            except Exception:
+                # If we can't send error event, log and continue to re-raise
+                logger.exception("Failed to emit SSE error event")
+            raise
         finally:
             if task:
                 _active_sse_tasks.discard(task)

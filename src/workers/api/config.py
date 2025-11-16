@@ -127,10 +127,7 @@ class Settings(BaseSettings):
             )
         
         # If using Cloudflare Queue API (not inline), require API credentials.
-        # Respect explicit constructor intent: if the caller explicitly set use_inline_queue=False,
-        # enforce validation even if environment configuration might otherwise imply inline.
-        explicitly_set = hasattr(self, "model_fields_set") and ("use_inline_queue" in getattr(self, "model_fields_set", set()))
-        if (not self.use_inline_queue) or (explicitly_set and self.use_inline_queue is False):
+        if not self.use_inline_queue:
             if not self.cloudflare_account_id:
                 raise ValueError(
                     "CLOUDFLARE_ACCOUNT_ID is required when USE_INLINE_QUEUE=false. "
@@ -197,6 +194,7 @@ def replace_settings(new_settings: Settings) -> Settings:
         return settings
     with _settings_lock:
         for field_name in names_to_copy:
+            # Safe to bypass validation: new_settings is already validated at instantiation
             object.__setattr__(settings, field_name, getattr(new_settings, field_name))
     return settings
 

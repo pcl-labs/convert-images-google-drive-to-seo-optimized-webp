@@ -37,6 +37,25 @@ async def handle_worker_request(app, request, env, ctx):
     split = urlsplit(url)
     path = split.path or ""
     query = split.query or ""
+    
+    # Try to get raw bytes if available, otherwise encode with UTF-8 surrogateescape
+    # to preserve all bytes without loss
+    raw_path_bytes = None
+    if hasattr(request, "scope") and isinstance(request.scope, dict):
+        raw_path_bytes = request.scope.get("raw_path")
+    if raw_path_bytes is None:
+        raw_path_bytes = getattr(request, "raw_path_bytes", None)
+    if raw_path_bytes is None:
+        raw_path_bytes = path.encode("utf-8", "surrogateescape")
+    
+    raw_query_bytes = None
+    if hasattr(request, "scope") and isinstance(request.scope, dict):
+        raw_query_bytes = request.scope.get("raw_query_string")
+    if raw_query_bytes is None:
+        raw_query_bytes = getattr(request, "raw_query_bytes", None)
+    if raw_query_bytes is None:
+        raw_query_bytes = query.encode("utf-8", "surrogateescape")
+    
     headers = await _extract_headers(request)
     cf_client_ip = None
     for header_key, header_value in headers:
@@ -53,8 +72,8 @@ async def handle_worker_request(app, request, env, ctx):
         "scheme": split.scheme or "https",
         "root_path": "",
         "path": path or "/",
-        "raw_path": path.encode("ascii", "ignore"),
-        "query_string": query.encode("ascii", "ignore"),
+        "raw_path": raw_path_bytes,
+        "query_string": raw_query_bytes,
         "client": client_tuple,
         "server": (split.hostname or "", split.port or (443 if split.scheme == "https" else 80)),
         "headers": headers,

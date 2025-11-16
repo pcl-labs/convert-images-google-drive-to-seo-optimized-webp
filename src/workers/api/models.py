@@ -254,7 +254,7 @@ class IngestYouTubeRequest(BaseModel):
 
 
 class IngestTextRequest(BaseModel):
-    text: str
+    text: str = Field(..., max_length=10000)
     title: Optional[str] = None
 
 

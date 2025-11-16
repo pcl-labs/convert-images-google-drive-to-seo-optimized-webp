@@ -83,7 +83,7 @@ def apply_worker_env(env: Any) -> Settings:
     # freshly injected os.environ values, then mutate the global instance.
     new_settings = Settings(**worker_kwargs)
     replace_settings(new_settings)
-    return global_settings
+    return new_settings
 
 
 __all__ = ["apply_worker_env"]

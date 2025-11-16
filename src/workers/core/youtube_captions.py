@@ -5,10 +5,6 @@ from typing import Any, Dict, List, Optional
 from googleapiclient.errors import HttpError
 
 
-class YouTubeCaptionsError(Exception):
-    pass
-
-
 def _select_caption_track(items: List[Dict[str, Any]], langs: List[str]) -> Optional[Dict[str, Any]]:
     # Normalize langs like ["en", "en-US"] preference
     prefs = [lang.strip().lower() for lang in (langs or ["en"]) if isinstance(lang, str) and lang.strip()]
@@ -34,6 +30,83 @@ def _select_caption_track(items: List[Dict[str, Any]], langs: List[str]) -> Opti
     return best
 
 
+def _strip_srt_formatting(srt_text: str) -> str:
+    """
+    Extract plain text from SRT format by removing sequence numbers and timestamps.
+    
+    SRT format structure:
+        1
+        00:00:00,000 --> 00:00:02,000
+        Caption text here
+        Can be multiple lines
+        
+        2
+        00:00:02,000 --> 00:00:04,000
+        More caption text
+    
+    Returns plain text with caption content only, with blank lines between caption blocks.
+    """
+    lines = srt_text.splitlines()
+    text_lines = []
+    i = 0
+    
+    while i < len(lines):
+        line = lines[i].strip()
+        
+        # Skip empty lines
+        if not line:
+            i += 1
+            continue
+        
+        # Check if this line is a sequence number (numeric only)
+        try:
+            int(line)
+            # This is a sequence number, skip it
+            i += 1
+            # Skip the timestamp line (next non-empty line should contain -->)
+            if i < len(lines):
+                timestamp_line = lines[i].strip()
+                if "-->" in timestamp_line:
+                    i += 1
+            # Now collect all text lines until we hit the next sequence number or empty line
+            caption_block = []
+            while i < len(lines):
+                current_line = lines[i].strip()
+                # Stop at empty line (end of caption block)
+                if not current_line:
+                    i += 1
+                    break
+                # Stop if we hit another sequence number
+                try:
+                    int(current_line)
+                    break
+                except ValueError:
+                    # Not a sequence number, check if it's a timestamp
+                    if "-->" in current_line:
+                        i += 1
+                        continue
+                    # This is caption text
+                    caption_block.append(current_line)
+                    i += 1
+            
+            # Add caption block with space between lines, then blank line between blocks
+            if caption_block:
+                text_lines.append(" ".join(caption_block))
+            continue
+        except ValueError:
+            # Not a sequence number, check if it's a timestamp line
+            if "-->" in line:
+                i += 1
+                continue
+            
+            # Fallback: treat as caption text (for edge cases)
+            text_lines.append(line)
+            i += 1
+    
+    # Join with newlines to preserve separation between caption blocks
+    return "\n".join(text_lines)
+
+
 def fetch_captions_text(service, video_id: str, langs: List[str]) -> Dict[str, Any]:
     """
     Fetch caption text via official YouTube Data API for a given video owned by the authenticated user.
@@ -44,7 +117,7 @@ def fetch_captions_text(service, video_id: str, langs: List[str]) -> Dict[str, A
         req = service.captions().list(part="id,snippet", videoId=video_id)
         resp = req.execute()
     except HttpError as exc:
-        raise YouTubeCaptionsError(f"YouTube Captions API error: {exc}") from exc
+        return {"success": False, "error": f"YouTube Captions API error: {exc}"}
 
     items = resp.get("items") or []
     if not items:
@@ -59,18 +132,22 @@ def fetch_captions_text(service, video_id: str, langs: List[str]) -> Dict[str, A
     lang = snippet.get("language") or snippet.get("languageCode") or ""
 
     try:
-        # Download captions as plain text (defaults to .srt if not specified). Using tfmt='ttml' or 'srt' is possible; we want text.
+        # Download captions in SRT format (SubRip Subtitle format).
+        # SRT includes sequence numbers, timestamps, and caption text. We'll extract plain text via post-processing.
         # Some APIs support 'tfmt' or 'tlang'; googleapiclient handles 'tfmt' via .download with 'tfmt' query param.
         req_dl = service.captions().download(id=cap_id, tfmt="srt")  # type: ignore[arg-type]
         # Media download requires the MediaIoBaseDownload pattern; however, googleapiclient supports .execute() for captions.download
         # which returns the body text directly when using built-in discovery.
         data = req_dl.execute()
         # data can be bytes or str depending on client; ensure str
-        text = data.decode("utf-8") if isinstance(data, (bytes, bytearray)) else str(data)
+        srt_text = data.decode("utf-8") if isinstance(data, (bytes, bytearray)) else str(data)
     except HttpError as exc:
-        raise YouTubeCaptionsError(f"Failed to download captions: {exc}") from exc
+        return {"success": False, "error": f"Failed to download captions: {exc}"}
 
-    # Very light normalization: strip and ensure non-empty
+    # Extract plain text from SRT format by stripping sequence numbers and timestamps
+    text = _strip_srt_formatting(srt_text)
+    
+    # Normalization: strip and ensure non-empty
     text = (text or "").strip()
     if not text:
         return {"success": False, "error": "Downloaded captions are empty."}

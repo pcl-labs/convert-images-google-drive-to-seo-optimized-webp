@@ -7,10 +7,19 @@ import sys
 import os
 import json
 import traceback
-from src.workers.core.drive_utils import extract_folder_id_from_input, is_valid_drive_file_id
+from src.workers.core.drive_utils import (
+    extract_folder_id_from_input,
+    is_valid_drive_file_id,
+    get_drive_service,
+    get_folder_name,
+    download_images,
+    upload_images,
+    delete_images,
+)
 from src.workers.core.filename_utils import sanitize_folder_name, parse_download_name, FILENAME_ID_SEPARATOR, make_output_dir_name
 from src.workers.core.constants import TEMP_DIR, FAIL_LOG_PATH, DEFAULT_EXTENSIONS
 from src.workers.core.extension_utils import detect_extensions_in_dir
+from src.workers.core.image_processor import process_image
 
 def load_cache(cache_path):
     if os.path.exists(cache_path):
@@ -211,7 +220,6 @@ def main():
                 print(f"Error: Failed to delete token.json: {type(e).__name__}: {e}")
                 sys.exit(1)
         # Trigger auth flow and exit
-        from core.drive_utils import get_drive_service
         try:
             get_drive_service()
         except Exception as e:
@@ -236,7 +244,6 @@ def main():
         sys.exit(1)
 
     # Fetch folder name for SEO-friendly filenames
-    from core.drive_utils import get_folder_name
     try:
         folder_name = get_folder_name(folder_id)
         if not folder_name:
@@ -253,7 +260,6 @@ def main():
     temp_dir = TEMP_DIR
     extensions = [e.strip().lower() for e in args.ext.split(',')] if args.ext else DEFAULT_EXTENSIONS
     print(f"Downloading images from Drive folder {folder_id} to {temp_dir}...")
-    from core.drive_utils import download_images
     try:
         downloaded, failed = download_images(
             folder_id,
@@ -275,7 +281,6 @@ def main():
         sys.exit(1)
 
     # Optimize images
-    from core.image_processor import process_image
     os.makedirs(output_dir, exist_ok=True)
     optimized = []
     skipped = []
@@ -308,7 +313,6 @@ def main():
 
     # Automatically upload optimized images to the same Drive folder
     print(f"Uploading optimized images from {output_dir} to Drive folder {folder_id}...")
-    from core.drive_utils import upload_images, delete_images
     uploaded = []
     failed_uploads = []
     try:

@@ -56,15 +56,16 @@ from .protected import (
     start_ingest_youtube_job,
     start_ingest_text_job,
     start_generate_blog_job,
+    enqueue_job_with_guard,
 )
 from .config import settings
 from .notifications import notify_job
 from .notifications_stream import notifications_stream_response
 from .constants import COOKIE_OAUTH_STATE, COOKIE_GOOGLE_OAUTH_STATE
 from .utils import normalize_ui_status
-from core.constants import GOOGLE_SCOPE_DRIVE, GOOGLE_SCOPE_YOUTUBE, GOOGLE_SCOPE_GMAIL, GOOGLE_INTEGRATION_SCOPES
+from src.workers.core.constants import GOOGLE_SCOPE_DRIVE, GOOGLE_SCOPE_YOUTUBE, GOOGLE_SCOPE_GMAIL, GOOGLE_INTEGRATION_SCOPES
 from .google_oauth import parse_google_scope_list, build_docs_service_for_user, build_drive_service_for_user
-from core.google_async import execute_google_request
+from src.workers.core.google_async import execute_google_request
 from .drive_workspace import ensure_drive_workspace
 
 logger = logging.getLogger(__name__)
@@ -370,7 +371,9 @@ def _get_csrf_token(request: Request) -> str:
     return token
 
 
-def _is_secure_request(request: Request) -> bool:
+def _is_secure_request(request: Request, settings) -> bool:
+    if settings.environment == "production":
+        return True
     xf_proto = request.headers.get("x-forwarded-proto", "").lower()
     if xf_proto:
         return xf_proto == "https"
@@ -385,7 +388,7 @@ def _render_auth_page(request: Request, view_mode: str) -> Response:
     context = {"request": request, "csrf_token": csrf, "view_mode": view_mode}
     resp = templates.TemplateResponse("auth/login.html", context)
     if not request.cookies.get("csrf_token"):
-        is_secure = _is_secure_request(request)
+        is_secure = _is_secure_request(request, settings)
         resp.set_cookie("csrf_token", csrf, httponly=True, samesite="lax", secure=is_secure)
     return resp
 
@@ -427,7 +430,7 @@ async def _render_account_page(
 
     resp = templates.TemplateResponse("account/index.html", context, status_code=status_code)
     if not request.cookies.get("csrf_token"):
-        is_secure = settings.environment == "production" or request.url.scheme == "https"
+        is_secure = _is_secure_request(request, settings)
         resp.set_cookie("csrf_token", csrf, httponly=True, samesite="lax", secure=is_secure)
     return resp
 
@@ -648,7 +651,8 @@ async def _export_version_to_drive(db, user_id: str, document: dict, version: di
     try:
         current_doc = await execute_google_request(docs_service.documents().get(documentId=drive_file_id))
         body_content = (current_doc.get("body", {}) or {}).get("content", []) or []
-        end_index = body_content[-1].get("endIndex", max(2, len(text_body) + 1)) if body_content else 2
+        last_endIndex = body_content[-1].get("endIndex", max(2, len(text_body) + 1)) if body_content else 2
+        end_index = max(2, (last_endIndex - 1))
     except Exception as exc:
         logger.warning(
             "Failed to get current document for end_index calculation, using fallback",
@@ -657,7 +661,7 @@ async def _export_version_to_drive(db, user_id: str, document: dict, version: di
         )
         end_index = 2
     requests = [
-        {"deleteContentRange": {"range": {"startIndex": 1, "endIndex": max(2, end_index)}}},
+        {"deleteContentRange": {"range": {"startIndex": 1, "endIndex": end_index}}},
         {"insertText": {"location": {"index": 1}, "text": text_body}},
     ]
     await execute_google_request(
@@ -836,7 +840,7 @@ async def logout(request: Request, csrf_token: str = Form(...)) -> RedirectRespo
     response = RedirectResponse(url="/", status_code=status.HTTP_302_FOUND)
     
     # Determine secure flag consistently with how cookies were set
-    is_secure = _is_secure_request(request)
+    is_secure = _is_secure_request(request, settings)
     
     # Clear all authentication-related cookies with matching attributes
     response.delete_cookie("access_token", path="/", samesite="lax", httponly=True, secure=is_secure)
@@ -917,7 +921,7 @@ async def dashboard(request: Request, page: int = 1, user: dict = Depends(get_cu
     resp = templates.TemplateResponse("dashboard/index.html", context)
     if not request.cookies.get("csrf_token"):
         # Set secure cookies only in production or when the request is over HTTPS
-        is_secure = settings.environment == "production" or request.url.scheme == "https"
+        is_secure = _is_secure_request(request, settings)
         resp.set_cookie("csrf_token", csrf, httponly=True, samesite="lax", secure=is_secure)
     return resp
 
@@ -960,7 +964,7 @@ async def documents_page(request: Request, page: int = 1, user: dict = Depends(g
     }
     resp = templates.TemplateResponse("documents/index.html", context)
     if not request.cookies.get("csrf_token"):
-        is_secure = _is_secure_request(request)
+        is_secure = _is_secure_request(request, settings)
         resp.set_cookie("csrf_token", csrf, httponly=True, samesite="lax", secure=is_secure)
     return resp
 
@@ -1012,7 +1016,7 @@ async def document_detail_page(document_id: str, request: Request, user: dict = 
     }
     resp = templates.TemplateResponse("documents/detail.html", context)
     if not request.cookies.get("csrf_token"):
-        is_secure = _is_secure_request(request)
+        is_secure = _is_secure_request(request, settings)
         resp.set_cookie("csrf_token", csrf, httponly=True, samesite="lax", secure=is_secure)
     return resp
 
@@ -1169,7 +1173,10 @@ async def create_job_html(
     user: dict = Depends(get_current_user),
 ):
     cookie_token = request.cookies.get("csrf_token")
-    if not cookie_token or cookie_token != csrf_token:
+    # Normalize both values to handle None, then use timing-safe comparison
+    cookie_token_normalized = cookie_token or ""
+    csrf_token_normalized = csrf_token or ""
+    if not secrets.compare_digest(cookie_token_normalized, csrf_token_normalized):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
 
     db = ensure_db()
@@ -1213,7 +1220,7 @@ async def create_drive_document_form(
     user: dict = Depends(get_current_user),
 ):
     cookie_token = request.cookies.get("csrf_token")
-    if not cookie_token or cookie_token != csrf_token:
+    if not cookie_token or not csrf_token or not hmac.compare_digest(str(cookie_token), str(csrf_token)):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
     db = ensure_db()
     source = (drive_source or "").strip()
@@ -1241,7 +1248,7 @@ async def create_youtube_document_form(
     user: dict = Depends(get_current_user),
 ):
     cookie_token = request.cookies.get("csrf_token")
-    if not cookie_token or cookie_token != csrf_token:
+    if not cookie_token or not hmac.compare_digest(str(cookie_token), str(csrf_token)):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
     db = ensure_db()
     url = (youtube_url or "").strip()
@@ -1274,7 +1281,9 @@ async def create_text_document_form(
     user: dict = Depends(get_current_user),
 ):
     cookie_token = request.cookies.get("csrf_token")
-    if not cookie_token or cookie_token != csrf_token:
+    cookie_token_str = str(cookie_token or "")
+    csrf_token_str = str(csrf_token or "")
+    if not hmac.compare_digest(cookie_token_str, csrf_token_str):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
     db = ensure_db()
     _, queue = ensure_services()
@@ -1321,7 +1330,7 @@ async def job_detail_partial(job_id: str, request: Request, user: dict = Depends
     }
     resp = templates.TemplateResponse("jobs/detail.html", context)
     if not request.cookies.get("csrf_token"):
-        is_secure = _is_secure_request(request)
+        is_secure = _is_secure_request(request, settings)
         resp.set_cookie("csrf_token", csrf, httponly=True, samesite="lax", secure=is_secure)
     return resp
 
@@ -1380,7 +1389,7 @@ async def jobs_page(request: Request, user: dict = Depends(get_current_user), pa
     }
     resp = templates.TemplateResponse("jobs/index.html", context)
     if not request.cookies.get("csrf_token"):
-        is_secure = settings.environment == "production" or request.url.scheme == "https"
+        is_secure = _is_secure_request(request, settings)
         resp.set_cookie("csrf_token", csrf, httponly=True, samesite="lax", secure=is_secure)
     return resp
 
@@ -1398,7 +1407,7 @@ async def integrations_page(request: Request, user: dict = Depends(get_current_u
     context = {"request": request, "user": user, "integrations": integrations, "services_meta": services_meta, "page_title": "Integrations", "csrf_token": csrf}
     resp = templates.TemplateResponse("integrations/index.html", context)
     if not request.cookies.get("csrf_token"):
-        is_secure = settings.environment == "production" or request.url.scheme == "https"
+        is_secure = _is_secure_request(request, settings)
         resp.set_cookie("csrf_token", csrf, httponly=True, samesite="lax", secure=is_secure)
     return resp
 
@@ -1617,7 +1626,7 @@ async def settings_page(request: Request, user: dict = Depends(get_current_user)
     context = {"request": request, "user": user, "page_title": "Settings", "csrf_token": csrf}
     resp = templates.TemplateResponse("settings/index.html", context)
     if not request.cookies.get("csrf_token"):
-        is_secure = settings.environment == "production" or request.url.scheme == "https"
+        is_secure = _is_secure_request(request, settings)
         resp.set_cookie("csrf_token", csrf, httponly=True, samesite="lax", secure=is_secure)
     return resp
 
@@ -1669,7 +1678,7 @@ async def delete_account(
         )
 
     response = RedirectResponse(url="/", status_code=status.HTTP_302_FOUND)
-    is_secure = _is_secure_request(request)
+    is_secure = _is_secure_request(request, settings)
     response.delete_cookie("access_token", path="/", samesite="lax", httponly=True, secure=is_secure)
     response.delete_cookie(COOKIE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
     response.delete_cookie(COOKIE_GOOGLE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)

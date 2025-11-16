@@ -42,6 +42,8 @@ def _parse_duration_iso8601(value: str) -> int:
         elif ch == "D":
             total += datetime.timedelta(days=amount)
         # Ignore years/months
+    if num:
+        raise ValueError("Invalid duration: trailing digits without unit")
     total += datetime.timedelta(hours=hours, minutes=minutes, seconds=seconds)
     return int(total.total_seconds())
 
@@ -74,7 +76,7 @@ def fetch_video_metadata(service, video_id: str) -> Dict[str, Any]:
         "title": snippet.get("title") or "Untitled",
         "description": snippet.get("description") or "",
         "tags": tags,
-        "channel_title": snippet.get("channelTitle"),
+        "channel_title": snippet.get("channelTitle") or "",
     }
     metadata = {
         "video_id": video_id,

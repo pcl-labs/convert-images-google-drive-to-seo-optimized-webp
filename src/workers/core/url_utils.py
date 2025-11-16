@@ -1,7 +1,7 @@
 import re
 from typing import Optional
 
-_YT_ID_RE = re.compile(r"(?:v=|youtu\.be/|/shorts/)([A-Za-z0-9_-]{6,})")
+_YT_ID_RE = re.compile(r"(?:v=|youtu\.be/|/shorts/|/embed/|/v/)([A-Za-z0-9_-]{11})")
 
 
 def parse_youtube_video_id(url: str) -> Optional[str]:

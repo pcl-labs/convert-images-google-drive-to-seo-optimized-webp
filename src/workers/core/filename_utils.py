@@ -23,9 +23,16 @@ def compose_download_name(name: str, file_id: str, ext: str, sep: str = FILENAME
     """Compose filename using `<name><sep><file_id>.<ext>`.
     `ext` may be with or without a leading dot.
     """
-    # Validate file_id matches the expected pattern
-    if not re.match(r"^[A-Za-z0-9_-]+$", file_id):
-        raise ValueError(f"file_id must match pattern [A-Za-z0-9_-]+, got: {file_id!r}")
+    # Validate name is non-empty and does not contain separator
+    if not name:
+        raise ValueError(f"name must be non-empty (separator: {sep!r})")
+    if sep in name:
+        raise ValueError(f"name must not contain separator {sep!r}, got: {name!r}")
+    
+    # Validate file_id does not contain separator
+    escaped_sep = re.escape(sep)
+    if re.search(escaped_sep, file_id):
+        raise ValueError(f"file_id must not contain separator {sep!r}, got: {file_id!r}")
     
     ext = ext if ext.startswith(".") else f".{ext}"
     return f"{name}{sep}{file_id}{ext}"
