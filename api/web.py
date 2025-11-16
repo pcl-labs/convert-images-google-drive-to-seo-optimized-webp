@@ -480,6 +480,16 @@ async def _load_document_views(db, user_id: str, page: int = 1, page_size: int =
     return [_document_to_view(doc) for doc in docs], total
 
 
+async def _provision_workspace_background(db, user_id: str) -> None:
+    try:
+        await ensure_drive_workspace(db, user_id)
+    except Exception as exc:
+        logger.exception(
+            "drive_workspace_provision_bg_failed",
+            extra={"user_id": user_id, "error": str(exc)},
+        )
+
+
 def _drive_document_entry(doc: dict) -> Optional[dict]:
     if not (doc.get("source_type") or "").startswith("drive"):
         return None
@@ -594,7 +604,6 @@ async def _export_version_to_drive(db, user_id: str, document: dict, version: di
             logger.error(
                 "drive_create_doc_failed",
                 extra={"document_id": document.get("document_id"), "user_id": user_id},
-                exc_info=True,
             )
             raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Failed to create Google Doc")
         drive_file_id = created.get("documentId")
@@ -880,7 +889,7 @@ async def documents_page(request: Request, page: int = 1, user: dict = Depends(g
             drive_workspace = await get_drive_workspace(db, user["user_id"])  # type: ignore
             if not drive_workspace:
                 logger.info("drive_workspace_missing_sched_provision", extra={"user_id": user["user_id"]})
-                asyncio.create_task(ensure_drive_workspace(db, user["user_id"]))
+                asyncio.create_task(_provision_workspace_background(db, user["user_id"]))
         except Exception as exc:
             logger.warning(
                 "drive_workspace_lookup_failed",
@@ -1388,7 +1397,7 @@ async def integration_detail(service: str, request: Request, user: dict = Depend
                 drive_workspace = await get_drive_workspace(db, user["user_id"])  # type: ignore
                 if not drive_workspace:
                     logger.info("drive_workspace_missing_sched_provision", extra={"user_id": user["user_id"]})
-                    asyncio.create_task(ensure_drive_workspace(db, user["user_id"]))
+                    asyncio.create_task(_provision_workspace_background(db, user["user_id"]))
             except Exception as exc:
                 logger.warning("drive_workspace_provision_failed", exc_info=True, extra={"user_id": user["user_id"], "error": str(exc)})
         docs, _ = await _load_document_views(db, user["user_id"], page=1, page_size=50)
