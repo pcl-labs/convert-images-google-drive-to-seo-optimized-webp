@@ -1,11 +1,14 @@
 {% extends "base.html" %}
 {% set page_title = 'Account' %}
 {% from 'components/layout/page.html' import page_container, page_header %}
+{% from 'components/elements/card.html' import card %}
+{% from 'components/elements/button.html' import button %}
+{% from 'components/elements/input.html' import input %}
+{% from 'components/overlays/modal.html' import modal %}
 {% block content %}
 {% call page_container() %}
   {{ page_header('Account', 'Your profile information') }}
 
-  {% from 'components/elements/card.html' import card %}
   {% call card(title='Profile') %}
     <dl class="space-y-3 text-sm text-content">
       <div class="flex flex-col">
@@ -33,7 +36,6 @@
 
   {# Connected Accounts card #}
   {% from 'components/icons/brand_icon.html' import brand_icon %}
-  {% from 'components/elements/button.html' import button %}
   {% call card(title='Connected Accounts') %}
     <div class="space-y-4">
       <div class="space-y-2">
@@ -103,12 +105,51 @@
     </div>
   {% endcall %}
 
+  {% call card(title='Danger zone') %}
+    <div class="space-y-3">
+      <div class="space-y-1">
+        <h3 class="text-sm font-semibold text-content">Delete account</h3>
+        <p class="text-sm text-contentMuted">Permanently remove your account, API keys, jobs, and document history. This action cannot be undone.</p>
+      </div>
+      {% if delete_error %}
+        <p class="text-xs text-destructive" role="status">{{ delete_error }}</p>
+      {% endif %}
+      <div class="flex items-center justify-end">
+        {{ button('Delete account', variant='destructive', attrs='type="button" @click="$dispatch(\'open-delete-account\')"', extra_classes='inline-flex items-center gap-2') }}
+      </div>
+    </div>
+  {% endcall %}
+
   <div class="flex flex-col items-stretch gap-2 md:flex-row md:justify-end">
     <form method="post" action="/auth/logout">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-      {% from 'components/elements/button.html' import button %}
       {{ button('Log out', variant='secondary', attrs='type="submit"', extra_classes='inline-flex items-center gap-2') }}
     </form>
   </div>
 {% endcall %}
+
+{% call modal('delete-account', title='Delete account', confirm_text='Delete', cancel_text='Cancel') %}
+  <div class="space-y-4">
+    <p class="text-sm text-content">Deleting your account immediately removes all jobs, documents, API keys, and stored OAuth tokens. There is no way to restore this data.</p>
+    <div
+      x-data="{ submit(){ if(this.$refs.form && this.$refs.form.reportValidity()){ this.$refs.form.requestSubmit(); } } }"
+      @confirm-delete-account.window="submit()"
+      class="space-y-3"
+    >
+      <form x-ref="form" method="post" action="/dashboard/account/delete" class="space-y-3">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+        <p id="delete-confirm-hint" class="text-sm text-contentMuted">Type <span class="font-semibold text-content">DELETE</span> below to confirm that you understand this action cannot be undone.</p>
+        {{ input('confirmation', label='Confirmation', value=delete_value, placeholder='DELETE', attrs='required pattern="DELETE" aria-describedby="delete-confirm-hint" autocomplete="off" spellcheck="false" inputmode="text" data-autofocus', error=delete_error) }}
+      </form>
+    </div>
+  </div>
+{% endcall %}
+
+{% if delete_error %}
+  <script>
+    window.addEventListener('DOMContentLoaded', function(){
+      window.dispatchEvent(new CustomEvent('open-delete-account'));
+    });
+  </script>
+{% endif %}
 {% endblock %}

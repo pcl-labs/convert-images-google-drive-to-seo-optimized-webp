@@ -503,6 +503,12 @@ async def get_user_by_email(db: Database, email: str) -> Optional[Dict[str, Any]
     return dict(result) if result else None
 
 
+async def delete_user_account(db: Database, user_id: str) -> bool:
+    """Permanently delete a user and cascade related records."""
+    result = await db.execute("DELETE FROM users WHERE user_id = ? RETURNING user_id", (user_id,))
+    return bool(result)
+
+
 async def update_user_identity(
     db: Database,
     user_id: str,
