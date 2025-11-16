@@ -1,5 +1,10 @@
 # Deployment Guide for Cloudflare Workers
 
+## Python Dependencies
+
+Cloudflare's Python Workers runtime only bundles packages listed in `cf-requirements.txt`.  
+Keep this file focused on the modules actually needed by the HTTP worker (FastAPI, auth helpers, google APIs, etc.) and continue to use `requirements.txt` for the full local toolchain (Uvicorn, Pillow, pytest, and any native-heavy libs used by the queue consumer).  
+`wrangler deploy` will run `pip install -r cf-requirements.txt` as part of the build step; if you add a new import that should run inside the worker, update this file as well.
 
 ### 5. Set Secrets
 

@@ -181,3 +181,16 @@ class Settings(BaseSettings):
 # Global settings instance
 settings = Settings()
 
+
+def replace_settings(new_settings: Settings) -> Settings:
+    """
+    Mutate the module-level Settings instance so that existing imports see
+    updated values (critical for Cloudflare Workers where env bindings are
+    injected at request time).
+    """
+    for field_name in new_settings.model_fields:
+        object.__setattr__(settings, field_name, getattr(new_settings, field_name))
+    return settings
+
+
+__all__ = ["Settings", "settings", "replace_settings"]
