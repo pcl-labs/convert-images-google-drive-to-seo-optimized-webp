@@ -1,7 +1,7 @@
-import os
 import pytest
 
 from api.config import Settings
+from api.cloudflare_queue import QueueProducer
 
 
 @pytest.fixture(autouse=True)
@@ -9,8 +9,8 @@ def clear_queue_env(monkeypatch):
     # Disable .env loading so init kwargs drive behavior
     monkeypatch.setenv("PYTEST_DISABLE_DOTENV", "1")
     monkeypatch.delenv("USE_INLINE_QUEUE", raising=False)
-    monkeypatch.delenv("CF_ACCOUNT_ID", raising=False)
-    monkeypatch.delenv("CF_API_TOKEN", raising=False)
+    monkeypatch.delenv("CLOUDFLARE_ACCOUNT_ID", raising=False)
+    monkeypatch.delenv("CLOUDFLARE_API_TOKEN", raising=False)
     monkeypatch.delenv("CF_QUEUE_NAME", raising=False)
     return
 
@@ -39,28 +39,28 @@ def test_inline_disallowed_in_production():
     assert "not allowed in production" in str(exc.value)
 
 
-def test_missing_cf_account_id_when_not_inline():
+def test_missing_cloudflare_account_id_when_not_inline():
     with pytest.raises(ValueError) as exc:
         Settings(**base_kwargs(
             environment="development",
             use_inline_queue=False,
-            cf_api_token="token",
+            cloudflare_api_token="token",
             cf_queue_name="queue",
-            # cf_account_id missing
+            # cloudflare_account_id missing
         ))
-    assert "CF_ACCOUNT_ID" in str(exc.value)
+    assert "CLOUDFLARE_ACCOUNT_ID" in str(exc.value)
 
 
-def test_missing_cf_api_token_when_not_inline():
+def test_missing_cloudflare_api_token_when_not_inline():
     with pytest.raises(ValueError) as exc:
         Settings(**base_kwargs(
             environment="development",
             use_inline_queue=False,
-            cf_account_id="acc",
+            cloudflare_account_id="acc",
             cf_queue_name="queue",
-            # cf_api_token missing
+            # cloudflare_api_token missing
         ))
-    assert "CF_API_TOKEN" in str(exc.value)
+    assert "CLOUDFLARE_API_TOKEN" in str(exc.value)
 
 
 def test_missing_cf_queue_name_when_not_inline():
@@ -68,8 +68,8 @@ def test_missing_cf_queue_name_when_not_inline():
         Settings(**base_kwargs(
             environment="development",
             use_inline_queue=False,
-            cf_account_id="acc",
-            cf_api_token="token",
+            cloudflare_account_id="acc",
+            cloudflare_api_token="token",
             # cf_queue_name missing
         ))
     assert "CF_QUEUE_NAME" in str(exc.value)
@@ -79,9 +79,22 @@ def test_valid_api_config_passes():
     s = Settings(**base_kwargs(
         environment="development",
         use_inline_queue=False,
-        cf_account_id="acc",
-        cf_api_token="token",
+        cloudflare_account_id="acc",
+        cloudflare_api_token="token",
         cf_queue_name="queue",
         cf_queue_dlq="dlq",
     ))
     assert s.use_inline_queue is False
+
+
+def test_queue_producer_skips_cloudflare_clients_without_account(monkeypatch):
+    monkeypatch.setattr("api.cloudflare_queue.settings.use_inline_queue", False)
+    monkeypatch.setattr("api.cloudflare_queue.settings.cloudflare_api_token", "token")
+    monkeypatch.setattr("api.cloudflare_queue.settings.cf_queue_name", "queue")
+    monkeypatch.setattr("api.cloudflare_queue.settings.cf_queue_dlq", "dlq")
+    monkeypatch.setattr("api.cloudflare_queue.settings.cloudflare_account_id", None)
+
+    producer = QueueProducer(queue=None, dlq=None)
+    # Access properties to trigger initialization
+    assert producer.queue is None
+    assert producer.dlq is None

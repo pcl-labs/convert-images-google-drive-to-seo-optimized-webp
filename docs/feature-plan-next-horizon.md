@@ -24,7 +24,7 @@ You’re working in the repo `convert-image-webp-optimizer-google-drive`. Comple
      - Verification: Structured logs for failures present; Workers Analytics (or Grafana) metrics increment on enqueue failure and DLQ send; alert configured for error rate threshold as per `docs/DEPLOYMENT.md`.
    - d) API client initialization guards in place (no malformed URLs, DLQ optional).
      - Blocks release: Yes
-     - Verification: Unit tests assert `cf_account_id` is required when `use_inline_queue=false`, and that both main/DLQ API clients are skipped if missing. Tests in `tests/test_config_queue.py` must pass in CI.
+     - Verification: Unit tests assert `cloudflare_account_id` is required when `use_inline_queue=false`, and that both main/DLQ API clients are skipped if missing. Tests in `tests/test_config_queue.py` must pass in CI.
 
 2. **API Docs + Logging**
    - Add logging around queue send failures with actionable error messages, including instructions pointing to `docs/DEPLOYMENT.md`.
@@ -33,6 +33,23 @@ You’re working in the repo `convert-image-webp-optimizer-google-drive`. Comple
    - Ensure refs to `settings.queue` or `ensure_services()` handle inline queue objects cleanly.
    - Run `pytest` to verify tests pass with inline mode.
 
+
+## 1. Operationalize YouTube ingest & queue reliability
+- **Queue flow validation (blocker)**: Build an integration test that instantiates `QueueProducer` with a stub transport, enqueues an `ingest_youtube` job via `start_ingest_youtube_job`, and then hands the serialized message to `workers.consumer.handle_queue_message` to assert the document receives metadata + `raw_text`. This proves enqueue → consume works without hitting Cloudflare (`tests/test_youtube_ingest.py` is the place to extend). CI must run it with inline mode enabled.
+- **Retry/backoff + DLQ (blocker)**: Add `attempt_count`/`next_attempt_at` columns to `jobs`, teach the worker to re-enqueue up to `settings.max_job_retries`, and have final failures call `QueueProducer.send_to_dlq` with structured metadata. Write a regression test that forces `process_ingest_youtube_job` to raise, then asserts retries, timestamps, and DLQ placement are recorded.
+- **Actionable logging & docs (blocker)**: When `enqueue_job_with_guard` or `CloudflareQueueAPI.send` fails, emit logs that explain how to fix bindings/secrets and link directly to `docs/DEPLOYMENT.md` (include the exact Wrangler commands). In the same doc, add the missing `wrangler secret put CLOUDFLARE_ACCOUNT_ID|CLOUDFLARE_API_TOKEN|CF_QUEUE_NAME|CF_QUEUE_DLQ` steps plus a reminder to set `USE_INLINE_QUEUE=false` in production.
+- **Deterministic ingest tests (blocker)**: Add a fast path in `tests/test_youtube_ingest.py` that mocks `build_youtube_service_for_user`, `fetch_video_metadata`, and `fetch_captions_text` so we always assert `raw_text`, transcript metadata, and job output shape without needing real OAuth tokens. Keep the “real API” test opt-in for manual smoke tests.
+- **Inline vs Cloudflare guardrails (blocker)**: Extend `test_config_queue.py` to cover the case where `QueueProducer` is built with missing DLQ bindings to ensure we never try to use half-configured Cloudflare clients; surface a warning in `api/utils.enqueue_job_with_guard` whenever we silently fall back to inline mode so operators know they still need to run `python workers/consumer.py --inline`.
+
+## 2. Drive source-of-truth loop
+- **Document ↔ Google Doc mapping**: Extend `documents` metadata to track the Drive file ID + revision so we can treat a Google Doc as the canonical store. Add an ingestion step (queue job) that fetches the doc body via Drive/Docs API, normalizes it into `raw_text`, and updates `document_versions`.
+- **Editing + publish pipeline**: When the editor (or future AI agent) edits a document, send those diffs back to the Drive file via the Docs batchUpdate API, then mark a “ready for publish” version row so exports can pick it up. Store edit provenance in `document_versions` for auditing.
+- **Drive change detection**: Add a worker/cron that polls Drive change IDs for linked docs, enqueues a lightweight “doc sync” job, and annotates the corresponding document/version when an external edit happens. This keeps the queue busy even if no YouTube ingest is running.
+- **Docs-as-output**: When export jobs target Drive, reuse the same file ID to update specific ranges (e.g., marketing brief, image slots) instead of creating a new file. This keeps the Drive doc authoritative while the API orchestrates ingestion, generation, and publishing.
+
+(Keep the existing Sections 3–6 as-is; they still follow once Sections 1–2 land.)
+
+Let me know if you’d like any tweaks to the wording or additional milestones before I start editing the file.
 
 
 ## 2. Editor & Pipeline Polish
@@ -65,5 +82,3 @@ You’re working in the repo `convert-image-webp-optimizer-google-drive`. Comple
 Each theme can be pulled into its own PR.
 
 Priority note: Cloudflare deployment & ops is next (queue integration, bindings, observability). Export connectors and billing will follow immediately after (some work can proceed in parallel once the queue path is in place).
-
-Ops check: This PR intentionally touches docs to validate CI/CD and deployment readiness.

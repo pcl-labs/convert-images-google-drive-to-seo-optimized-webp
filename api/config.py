@@ -69,8 +69,8 @@ class Settings(BaseSettings):
     # - use_inline_queue=true: bypass Cloudflare Queues (worker polls DB)
     # - use_inline_queue=false: use Cloudflare Workers bindings if provided, otherwise HTTP API via cf_* fields
     use_inline_queue: bool = Field(default=True)  # Use in-memory queue for local dev
-    cf_account_id: Optional[str] = None  # Cloudflare account ID (required when use_inline_queue=false)
-    cf_api_token: Optional[str] = None  # Cloudflare API token for Queue HTTP API (required when use_inline_queue=false)
+    cloudflare_account_id: Optional[str] = None  # Cloudflare account ID (required when use_inline_queue=false)
+    cloudflare_api_token: Optional[str] = None  # Cloudflare API token for Queue HTTP API (required when use_inline_queue=false)
     cf_queue_name: Optional[str] = None  # Primary Cloudflare queue name used by the app
     cf_queue_dlq: Optional[str] = None  # Optional Cloudflare dead letter queue name
     
@@ -122,14 +122,14 @@ class Settings(BaseSettings):
         # enforce validation even if environment configuration might otherwise imply inline.
         explicitly_set = hasattr(self, "model_fields_set") and ("use_inline_queue" in getattr(self, "model_fields_set", set()))
         if (not self.use_inline_queue) or (explicitly_set and self.use_inline_queue is False):
-            if not self.cf_account_id:
+            if not self.cloudflare_account_id:
                 raise ValueError(
-                    "CF_ACCOUNT_ID is required when USE_INLINE_QUEUE=false. "
+                    "CLOUDFLARE_ACCOUNT_ID is required when USE_INLINE_QUEUE=false. "
                     "Get your account ID with: wrangler whoami"
                 )
-            if not self.cf_api_token:
+            if not self.cloudflare_api_token:
                 raise ValueError(
-                    "CF_API_TOKEN is required when USE_INLINE_QUEUE=false. "
+                    "CLOUDFLARE_API_TOKEN is required when USE_INLINE_QUEUE=false. "
                     "Create an API token in Cloudflare dashboard: https://dash.cloudflare.com/profile/api-tokens"
                 )
             if not self.cf_queue_name:

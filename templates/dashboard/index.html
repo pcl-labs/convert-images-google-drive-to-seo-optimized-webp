@@ -21,43 +21,24 @@
   </div>
 
   {% from 'components/elements/card.html' import card %}
-  {% call card(title="Kick Off Optimization") %}
-    <form hx-post="/dashboard/jobs" hx-target="#recent-jobs-list" hx-swap="outerHTML" class="space-y-3">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-      {% from 'components/elements/input.html' import input %}
-      {{ input('document_id', label='Document ID', placeholder='doc_123...', attrs='required') }}
-      <p class="text-xs text-contentMuted">
-        Need a document ID? <a href="/dashboard/documents" class="text-primary hover:text-primary/80">Use the Documents page</a> to register Drive folders, ingest YouTube videos, or paste raw text.
-      </p>
-      <div>
-        {% from 'components/elements/button.html' import button %}
-        {{ button('Create Job', variant='primary', attrs='type="submit"') }}
-      </div>
-    </form>
+  {% call card(title="Launch workflows") %}
+    <p class="text-sm text-content">
+      Use the Documents page to ingest content, then call the API to kick off any long-running workflow. This dashboard stays light so mobile users can focus on the next action.
+    </p>
+    <div class="mt-3 flex flex-wrap gap-2">
+      <a href="/dashboard/documents" class="btn-primary">Manage documents</a>
+      <a href="/dashboard/integrations" class="btn-secondary">Link integrations</a>
+    </div>
   {% endcall %}
 
-  {% call card(title="Recent Jobs", actions='<a href="/dashboard/jobs" class="text-sm text-primary hover:text-primary/80">View all</a>') %}
-    <div id="recent-jobs-list" class="space-y-3">
-      {% from 'components/elements/badge.html' import badge %}
-      {% for job in jobs %}
-        <article class="surface rounded-lg p-4 space-y-3">
-          <div class="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-            <div class="space-y-1">
-              <p class="font-mono text-xs text-contentMuted">{{ job.id }}</p>
-              <p class="text-sm text-content">{{ job.kind }}</p>
-            </div>
-            <div class="flex items-center gap-3">
-              {{ badge(job.status_label, status=job.status) }}
-              <a href="/dashboard/jobs/{{ job.id }}" class="text-sm text-primary hover:text-primary/80">View</a>
-            </div>
-          </div>
-          <div class="flex flex-col gap-1 text-xs text-contentMuted">
-            <span>Created {{ job.created_at }}</span>
-          </div>
-        </article>
-      {% else %}
-        <div class="surface rounded-lg p-6 text-center text-sm text-contentMuted">No recent jobs</div>
-      {% endfor %}
+  {% call card(title="Latest activity", actions='<a href="/api/v1/jobs?limit=20" class="text-sm text-primary hover:text-primary/80" target="_blank" rel="noopener">Open Activity API</a>') %}
+    <p class="text-sm text-content">
+      Inspect job history directly from the API. Responses include pagination, status filters, and document IDs so you can script monitoring or plug into your own dashboards.
+    </p>
+    <div class="mt-3 flex flex-wrap gap-2 text-xs text-contentMuted">
+      <span class="inline-flex items-center rounded-full border border-border px-3 py-1 uppercase tracking-wide">API-first</span>
+      <span class="inline-flex items-center rounded-full border border-border px-3 py-1 uppercase tracking-wide">JSON output</span>
+      <span class="inline-flex items-center rounded-full border border-border px-3 py-1 uppercase tracking-wide">Mobile friendly</span>
     </div>
   {% endcall %}
 

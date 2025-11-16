@@ -76,6 +76,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     completed_at TEXT,
     error TEXT,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TEXT,
     FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
     FOREIGN KEY (document_id) REFERENCES documents(document_id)
 );

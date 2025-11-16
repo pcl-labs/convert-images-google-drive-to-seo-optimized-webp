@@ -53,7 +53,15 @@ class CloudflareQueueAPI:
         headers = {"Authorization": f"Bearer {self.api_token}", "Content-Type": "application/json"}
         resp = await self.client.post(self.endpoint, json={"messages": [payload]}, headers=headers)
         if resp.status_code >= 300:
-            logger.error("Cloudflare Queue send failed", extra={"status": resp.status_code, "body": resp.text})
+            logger.error(
+                "Cloudflare Queue send failed; see docs/DEPLOYMENT.md#queue-configuration-modes",
+                extra={
+                    "status": resp.status_code,
+                    "body": resp.text,
+                    "doc_hint": "docs/DEPLOYMENT.md#queue-configuration-modes",
+                    "queue_name": self.queue_name,
+                },
+            )
             resp.raise_for_status()
 
     async def close(self) -> None:
@@ -84,31 +92,31 @@ class QueueProducer:
                 if settings.queue is not None:
                     self._queue = settings.queue
                     logger.info("Using Cloudflare Workers queue binding")
-                elif settings.cf_api_token and settings.cf_queue_name:
-                    if settings.cf_account_id:
+                elif settings.cloudflare_api_token and settings.cf_queue_name:
+                    if settings.cloudflare_account_id:
                         self._cf_queue_api = CloudflareQueueAPI(
-                            account_id=settings.cf_account_id,
-                            api_token=settings.cf_api_token,
+                            account_id=settings.cloudflare_account_id,
+                            api_token=settings.cloudflare_api_token,
                             queue_name=settings.cf_queue_name,
                         )
                         logger.info("Initialized Cloudflare Queue API client")
                     else:
-                        logger.warning("cf_account_id missing; skipping CloudflareQueueAPI initialization")
+                        logger.warning("cloudflare_account_id missing; skipping CloudflareQueueAPI initialization")
                 else:
                     logger.warning("No queue binding/API configured; jobs will remain pending")
 
             if self._dlq is None:
                 if settings.dlq is not None:
                     self._dlq = settings.dlq
-                elif settings.cf_api_token and settings.cf_queue_dlq:
-                    if settings.cf_account_id:
+                elif settings.cloudflare_api_token and settings.cf_queue_dlq:
+                    if settings.cloudflare_account_id:
                         self._cf_dlq_api = CloudflareQueueAPI(
-                            account_id=settings.cf_account_id,
-                            api_token=settings.cf_api_token,
+                            account_id=settings.cloudflare_account_id,
+                            api_token=settings.cloudflare_api_token,
                             queue_name=settings.cf_queue_dlq,
                         )
                     else:
-                        logger.warning("cf_account_id missing; skipping Cloudflare DLQ API initialization")
+                        logger.warning("cloudflare_account_id missing; skipping Cloudflare DLQ API initialization")
         self._initialized = True
 
     @property
@@ -137,7 +145,10 @@ class QueueProducer:
             return True
 
         if not self.queue and not self._cf_queue_api:
-            logger.warning("Queue not configured, message will not be processed")
+            logger.warning(
+                "Queue not configured; message will not be processed (docs/DEPLOYMENT.md#queue-configuration-modes)",
+                extra={"doc_hint": "docs/DEPLOYMENT.md#queue-configuration-modes", "job_id": message.get("job_id")},
+            )
             return False
 
         def _is_str(value: Any) -> bool:
@@ -169,7 +180,11 @@ class QueueProducer:
             else:
                 await self._send_via_cloudflare(message)
         except Exception:
-            logger.error("Failed to send queue message", exc_info=True, extra={"job_id": message.get("job_id")})
+            logger.error(
+                "Failed to send queue message; see docs/DEPLOYMENT.md#queue-configuration-modes",
+                exc_info=True,
+                extra={"job_id": message.get("job_id"), "doc_hint": "docs/DEPLOYMENT.md#queue-configuration-modes"},
+            )
             raise
         else:
             logger.info("Queue message enqueued", extra={"job_id": message.get("job_id")})

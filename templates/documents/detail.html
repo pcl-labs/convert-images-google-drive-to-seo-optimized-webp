@@ -134,27 +134,13 @@
     </div>
   {% endcall %}
 
-  {% call card(title='Jobs using this document', actions='<a href="/dashboard/jobs" class="text-sm text-primary hover:text-primary/80">View all jobs</a>') %}
-    <div class="space-y-3">
-      {% from 'components/elements/badge.html' import badge %}
-      {% for job in jobs %}
-        <article class="surface rounded-lg p-4 space-y-3">
-          <div class="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-            <div class="space-y-1">
-              <p class="font-mono text-xs text-contentMuted break-all">{{ job.id }}</p>
-              <p class="text-sm text-content">{{ job.kind }}</p>
-              <p class="text-xs text-contentMuted">Created {{ job.created_at }}</p>
-            </div>
-            <div class="flex flex-col gap-2 sm:flex-row sm:items-center">
-              {{ badge(job.status_label, status=job.status) }}
-              <a href="/dashboard/jobs/{{ job.id }}" class="text-sm text-primary hover:text-primary/80">View</a>
-            </div>
-          </div>
-        </article>
-      {% else %}
-        <div class="rounded-lg border border-border p-6 text-center text-sm text-contentMuted">No jobs reference this document yet.</div>
-      {% endfor %}
-    </div>
+  {% call card(title='Activity for this document', actions='<a href="/api/v1/jobs?document_id=' ~ document.id ~ '" class="text-sm text-primary hover:text-primary/80" target="_blank" rel="noopener">Open Activity API</a>') %}
+    <p class="text-sm text-content">
+      Job history now lives in the Activity API so you can filter, export, or embed however you like. Use the link above to fetch a JSON response scoped to this document.
+    </p>
+    <p class="mt-3 text-xs text-contentMuted">
+      Tip: pass <code>status=running</code> or <code>status=failed</code> query params to zero in on specific states.
+    </p>
   {% endcall %}
 {% endcall %}
 {% endblock %}
