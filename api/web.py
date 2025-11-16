@@ -141,6 +141,9 @@ GOOGLE_SCOPE_LABELS = {
 }
 
 
+ALLOWED_INTEGRATION_KEYS = {"drive", "youtube"}
+
+
 def _github_info_for(user: dict, stored_user: dict | None) -> dict:
     return {
         "github_id": user.get("github_id") or ((stored_user or {}).get("github_id")),
@@ -151,11 +154,11 @@ def _github_info_for(user: dict, stored_user: dict | None) -> dict:
 
 def _services_meta_filtered() -> dict:
     # Only show Drive and YouTube in Integrations UI (auth providers live on Account page)
-    return {k: v for k, v in SERVICES_META.items() if k in {"drive", "youtube"}}
+    return {k: v for k, v in SERVICES_META.items() if k in ALLOWED_INTEGRATION_KEYS}
 
 
 def _filter_integrations_map(integrations: dict) -> dict:
-    return {k: v for k, v in integrations.items() if k in {"drive", "youtube"}}
+    return {k: v for k, v in integrations.items() if k in ALLOWED_INTEGRATION_KEYS}
 
 
 def _scope_names(scopes: list[str]) -> list[str]:
@@ -1052,17 +1055,12 @@ async def integrations_grid_partial(request: Request, user: dict = Depends(get_c
 @router.get("/dashboard/integrations/{service}", response_class=HTMLResponse)
 async def integration_detail(service: str, request: Request, user: dict = Depends(get_current_user)):
     # Validate service early to avoid unnecessary DB calls and object construction
-    allowed_services = {"drive", "youtube"}
-    if service not in allowed_services:
+    if service not in ALLOWED_INTEGRATION_KEYS:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     db = ensure_db()
     tokens = await list_google_tokens(db, user["user_id"])  # type: ignore
     stored_user = await get_user_by_id(db, user["user_id"])  # type: ignore
-    github_info = {
-        "github_id": user.get("github_id") or (stored_user.get("github_id") if stored_user else None),
-        "email": user.get("email") or (stored_user.get("email") if stored_user else None),
-        "created_at": stored_user.get("created_at") if stored_user else None,
-    }
+    github_info = _github_info_for(user, stored_user)
     integrations = _build_integrations_model(tokens, github_info=github_info)
     services_meta = SERVICES_META
     csrf = _get_csrf_token(request)

@@ -152,9 +152,9 @@ async def google_login_start(request: Request):
     try:
         auth_url, state = _get_google_login_oauth_redirect(request)
         return _build_google_oauth_response(request, auth_url, state)
-    except Exception:
+    except Exception as exc:
         logger.exception("Google auth initiation failed")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Google OAuth not configured")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Google OAuth not configured") from exc
 
 
 @router.post("/auth/google/login/start", tags=["Authentication"])
@@ -173,9 +173,9 @@ async def google_login_start_post(request: Request, csrf_token: str = Form(...))
     try:
         auth_url, state = _get_google_login_oauth_redirect(request)
         return _build_google_oauth_response(request, auth_url, state)
-    except Exception:
+    except Exception as exc:
         logger.exception("Google auth initiation (POST) failed")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Google OAuth not configured")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Google OAuth not configured") from exc
 
 
 @router.get("/auth/github/callback", tags=["Authentication"])

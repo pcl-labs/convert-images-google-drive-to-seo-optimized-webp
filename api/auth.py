@@ -419,7 +419,9 @@ async def authenticate_google(
         try:
             userinfo = await get_google_user_info(access_token)
             email_candidate = userinfo.get("email")
-            if email_candidate and (userinfo.get("email_verified") is True):
+            # Extra OIDC robustness: if userinfo has a 'sub', ensure it matches the ID token 'sub'
+            sub_matches = (userinfo.get("sub") is None) or (str(userinfo.get("sub")) == google_id)
+            if email_candidate and (userinfo.get("email_verified") is True) and sub_matches:
                 email = email_candidate
         except AuthenticationError:
             # Continue with fallback email handling below
