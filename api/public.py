@@ -257,7 +257,17 @@ async def google_login_callback(code: str, state: str, request: Request):
             return response
     except Exception:
         logger.exception("Google callback failed")
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication failed")
+        detail = "Authentication failed"
+        try:
+            if settings.debug:
+                # When in debug mode, surface the error detail to aid diagnosis
+                import sys
+                exc_type, exc_value, _ = sys.exc_info()
+                if exc_value is not None:
+                    detail = str(exc_value)
+        except Exception:
+            pass
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=detail)
 
 
 @router.get("/auth/logout", tags=["Authentication"])

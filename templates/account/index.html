@@ -28,20 +28,79 @@
         <dt class="text-xs font-semibold uppercase tracking-wide text-contentMuted">Created</dt>
         <dd>{{ user.created_at or '-' }}</dd>
       </div>
-      <div class="flex flex-col">
-        <dt class="text-xs font-semibold uppercase tracking-wide text-contentMuted">Connected providers</dt>
-        <dd class="space-y-1">
-          <div class="flex items-center justify-between">
-            <span>GitHub</span>
-            <span class="text-xs font-mono text-contentMuted">{{ user.github_id or 'Not connected' }}</span>
-          </div>
-          <div class="flex items-center justify-between">
-            <span>Google</span>
-            <span class="text-xs font-mono text-contentMuted">{{ user.google_id or 'Not connected' }}</span>
-          </div>
-        </dd>
-      </div>
     </dl>
+  {% endcall %}
+
+  {# Connected Accounts card #}
+  {% from 'components/icons/brand_icon.html' import brand_icon %}
+  {% from 'components/elements/button.html' import button %}
+  {% call card(title='Connected Accounts') %}
+    <div class="space-y-4">
+      <div class="space-y-2">
+        <h3 class="text-xs font-semibold uppercase tracking-wide text-contentMuted">Links</h3>
+        <div class="divide-y divide-border surface rounded-md">
+          <div class="flex items-center justify-between p-3">
+            <div class="flex items-center gap-3 min-w-0">
+              <div class="h-6 w-6 rounded-md bg-surfaceMuted border border-border p-1 [&>svg]:h-full [&>svg]:w-full [&>svg]:block">
+                {{ brand_icon('github') }}
+              </div>
+              <div class="min-w-0">
+                <div class="text-sm font-medium text-content">GitHub</div>
+              </div>
+            </div>
+            {% if not user.github_id %}
+              <form method="post" action="/auth/github/start">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+                {{ button('Add', variant='secondary', attrs='type="submit"') }}
+              </form>
+            {% else %}
+              <span class="inline-flex items-center rounded-full border border-border px-3 py-1 text-xs text-contentMuted bg-surfaceMuted">Connected</span>
+            {% endif %}
+          </div>
+          <div class="flex items-center justify-between p-3">
+            <div class="flex items-center gap-3 min-w-0">
+              <div class="h-6 w-6 rounded-md bg-surfaceMuted border border-border p-1 [&>svg]:h-full [&>svg]:w-full [&>svg]:block">
+                {{ brand_icon('google') }}
+              </div>
+              <div class="min-w-0">
+                <div class="text-sm font-medium text-content">Google</div>
+              </div>
+            </div>
+            {% if not user.google_id %}
+              <form method="post" action="/auth/google/login/start">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+                {{ button('Add', variant='secondary', attrs='type="submit"') }}
+              </form>
+            {% else %}
+              <span class="inline-flex items-center rounded-full border border-border px-3 py-1 text-xs text-contentMuted bg-surfaceMuted">Connected</span>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+
+      <div class="space-y-2">
+        <h3 class="text-xs font-semibold uppercase tracking-wide text-contentMuted">Email</h3>
+        <div class="surface rounded-md divide-y divide-border">
+          <div class="flex items-center justify-between p-3">
+            <div class="flex items-center gap-3 min-w-0">
+              <div class="h-8 w-8 rounded-md bg-surfaceMuted border border-border p-1.5">
+                <svg viewBox="0 0 24 24" class="h-full w-full text-content" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+                  <rect x="3" y="5" width="18" height="14" rx="2" ry="2"/>
+                  <path d="M3 7l9 6 9-6"/>
+                </svg>
+              </div>
+              <div class="min-w-0">
+                <div class="text-sm text-content truncate">{{ user.email or '-' }}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <p class="text-xs text-contentMuted">
+        To enable Drive/YouTube workflows, link Google integrations on the <a href="/dashboard/integrations" class="text-primary hover:text-primary/80">Integrations</a> page.
+      </p>
+    </div>
   {% endcall %}
 
   <div class="flex flex-col items-stretch gap-2 md:flex-row md:justify-end">

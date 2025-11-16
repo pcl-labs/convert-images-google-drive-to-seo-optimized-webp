@@ -1003,7 +1003,9 @@ async def integrations_page(request: Request, user: dict = Depends(get_current_u
         "created_at": stored_user.get("created_at") if stored_user else None,
     }
     integrations = _build_integrations_model(tokens, github_info=github_info)
-    services_meta = SERVICES_META
+    # Only show Drive and YouTube in Integrations UI (auth providers live on Account page)
+    services_meta = {k: v for k, v in SERVICES_META.items() if k in {"drive", "youtube"}}
+    integrations = {k: v for k, v in integrations.items() if k in {"drive", "youtube"}}
     csrf = _get_csrf_token(request)
     context = {"request": request, "user": user, "integrations": integrations, "services_meta": services_meta, "page_title": "Integrations", "csrf_token": csrf}
     resp = templates.TemplateResponse("integrations/index.html", context)
@@ -1027,14 +1029,10 @@ async def integrations_drive_disconnect(request: Request, csrf_token: str = Form
 async def integrations_grid_partial(request: Request, user: dict = Depends(get_current_user)):
     db = ensure_db()
     tokens = await list_google_tokens(db, user["user_id"])  # type: ignore
-    stored_user = await get_user_by_id(db, user["user_id"])  # type: ignore
-    github_info = {
-        "github_id": user.get("github_id") or (stored_user.get("github_id") if stored_user else None),
-        "email": user.get("email") or (stored_user.get("email") if stored_user else None),
-        "created_at": stored_user.get("created_at") if stored_user else None,
-    }
-    integrations = _build_integrations_model(tokens, github_info=github_info)
-    services_meta = SERVICES_META
+    integrations = _build_integrations_model(tokens, github_info=user)
+    # Only show Drive and YouTube in Integrations UI (auth providers live on Account page)
+    services_meta = {k: v for k, v in SERVICES_META.items() if k in {"drive", "youtube"}}
+    integrations = {k: v for k, v in integrations.items() if k in {"drive", "youtube"}}
     csrf = _get_csrf_token(request)
     return templates.TemplateResponse("integrations/partials/grid.html", {"request": request, "integrations": integrations, "services_meta": services_meta, "csrf_token": csrf})
 
@@ -1042,7 +1040,7 @@ async def integrations_grid_partial(request: Request, user: dict = Depends(get_c
 @router.get("/dashboard/integrations/{service}", response_class=HTMLResponse)
 async def integration_detail(service: str, request: Request, user: dict = Depends(get_current_user)):
     # Validate service early to avoid unnecessary DB calls and object construction
-    allowed_services = {"gmail", "drive", "youtube", "github"}
+    allowed_services = {"drive", "youtube"}
     if service not in allowed_services:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     db = ensure_db()
