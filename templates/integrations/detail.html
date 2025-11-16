@@ -2,6 +2,7 @@
 {% block page_title %}{{ service.name }}{% endblock %}
 {% block content %}
 {% from 'components/elements/icon.html' import icon %}
+{% from 'components/elements/card.html' import card %}
 <div class="p-4 md:p-6 space-y-6">
   <a href="/dashboard/integrations" class="inline-flex items-center text-contentMuted hover:text-content text-sm">
     {{ icon('back', size='h-4 w-4', class='mr-2') }}
@@ -12,10 +13,45 @@
 {% from 'components/elements/integration_card.html' import integration_card %}
 {{ integration_card(service, integration_data, csrf_token) }}
 
-  <div>
-    <h2 class="text-sm font-semibold text-content mb-2">Information</h2>
-    {% from 'components/elements/card.html' import card %}
-    {% call card() %}
+  <div class="grid gap-4 lg:grid-cols-3">
+    <div class="space-y-4 lg:col-span-2">
+      {% if service.long_description or service.value_props %}
+        {% set card_title = 'How ' ~ service.name ~ ' works with Quill' %}
+        {% call card(title=card_title) %}
+          {% if service.long_description %}
+            <p class="text-sm text-content">{{ service.long_description }}</p>
+          {% endif %}
+          {% if service.value_props %}
+            <div class="grid gap-3 mt-4 sm:grid-cols-2">
+              {% for item in service.value_props %}
+                <div class="rounded-lg border border-border p-3 bg-surface/40">
+                  <p class="text-sm font-semibold text-content">{{ item.title }}</p>
+                  <p class="text-xs text-contentMuted mt-1">{{ item.body }}</p>
+                </div>
+              {% endfor %}
+            </div>
+          {% endif %}
+        {% endcall %}
+      {% endif %}
+
+      {% if service.synced_content %}
+        {% call card(title='Synced content & folders') %}
+          <p class="text-xs text-contentMuted">Quill keeps these folders mapped to the Documents view so Drive stays in sync.</p>
+          <div class="mt-4 space-y-3">
+            {% for item in service.synced_content %}
+              <div class="rounded-lg border border-border p-3">
+                <p class="text-xs uppercase tracking-wide text-contentMuted">{{ item.label }}</p>
+                <p class="text-sm font-semibold text-content mt-1">{{ item.path }}</p>
+                <p class="text-xs text-contentMuted mt-1">{{ item.description }}</p>
+              </div>
+            {% endfor %}
+          </div>
+        {% endcall %}
+      {% endif %}
+    </div>
+    <div>
+      <h2 class="text-sm font-semibold text-content mb-2">Information</h2>
+      {% call card() %}
       <div class="px-4 py-4 border-b border-border space-y-1">
         <div class="flex items-center justify-between">
           <div class="text-contentMuted">Status</div>
@@ -64,7 +100,21 @@
         <div class="text-contentMuted">Privacy Policy</div>
         {{ icon('external-link', size='h-4 w-4', class='text-primary') }}
       </a>
+      {% if service.synced_content %}
+        <div class="px-4 py-4 border-t border-border">
+          <p class="text-xs uppercase tracking-wide text-contentMuted mb-2">Synced structure</p>
+          <ul class="space-y-1 text-xs text-contentMuted">
+            {% for item in service.synced_content %}
+              <li class="flex items-center gap-2">
+                <span class="h-1.5 w-1.5 rounded-full bg-primary"></span>
+                <span>{{ item.path }}</span>
+              </li>
+            {% endfor %}
+          </ul>
+        </div>
+      {% endif %}
     {% endcall %}
+    </div>
   </div>
 
   {% from 'components/overlays/modal.html' import modal %}

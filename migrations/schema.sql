@@ -142,6 +142,8 @@ CREATE TABLE IF NOT EXISTS documents (
     content_format TEXT,
     frontmatter TEXT,
     latest_version_id TEXT,
+    drive_file_id TEXT,
+    drive_revision_id TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE

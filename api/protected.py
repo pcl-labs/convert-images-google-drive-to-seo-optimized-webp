@@ -29,6 +29,8 @@ from .models import (
     DocumentVersionDetail,
     DocumentExportRequest,
     DocumentExportResponse,
+    IngestDriveRequest,
+    DriveChangePollRequest,
 )
 from .database import (
     create_job_extended,
@@ -142,6 +144,8 @@ def _serialize_document(doc: dict) -> Document:
         content_format=parsed.get("content_format"),
         frontmatter=_json_field(parsed.get("frontmatter"), {}),
         latest_version_id=parsed.get("latest_version_id"),
+        drive_file_id=parsed.get("drive_file_id"),
+        drive_revision_id=parsed.get("drive_revision_id"),
         created_at=_parse_db_datetime(parsed.get("created_at")),
         updated_at=_parse_db_datetime(parsed.get("updated_at")),
     )
@@ -195,6 +199,23 @@ def _drive_folder_from_document(doc: dict) -> str:
     if not folder_id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Document is missing Drive folder metadata")
     return folder_id
+
+
+def _drive_file_from_document(doc: dict) -> tuple[str, Optional[str]]:
+    metadata = doc.get("metadata") or {}
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata)
+        except Exception:
+            metadata = {}
+    drive_meta = metadata.get("drive") if isinstance(metadata, dict) else {}
+    if not isinstance(drive_meta, dict):
+        drive_meta = {}
+    file_id = doc.get("drive_file_id") or drive_meta.get("file_id") or metadata.get("drive_file_id")
+    if not file_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Document is not linked to a Drive file yet")
+    revision = doc.get("drive_revision_id") or drive_meta.get("revision_id")
+    return str(file_id), revision
 
 async def create_drive_document_for_user(db, user_id: str, drive_source: str) -> Document:
     # Import locally to avoid hard dependency issues if google client is absent in some envs
@@ -307,6 +328,95 @@ async def start_ingest_youtube_job(db, queue, user_id: str, url: str) -> JobStat
         created_at=_parse_db_datetime(job_row.get("created_at")),
         job_type=JobType.INGEST_YOUTUBE.value,
         document_id=document_id,
+    )
+
+
+async def start_ingest_drive_job(db, queue, user_id: str, document_id: str) -> JobStatus:
+    doc = await _load_document_for_user(db, document_id, user_id)
+    file_id, revision = _drive_file_from_document(doc)
+    job_id = str(uuid.uuid4())
+    payload = {"drive_file_id": file_id, "drive_revision_id": revision}
+    job_row = await create_job_extended(
+        db,
+        job_id,
+        user_id,
+        job_type=JobType.INGEST_DRIVE.value,
+        document_id=document_id,
+        payload=payload,
+    )
+    message = {
+        "job_id": job_id,
+        "user_id": user_id,
+        "job_type": JobType.INGEST_DRIVE.value,
+        "document_id": document_id,
+        "drive_file_id": file_id,
+        "drive_revision_id": revision,
+    }
+    enqueued, enqueue_exception, should_fail = await enqueue_job_with_guard(
+        queue,
+        job_id,
+        user_id,
+        message,
+        allow_inline_fallback=False,
+    )
+    if should_fail:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Queue unavailable for Drive ingest; try again later")
+    if not enqueued:
+        logger.warning(
+            "drive_ingest_queue_unavailable",
+            extra={"job_id": job_id, "document_id": document_id, "doc_hint": "docs/DEPLOYMENT.md#queue-configuration-modes", "exception": str(enqueue_exception) if enqueue_exception else None},
+        )
+    progress = _parse_job_progress_model(progress_str=job_row.get("progress", "{}"))
+    return JobStatus(
+        job_id=job_id,
+        user_id=user_id,
+        status=JobStatusEnum.PENDING,
+        progress=progress,
+        created_at=_parse_db_datetime(job_row.get("created_at")),
+        job_type=JobType.INGEST_DRIVE.value,
+        document_id=document_id,
+    )
+
+
+async def start_drive_change_poll_job(db, queue, user_id: str, document_ids: Optional[list[str]] = None) -> JobStatus:
+    job_id = str(uuid.uuid4())
+    payload = {"document_ids": document_ids} if document_ids else None
+    job_row = await create_job_extended(
+        db,
+        job_id,
+        user_id,
+        job_type=JobType.DRIVE_CHANGE_POLL.value,
+        payload=payload,
+    )
+    message = {
+        "job_id": job_id,
+        "user_id": user_id,
+        "job_type": JobType.DRIVE_CHANGE_POLL.value,
+    }
+    if document_ids:
+        message["document_ids"] = document_ids
+    enqueued, enqueue_exception, should_fail = await enqueue_job_with_guard(
+        queue,
+        job_id,
+        user_id,
+        message,
+        allow_inline_fallback=False,
+    )
+    if should_fail:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Queue unavailable for Drive change polling")
+    if not enqueued:
+        logger.warning(
+            "drive_change_poll_enqueue_failed",
+            extra={"job_id": job_id, "doc_hint": "docs/DEPLOYMENT.md#queue-configuration-modes", "exception": str(enqueue_exception) if enqueue_exception else None},
+        )
+    progress = _parse_job_progress_model(progress_str=job_row.get("progress", "{}"))
+    return JobStatus(
+        job_id=job_id,
+        user_id=user_id,
+        status=JobStatusEnum.PENDING,
+        progress=progress,
+        created_at=_parse_db_datetime(job_row.get("created_at")),
+        job_type=JobType.DRIVE_CHANGE_POLL.value,
     )
 
 
@@ -815,6 +925,20 @@ async def ingest_youtube(req: IngestYouTubeRequest, user: dict = Depends(get_cur
     db = ensure_db()
     queue = ensure_services()[1]
     return await start_ingest_youtube_job(db, queue, user["user_id"], str(req.url))
+
+
+@router.post("/ingest/drive", response_model=JobStatus, tags=["Ingestion"])
+async def ingest_drive(req: IngestDriveRequest, user: dict = Depends(get_current_user)):
+    db = ensure_db()
+    queue = ensure_services()[1]
+    return await start_ingest_drive_job(db, queue, user["user_id"], req.document_id)
+
+
+@router.post("/ingest/drive/poll", response_model=JobStatus, tags=["Ingestion"])
+async def ingest_drive_poll(req: DriveChangePollRequest, user: dict = Depends(get_current_user)):
+    db = ensure_db()
+    queue = ensure_services()[1]
+    return await start_drive_change_poll_job(db, queue, user["user_id"], req.document_ids)
 
 
 @router.post("/ingest/text", response_model=JobStatus, tags=["Ingestion"])

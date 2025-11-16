@@ -43,6 +43,7 @@ from .database import (
     list_document_versions,
     get_document_version,
     create_document_export,
+    update_document,
 )
 from .auth import create_user_api_key
 from .protected import (
@@ -59,7 +60,8 @@ from .notifications_stream import notifications_stream_response
 from .constants import COOKIE_OAUTH_STATE, COOKIE_GOOGLE_OAUTH_STATE
 from .utils import normalize_ui_status
 from core.constants import GOOGLE_SCOPE_DRIVE, GOOGLE_SCOPE_YOUTUBE, GOOGLE_SCOPE_GMAIL, GOOGLE_INTEGRATION_SCOPES
-from .google_oauth import parse_google_scope_list
+from .google_oauth import parse_google_scope_list, build_docs_service_for_user, build_drive_service_for_user
+from core.google_async import execute_google_request
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +69,8 @@ logger = logging.getLogger(__name__)
 KIND_MAP = {
     "optimize_drive": "Drive",
     "ingest_drive_folder": "Drive",
+    "ingest_drive": "Drive",
+    "drive_change_poll": "Drive",
     "ingest_youtube": "YouTube",
     "ingest_text": "Text",
     "generate_blog": "Blog",
@@ -108,7 +112,39 @@ SERVICES_META = {
         "key": "drive",
         "name": "Google Drive",
         "capability": "File uploads",
-        "description": "Sync folders and enqueue conversions without exporting files.",
+        "description": "Create a Quill workspace folder and sync drafts + published docs automatically.",
+        "long_description": "Quill provisions a Drive workspace for you (Quill/Drafts and Quill/Published) the moment you connect Google Drive. Drafts that live inside Quill stay in sync with the documents you see inside Quill, so you never have to duplicate uploads or export manually.",
+        "value_props": [
+            {
+                "title": "Workspace automation",
+                "body": "We create the Quill root folder with Drafts and Published subfolders so every generated document has a predictable home in Drive.",
+            },
+            {
+                "title": "Draft to publish mapping",
+                "body": "Draft versions stay in the Drafts folder until you mark them ready. Published exports are mirrored to Quill/Published so you can hand them to editors without leaving Drive.",
+            },
+            {
+                "title": "Documents stay in sync",
+                "body": "The Documents page in Quill reflects the same Drive-backed content, making it easy to jump between Drive and Quill without losing track of status.",
+            },
+        ],
+        "synced_content": [
+            {
+                "label": "Workspace",
+                "path": "My Drive / Quill",
+                "description": "Created automatically with Drive connection. Houses all Quill-managed folders.",
+            },
+            {
+                "label": "Drafts",
+                "path": "My Drive / Quill / Drafts",
+                "description": "Every in-progress generation lands here so editors can collaborate before publishing.",
+            },
+            {
+                "label": "Published",
+                "path": "My Drive / Quill / Published",
+                "description": "When you export or publish from Quill we place the final artifact here, mirroring the Documents view.",
+            },
+        ],
         "category": "Storage",
         "developer": "Google",
         "website": "https://drive.google.com/",
@@ -119,7 +155,22 @@ SERVICES_META = {
         "key": "youtube",
         "name": "YouTube",
         "capability": "Media",
-        "description": "Convert thumbnails or channel assets via queued jobs.",
+        "description": "Pull channel content into Quill so AI can turn videos into ready-to-publish blogs.",
+        "long_description": "Connect YouTube to fetch transcripts, titles, and thumbnails for your latest videos. Quill ingests that context into Documents so AI can outline, draft, and optimize publish-ready blog posts without manual copy/paste.",
+        "value_props": [
+            {
+                "title": "Channel-aware ingestion",
+                "body": "Quill fetches public and unlisted videos (with granted scopes) to seed new Documents with transcripts and chapter markers.",
+            },
+            {
+                "title": "AI blog generation",
+                "body": "Use the fetched metadata plus Quill's blog generator to convert each video into long-form content in a few clicks.",
+            },
+            {
+                "title": "Auto-linked documents",
+                "body": "Every ingested video produces a Document entry so you can track drafts, exports, and status per video.",
+            },
+        ],
         "category": "Media",
         "developer": "Google",
         "website": "https://youtube.com/",
@@ -136,6 +187,7 @@ INTEGRATION_STATUS_LABELS = {
 
 GOOGLE_SCOPE_LABELS = {
     GOOGLE_SCOPE_DRIVE: "Drive access",
+    "https://www.googleapis.com/auth/documents": "Docs editor",
     GOOGLE_SCOPE_YOUTUBE: "YouTube (full access - required for captions)",
     "https://www.googleapis.com/auth/youtube.force-ssl": "YouTube (full access - required for captions)",
     GOOGLE_SCOPE_GMAIL: "Gmail read-only",
@@ -377,6 +429,15 @@ def _document_to_view(doc: dict) -> dict:
             metadata = {}
     elif metadata is None:
         metadata = {}
+    drive_meta = metadata.get("drive") if isinstance(metadata, dict) else None
+    if not isinstance(drive_meta, dict):
+        drive_meta = {}
+    if doc.get("drive_file_id"):
+        drive_meta.setdefault("file_id", doc.get("drive_file_id"))
+    if doc.get("drive_revision_id"):
+        drive_meta.setdefault("revision_id", doc.get("drive_revision_id"))
+    if metadata is not None:
+        metadata["drive"] = drive_meta
     frontmatter = _json_field(doc.get("frontmatter"), {})
     latest_generation = metadata.get("latest_generation") if isinstance(metadata, dict) else {}
     source_type = (doc.get("source_type") or "unknown").lower()
@@ -402,6 +463,8 @@ def _document_to_view(doc: dict) -> dict:
         "frontmatter": frontmatter,
         "latest_version_id": doc.get("latest_version_id"),
         "content_format": doc.get("content_format"),
+        "drive_file_id": doc.get("drive_file_id"),
+        "drive_revision_id": doc.get("drive_revision_id"),
         "latest_title": frontmatter.get("title") if isinstance(frontmatter, dict) else None,
         "latest_generation": latest_generation,
         "created_at": doc.get("created_at"),
@@ -411,6 +474,95 @@ def _document_to_view(doc: dict) -> dict:
 async def _load_document_views(db, user_id: str, page: int = 1, page_size: int = 20) -> tuple[list[dict], int]:
     docs, total = await list_documents(db, user_id, page=page, page_size=page_size)
     return [_document_to_view(doc) for doc in docs], total
+
+
+def _drive_sync_overview(documents: list[dict], drive_connected: bool) -> dict:
+    drive_docs = [doc for doc in documents if (doc.get("source_type") or "").startswith("drive")]
+    latest_created = next((doc.get("created_at") for doc in drive_docs if doc.get("created_at")), None)
+    overview = {
+        "connected": drive_connected,
+        "status_label": "Connected" if drive_connected else "Not connected",
+        "document_count": len(drive_docs),
+        "last_synced_at": latest_created,
+        "detail_url": "/dashboard/integrations/drive",
+        "folders": SERVICES_META.get("drive", {}).get("synced_content", []),
+    }
+    if not overview["last_synced_at"]:
+        overview["last_synced_at"] = "Not synced yet" if drive_connected else None
+    if drive_docs:
+        overview["latest_document"] = drive_docs[0]
+        linked = next((doc for doc in drive_docs if doc.get("drive_file_id")), drive_docs[0])
+        meta = linked.get("metadata") or {}
+        if isinstance(meta, str):
+            try:
+                meta = json.loads(meta)
+            except Exception:
+                meta = {}
+        drive_meta = meta.get("drive") if isinstance(meta, dict) else {}
+        overview["linked_file"] = {
+            "document_id": linked.get("id") or linked.get("document_id"),
+            "title": (linked.get("frontmatter") or {}).get("title") if isinstance(linked.get("frontmatter"), dict) else None,
+            "file_id": linked.get("drive_file_id") or drive_meta.get("file_id"),
+            "revision_id": linked.get("drive_revision_id") or drive_meta.get("revision_id"),
+            "link": (drive_meta or {}).get("web_view_link"),
+        }
+    return overview
+
+
+async def _export_version_to_drive(db, user_id: str, document: dict, version: dict) -> dict:
+    docs_service = await build_docs_service_for_user(db, user_id)
+    drive_service = await build_drive_service_for_user(db, user_id)
+    metadata = document.get("metadata") or {}
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata)
+        except Exception:
+            metadata = {}
+    drive_block = metadata.get("drive") if isinstance(metadata, dict) else {}
+    if not isinstance(drive_block, dict):
+        drive_block = {}
+    drive_file_id = document.get("drive_file_id") or drive_block.get("file_id")
+    title = (version.get("frontmatter") or {}).get("title") if isinstance(version.get("frontmatter"), dict) else None
+    if not drive_file_id:
+        created = await execute_google_request(
+            docs_service.documents().create(body={"title": title or f"Quill Draft {document.get('document_id')}"})
+        )
+        drive_file_id = (created or {}).get("documentId")
+    text_body = version.get("body_mdx") or version.get("body_html") or ""
+    try:
+        current_doc = await execute_google_request(docs_service.documents().get(documentId=drive_file_id))
+        body_content = (current_doc.get("body", {}) or {}).get("content", []) or []
+        end_index = body_content[-1].get("endIndex", len(text_body) + 1) if body_content else len(text_body) + 1
+    except Exception:
+        end_index = len(text_body) + 1
+    requests = [
+        {"deleteContentRange": {"range": {"startIndex": 1, "endIndex": max(1, end_index)}}},
+        {"insertText": {"location": {"index": 1}, "text": text_body}},
+    ]
+    await execute_google_request(
+        docs_service.documents().batchUpdate(documentId=drive_file_id, body={"requests": requests})
+    )
+    drive_meta = await execute_google_request(
+        drive_service.files().get(fileId=drive_file_id, fields='id, headRevisionId, webViewLink')
+    )
+    drive_block.update(
+        {
+            "file_id": drive_file_id,
+            "revision_id": drive_meta.get("headRevisionId"),
+            "web_view_link": drive_meta.get("webViewLink"),
+        }
+    )
+    metadata["drive"] = drive_block
+    await update_document(
+        db,
+        document.get("document_id"),
+        {
+            "metadata": metadata,
+            "drive_file_id": drive_file_id,
+            "drive_revision_id": drive_meta.get("headRevisionId"),
+        },
+    )
+    return {"file_id": drive_file_id, "revision_id": drive_meta.get("headRevisionId")}
 
 
 async def _render_documents_partial(
@@ -641,6 +793,7 @@ async def documents_page(request: Request, page: int = 1, user: dict = Depends(g
         "csrf_token": csrf,
         "drive_connected": drive_connected,
         "youtube_connected": youtube_connected,
+        "drive_sync_overview": _drive_sync_overview(documents, drive_connected),
         "page_title": "Documents",
         "flash": None,
     }
@@ -827,6 +980,16 @@ async def dashboard_document_export(
         return _render_flash(request, "Version not found", "error", status.HTTP_404_NOT_FOUND)
     row = await create_document_export(db, document_id, resolved_version_id, user["user_id"], normalized, None)
     label = normalized.replace("_", " ").title()
+    if normalized == "google_docs":
+        try:
+            export_meta = await _export_version_to_drive(db, user["user_id"], doc, version)
+            message = f"Google Docs updated • Revision {export_meta.get('revision_id') or 'n/a'}"
+            return _render_flash(request, message, "success")
+        except HTTPException as exc:
+            return _render_flash(request, exc.detail, "error", exc.status_code)
+        except Exception as exc:
+            logger.error("drive_export_failed", exc_info=True, extra={"document_id": document_id, "doc_hint": "docs/DEPLOYMENT.md#drive-workspace-setup"})
+            return _render_flash(request, "Failed to push to Google Docs", "error", status.HTTP_502_BAD_GATEWAY)
     message = f"{label} export queued (version {row.get('version_id')})"
     return _render_flash(request, message, "success")
 

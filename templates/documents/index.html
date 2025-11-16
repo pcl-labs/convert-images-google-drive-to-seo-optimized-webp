@@ -7,6 +7,10 @@
 {% call page_container() %}
   {{ page_header('Documents', 'Register sources and ingest content into document IDs.') }}
 
+  {% if drive_sync_overview %}
+    {% include 'documents/partials/drive_sync.html' %}
+  {% endif %}
+
   <div class="grid gap-4 lg:grid-cols-3">
     {% from 'components/elements/card.html' import card %}
     {% call card() %}

@@ -300,6 +300,18 @@ async def build_drive_service_for_user(db: Database, user_id: str):
     )
 
 
+async def build_docs_service_for_user(db: Database, user_id: str):
+    """Build a Google Docs v1 service using the Drive integration token."""
+    return await _build_google_service_for_user(
+        db,
+        user_id,
+        integration="drive",
+        missing_scope_message="Google account missing Docs access; reconnect Drive integration",
+        service_name="docs",
+        service_version="v1",
+    )
+
+
 async def build_youtube_service_for_user(db: Database, user_id: str):
     """Build a YouTube Data API client for the given user."""
     return await _build_google_service_for_user(
