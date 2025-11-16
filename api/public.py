@@ -8,6 +8,7 @@ from .config import settings
 from .constants import COOKIE_OAUTH_STATE, COOKIE_GOOGLE_OAUTH_STATE
 from .auth import authenticate_github
 from .auth import authenticate_google
+from .exceptions import AuthenticationError
 from .deps import ensure_db
 from .app_logging import get_logger
 
