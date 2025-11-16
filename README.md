@@ -321,17 +321,14 @@ For production, set `USE_INLINE_QUEUE=false` and provide `CLOUDFLARE_ACCOUNT_ID`
 
 ## Dependencies
 
-- `google-api-python-client`: Google Drive API client
-- `google-auth-httplib2`: Google authentication
-- `google-auth-oauthlib`: OAuth 2.0 authentication
-- `Pillow`: Image processing
-- `pillow-heif`: HEIC image support
+- `urllib` (standard library via `simple_http.py`): Lightweight HTTP client used for Google REST calls without third-party deps
+- `Pillow`: Image processing (convert HEIC/HEIF assets to JPEG/PNG before invoking the CLI/Worker)
 - `tqdm`: Progress bars
 - `fastapi`: Web API framework
 - `uvicorn`: ASGI server for FastAPI
 - `python-multipart`: Form data support
-- `pydantic` & `pydantic-settings`: Data validation and settings management (V2 compatible)
-- `cryptography`: Encryption support for sensitive data at rest
+- `pydantic`: Data validation for request/response models
+- `pyjwt`: JWT handling (HMAC-only)
 - `pytest`: Testing framework
 
 ## Security Features
@@ -353,11 +350,11 @@ The application includes in-memory rate limiting middleware that tracks requests
 
 ### Token Encryption
 
-Google OAuth tokens (`access_token` and `refresh_token`) are encrypted at rest using Fernet symmetric encryption. The encryption key is derived from `JWT_SECRET_KEY` using SHA256.
+Google OAuth tokens (`access_token` and `refresh_token`) are encrypted at rest using a lightweight stream cipher built on HMAC-SHA256 with per-record nonces. The cipher key comes from the `ENCRYPTION_KEY` environment variable (a base64-encoded 32 byte secret).
 
 **Key Management:**
-- The encryption key is derived from `JWT_SECRET_KEY` - ensure this is a strong, randomly generated secret
-- **Key Rotation**: If you need to rotate `JWT_SECRET_KEY`:
+- Generate the key with `python -c "import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())"`
+- **Key Rotation**: rotate by deploying a new `ENCRYPTION_KEY` and re-linking accounts so new ciphertext overwrites the old values.
   1. Generate a new `JWT_SECRET_KEY`
   2. Re-authenticate all users with Google (they'll need to reconnect their Google accounts)
   3. Old encrypted tokens cannot be decrypted with the new key

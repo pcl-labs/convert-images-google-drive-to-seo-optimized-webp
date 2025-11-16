@@ -1,12 +1,3 @@
-fastapi
-starlette
-pydantic
-pydantic-settings
-httpx
 pyjwt
-google-api-python-client
-google-auth
-google-auth-httplib2
-google-auth-oauthlib
+Pillow
 tqdm
-cryptography
