@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from typing import Optional, Dict, Any
+import asyncio
 
 from .app_logging import get_logger
 from .database import get_drive_workspace, upsert_drive_workspace
@@ -94,17 +95,39 @@ async def ensure_document_drive_structure(
     docs_service = await build_docs_service_for_user(db, user_id)  # type: ignore
 
     if existing_folder_id:
-        try:
-            base_folder = await _fetch_folder_meta(drive_service, existing_folder_id)
-        except Exception as exc:
-            logger.warning(
-                "drive_existing_folder_fetch_failed",
+        attempts = 3
+        delay = 0.5
+        last_exc: Exception | None = None
+        base_folder = None
+        for i in range(attempts):
+            try:
+                base_folder = await _fetch_folder_meta(drive_service, existing_folder_id)
+                break
+            except Exception as exc:
+                last_exc = exc
+                # Detect clear not-found case (prefer resp.status if present)
+                status = getattr(getattr(exc, "resp", None), "status", None)
+                if status == 404:
+                    base_folder = await _create_drive_folder(
+                        drive_service, _sanitize_folder_name(name), workspace["root_folder_id"]
+                    )
+                    break
+                # Transient error: backoff and retry
+                logger.warning(
+                    "drive_existing_folder_fetch_retry",
+                    exc_info=True,
+                    extra={"user_id": user_id, "folder_id": existing_folder_id, "attempt": i + 1},
+                )
+                await asyncio.sleep(delay)
+                delay *= 2
+        if base_folder is None:
+            # Retries exhausted; surface the original failure
+            logger.error(
+                "drive_existing_folder_fetch_failed_final",
                 exc_info=True,
-                extra={"user_id": user_id, "folder_id": existing_folder_id, "error": str(exc)},
+                extra={"user_id": user_id, "folder_id": existing_folder_id},
             )
-            base_folder = await _create_drive_folder(
-                drive_service, _sanitize_folder_name(name), workspace["root_folder_id"]
-            )
+            raise last_exc if last_exc else RuntimeError("Failed to fetch existing Drive folder")
     else:
         base_folder = await _create_drive_folder(
             drive_service, _sanitize_folder_name(name), workspace["root_folder_id"]
@@ -120,9 +143,11 @@ async def ensure_document_drive_structure(
 
     doc_title = _sanitize_folder_name(name)
     created_doc = await execute_google_request(docs_service.documents().create(body={"title": doc_title}))
+    if not isinstance(created_doc, dict):
+        raise RuntimeError(f"Docs create returned unexpected response type: {type(created_doc)!r}")
     doc_id = created_doc.get("documentId")
-    if not isinstance(doc_id, str) or not doc_id:
-        raise RuntimeError("Failed to create Google Doc for Drive workspace.")
+    if not isinstance(doc_id, str) or not doc_id.strip():
+        raise RuntimeError("Failed to create Google Doc for Drive workspace: missing documentId")
 
     drive_doc_meta = await execute_google_request(
         drive_service.files().update(
@@ -132,9 +157,11 @@ async def ensure_document_drive_structure(
             fields="id, headRevisionId, webViewLink",
         )
     )
+    if not isinstance(drive_doc_meta, dict) or "id" not in drive_doc_meta:
+        raise RuntimeError(f"Drive update returned unexpected response: {drive_doc_meta!r}")
     drive_file_id = drive_doc_meta.get("id")
-    if not isinstance(drive_file_id, str) or not drive_file_id:
-        raise RuntimeError("Drive file update did not return an ID.")
+    if not isinstance(drive_file_id, str) or not drive_file_id.strip():
+        raise RuntimeError("Drive file update did not return a valid 'id'.")
 
     return {
         "folder": base_folder,
