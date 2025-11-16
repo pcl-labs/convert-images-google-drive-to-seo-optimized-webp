@@ -23,6 +23,8 @@ class JobType(str, Enum):
     OPTIMIZE_DRIVE = "optimize_drive"
     INGEST_YOUTUBE = "ingest_youtube"
     INGEST_TEXT = "ingest_text"
+    INGEST_DRIVE = "ingest_drive"
+    DRIVE_CHANGE_POLL = "drive_change_poll"
     INGEST_DRIVE_FOLDER = "ingest_drive_folder"
     GENERATE_BLOG = "generate_blog"
 
@@ -125,6 +127,8 @@ class Document(BaseModel):
     content_format: Optional[str] = None
     frontmatter: Optional[Dict[str, Any]] = None
     latest_version_id: Optional[str] = None
+    drive_file_id: Optional[str] = None
+    drive_revision_id: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
@@ -248,3 +252,11 @@ class IngestYouTubeRequest(BaseModel):
 class IngestTextRequest(BaseModel):
     text: str
     title: Optional[str] = None
+
+
+class IngestDriveRequest(BaseModel):
+    document_id: str = Field(..., min_length=5, max_length=100)
+
+
+class DriveChangePollRequest(BaseModel):
+    document_ids: Optional[List[str]] = None

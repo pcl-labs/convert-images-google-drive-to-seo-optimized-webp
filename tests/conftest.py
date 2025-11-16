@@ -1,8 +1,18 @@
+"""Pytest configuration and fixtures for tests.
+
+This module keeps the environment deterministic and adds a lightweight
+``pytest.mark.asyncio`` implementation so we can run async tests without
+installing pytest-asyncio (blocked by the sandbox proxy).
 """
-Pytest configuration and fixtures for tests.
-Sets up required environment variables for testing.
-"""
+
+from __future__ import annotations
+
+import asyncio
+import inspect
 import os
+
+from unittest.mock import AsyncMock
+
 import pytest
 
 
@@ -23,4 +33,30 @@ def setup_test_env():
         os.environ.pop("JWT_SECRET_KEY", None)
     else:
         os.environ["JWT_SECRET_KEY"] = original
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "asyncio: run the test inside an event loop")
+    if not hasattr(pytest, "AsyncMock"):
+        pytest.AsyncMock = AsyncMock
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_pyfunc_call(pyfuncitem):
+    marker = pyfuncitem.get_closest_marker("asyncio")
+    if marker is None:
+        return None
+
+    func = pyfuncitem.obj
+    if not inspect.iscoroutinefunction(func):
+        return None
+
+    loop = asyncio.new_event_loop()
+    try:
+        argnames = getattr(pyfuncitem._fixtureinfo, "argnames", ()) or ()
+        call_kwargs = {name: pyfuncitem.funcargs[name] for name in argnames if name in pyfuncitem.funcargs}
+        loop.run_until_complete(func(**call_kwargs))
+    finally:
+        loop.close()
+    return True
 

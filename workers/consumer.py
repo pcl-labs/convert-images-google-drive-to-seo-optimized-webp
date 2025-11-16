@@ -32,6 +32,7 @@ import asyncio
 import functools
 import textwrap
 from datetime import datetime, timezone, timedelta
+import uuid
 
 from core.drive_utils import (
     download_images,
@@ -52,10 +53,11 @@ from api.database import (
     create_document_version,
     get_job,
     update_job_retry_state,
+    create_job_extended,
 )
 from api.config import settings
 from api.cloudflare_queue import QueueProducer
-from api.google_oauth import build_youtube_service_for_user
+from api.google_oauth import build_youtube_service_for_user, build_docs_service_for_user
 from core.youtube_captions import fetch_captions_text, YouTubeCaptionsError
 from core.ai_modules import (
     generate_outline,
@@ -72,6 +74,8 @@ from core.filename_utils import FILENAME_ID_SEPARATOR, sanitize_folder_name, par
 from core.constants import TEMP_DIR, FAIL_LOG_PATH
 from core.extension_utils import normalize_extensions, detect_extensions_in_dir
 from api.google_oauth import build_drive_service_for_user
+from core.google_async import execute_google_request
+from core.google_docs_text import google_doc_to_text, text_to_html
 
 # Set up logging
 logger = setup_logging(level="INFO", use_json=True)
@@ -241,6 +245,19 @@ def _parse_document_metadata(raw: Dict[str, Any]) -> Dict[str, Any]:
     if metadata is None:
         metadata = {}
     return metadata
+
+
+def _json_dict_field(value: Any, default: Dict[str, Any]) -> Dict[str, Any]:
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            return dict(default)
+    if isinstance(value, dict):
+        return value
+    return dict(default)
 
 
 async def _resolve_drive_folder(db: Database, document_id: str, user_id: str) -> str:
@@ -805,6 +822,107 @@ async def process_ingest_youtube_job(
         raise
 
 
+async def process_ingest_drive_job(
+    db: Database,
+    job_id: str,
+    user_id: str,
+    document_id: str,
+    drive_file_id: str,
+    previous_revision: Optional[str] = None,
+):
+    try:
+        await update_job_status(db, job_id, "processing", progress=make_progress("drive_ingest.fetching"))
+        document = await get_document(db, document_id, user_id=user_id)
+        if not document:
+            raise ValueError("Document not found for Drive ingest")
+        docs_service = await build_docs_service_for_user(db, user_id)
+        drive_service = await build_drive_service_for_user(db, user_id)
+        doc_payload = await execute_google_request(docs_service.documents().get(documentId=drive_file_id))
+        text = google_doc_to_text(doc_payload)
+        drive_meta = await execute_google_request(
+            drive_service.files().get(
+                fileId=drive_file_id,
+                fields='id, name, headRevisionId, webViewLink, modifiedTime'
+            )
+        )
+        revision_id = drive_meta.get("headRevisionId") or previous_revision
+        now_iso = datetime.now(timezone.utc).isoformat()
+        metadata = _parse_document_metadata(document)
+        drive_block = metadata.get("drive") if isinstance(metadata, dict) else {}
+        if not isinstance(drive_block, dict):
+            drive_block = {}
+        drive_block.update(
+            {
+                "file_id": drive_file_id,
+                "revision_id": revision_id,
+                "name": drive_meta.get("name"),
+                "web_view_link": drive_meta.get("webViewLink"),
+                "last_ingested_revision": revision_id,
+                "last_ingested_at": now_iso,
+                "external_edit_detected": False,
+                "modified_time": drive_meta.get("modifiedTime"),
+            }
+        )
+        metadata["drive"] = drive_block
+        frontmatter = _json_dict_field(document.get("frontmatter"), {})
+        if doc_payload.get("title") and not frontmatter.get("title"):
+            frontmatter["title"] = doc_payload.get("title")
+        html_body = text_to_html(text)
+        version_row = await create_document_version(
+            db,
+            document_id=document_id,
+            user_id=user_id,
+            content_format="drive_doc",
+            frontmatter=frontmatter,
+            body_mdx=text,
+            body_html=html_body,
+            outline=[],
+            chapters=[],
+            sections=[],
+            assets={},
+        )
+        version_id = version_row.get("version_id")
+        await update_document(
+            db,
+            document_id,
+            {
+                "raw_text": text,
+                "metadata": metadata,
+                "frontmatter": frontmatter,
+                "content_format": "drive_doc",
+                "latest_version_id": version_id,
+                "drive_file_id": drive_file_id,
+                "drive_revision_id": revision_id,
+            },
+        )
+        job_output = {
+            "document_id": document_id,
+            "drive_file_id": drive_file_id,
+            "drive_revision_id": revision_id,
+            "chars": len(text),
+            "version_id": version_id,
+        }
+        await set_job_output(db, job_id, job_output)
+        await update_job_status(db, job_id, "completed", progress=make_progress("completed"))
+        try:
+            await notify_job(
+                db,
+                user_id=user_id,
+                job_id=job_id,
+                level="success",
+                text=f"Drive document synced ({drive_file_id[:8]}…)",
+            )
+        except Exception:
+            pass
+    except Exception as exc:
+        await update_job_status(db, job_id, "failed", error=str(exc))
+        try:
+            await notify_job(db, user_id=user_id, job_id=job_id, level="error", text="Drive ingest failed")
+        except Exception:
+            pass
+        raise
+
+
 async def process_ingest_text_job(
     db: Database,
     job_id: str,
@@ -823,6 +941,107 @@ async def process_ingest_text_job(
         await update_job_status(db, job_id, "failed", error=str(e))
         try:
             await notify_job(db, user_id=user_id, job_id=job_id, level="error", text=f"Text ingestion failed")
+        except Exception:
+            pass
+        raise
+
+
+async def _enqueue_drive_ingest_followup(
+    db: Database,
+    user_id: str,
+    document_id: str,
+    drive_file_id: str,
+    current_revision: Optional[str],
+    queue_producer: Optional[QueueProducer],
+):
+    new_job_id = str(uuid.uuid4())
+    await create_job_extended(
+        db,
+        new_job_id,
+        user_id,
+        job_type="ingest_drive",
+        document_id=document_id,
+        payload={"drive_file_id": drive_file_id, "drive_revision_id": current_revision, "trigger": "drive_change_poll"},
+    )
+    message = {
+        "job_id": new_job_id,
+        "user_id": user_id,
+        "job_type": "ingest_drive",
+        "document_id": document_id,
+        "drive_file_id": drive_file_id,
+        "drive_revision_id": current_revision,
+    }
+    if queue_producer:
+        await queue_producer.send_generic(message)
+    else:
+        await process_ingest_drive_job(db, new_job_id, user_id, document_id, drive_file_id, current_revision)
+
+
+async def process_drive_change_poll_job(
+    db: Database,
+    job_id: str,
+    user_id: str,
+    document_ids: Optional[List[str]] = None,
+    queue_producer: Optional[QueueProducer] = None,
+):
+    try:
+        await update_job_status(db, job_id, "processing", progress=make_progress("drive_poll.fetching"))
+        params: List[Any] = [user_id]
+        if document_ids:
+            placeholders = ",".join(["?"] * len(document_ids))
+            query = f"SELECT * FROM documents WHERE user_id = ? AND drive_file_id IS NOT NULL AND document_id IN ({placeholders})"
+            params.extend(document_ids)
+        else:
+            query = "SELECT * FROM documents WHERE user_id = ? AND drive_file_id IS NOT NULL"
+        rows = await db.execute_all(query, tuple(params))
+        documents = [dict(row) for row in (rows or [])]
+        if not documents:
+            await update_job_status(db, job_id, "completed", progress=make_progress("completed"))
+            await set_job_output(db, job_id, {"documents_checked": 0, "changes": 0})
+            return
+        drive_service = await build_drive_service_for_user(db, user_id)
+        changed = []
+        for doc in documents:
+            file_id = doc.get("drive_file_id")
+            if not file_id:
+                continue
+            drive_meta = await execute_google_request(
+                drive_service.files().get(fileId=file_id, fields='id, headRevisionId, modifiedTime')
+            )
+            revision_id = drive_meta.get("headRevisionId")
+            if revision_id and revision_id != doc.get("drive_revision_id"):
+                changed.append((doc, revision_id))
+                metadata = _parse_document_metadata(doc)
+                drive_block = metadata.get("drive") if isinstance(metadata, dict) else {}
+                if not isinstance(drive_block, dict):
+                    drive_block = {}
+                drive_block.update(
+                    {
+                        "external_edit_detected": True,
+                        "pending_revision_id": revision_id,
+                        "pending_modified_time": drive_meta.get("modifiedTime"),
+                    }
+                )
+                metadata["drive"] = drive_block
+                await update_document(db, doc.get("document_id"), {"metadata": metadata})
+                await _enqueue_drive_ingest_followup(
+                    db,
+                    user_id,
+                    doc.get("document_id"),
+                    file_id,
+                    revision_id,
+                    queue_producer,
+                )
+        await set_job_output(
+            db,
+            job_id,
+            {"documents_checked": len(documents), "changes": len(changed)},
+        )
+        await update_job_status(db, job_id, "completed", progress=make_progress("completed"))
+    except Exception as exc:
+        await update_job_status(db, job_id, "failed", error=str(exc))
+        try:
+            await notify_job(db, user_id=user_id, job_id=job_id, level="error", text="Drive change poll failed")
         except Exception:
             pass
         raise
@@ -1035,6 +1254,28 @@ async def handle_queue_message(message: Dict[str, Any], db: Database, queue_prod
                     pass
                 return
             await process_ingest_youtube_job(db, job_id, user_id, document_id, video_id, payload_data)
+        elif job_type == "ingest_drive":
+            document_id = message.get("document_id") or (job_row.get("document_id") if job_row else None)
+            drive_file_id = message.get("drive_file_id") or payload_data.get("drive_file_id")
+            if not document_id or not drive_file_id:
+                app_logger.error("Drive ingestion message missing document_id or drive_file_id")
+                try:
+                    await update_job_status(db, job_id, "failed", error="Missing Drive metadata")
+                    try:
+                        await notify_job(db, user_id=user_id, job_id=job_id, level="error", text="Job failed: invalid Drive ingest payload")
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+                return
+            await process_ingest_drive_job(
+                db,
+                job_id,
+                user_id,
+                document_id,
+                drive_file_id,
+                message.get("drive_revision_id") or payload_data.get("drive_revision_id"),
+            )
         elif job_type == "ingest_text":
             document_id = message.get("document_id") or (job_row.get("document_id") if job_row else None)
             if not document_id:
@@ -1106,6 +1347,9 @@ async def handle_queue_message(message: Dict[str, Any], db: Database, queue_prod
                 document_id,
                 message.get("options") or payload_data.get("options") or {},
             )
+        elif job_type == "drive_change_poll":
+            doc_ids = message.get("document_ids") or payload_data.get("document_ids")
+            await process_drive_change_poll_job(db, job_id, user_id, doc_ids, queue_producer)
         else:
             app_logger.error(f"Unknown job_type '{job_type}' for job {job_id}")
     except Exception as e:

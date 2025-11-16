@@ -119,6 +119,10 @@ class Database:
                 cur.execute("ALTER TABLE documents ADD COLUMN frontmatter TEXT")
             if 'latest_version_id' not in doc_cols:
                 cur.execute("ALTER TABLE documents ADD COLUMN latest_version_id TEXT")
+            if 'drive_file_id' not in doc_cols:
+                cur.execute("ALTER TABLE documents ADD COLUMN drive_file_id TEXT")
+            if 'drive_revision_id' not in doc_cols:
+                cur.execute("ALTER TABLE documents ADD COLUMN drive_revision_id TEXT")
             # Document versions table
             cur.execute(
                 """
@@ -1028,11 +1032,13 @@ async def create_document(
     content_format: Optional[str] = None,
     frontmatter: Optional[Dict[str, Any]] = None,
     latest_version_id: Optional[str] = None,
+    drive_file_id: Optional[str] = None,
+    drive_revision_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Create a document row."""
     query = (
-        "INSERT INTO documents (document_id, user_id, source_type, source_ref, raw_text, metadata, content_format, frontmatter, latest_version_id) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *"
+        "INSERT INTO documents (document_id, user_id, source_type, source_ref, raw_text, metadata, content_format, frontmatter, latest_version_id, drive_file_id, drive_revision_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *"
     )
     result = await db.execute(
         query,
@@ -1046,6 +1052,8 @@ async def create_document(
             content_format,
             json.dumps(frontmatter or {}) if frontmatter is not None else None,
             latest_version_id,
+            drive_file_id,
+            drive_revision_id,
         ),
     )
     return dict(result) if result else {}
@@ -1072,7 +1080,17 @@ async def update_document(
         updates: Dictionary of field updates. Allowed fields: source_type, source_ref, 
                  raw_text, metadata, content_format, frontmatter, latest_version_id
     """
-    allowed = {"source_type", "source_ref", "raw_text", "metadata", "content_format", "frontmatter", "latest_version_id"}
+    allowed = {
+        "source_type",
+        "source_ref",
+        "raw_text",
+        "metadata",
+        "content_format",
+        "frontmatter",
+        "latest_version_id",
+        "drive_file_id",
+        "drive_revision_id",
+    }
     fields = []
     params: list[Any] = []
     for k, v in updates.items():
