@@ -91,6 +91,13 @@ class Settings(BaseSettings):
     # Transcript Configuration
     transcript_langs: Union[str, list[str]] = Field(default="en,en-US,en-GB")
 
+    def __init__(self, **data):
+        super().__init__(**data)
+        self.require_encryption_key_in_production()
+        self.validate_queue_configuration()
+        self.parse_transcript_langs()
+        self.parse_cors_origins()
+
     @field_validator("encryption_key")
     @classmethod
     def validate_encryption_key(cls, v: Optional[str]) -> Optional[str]:
@@ -180,4 +187,3 @@ class Settings(BaseSettings):
 
 # Global settings instance
 settings = Settings()
-

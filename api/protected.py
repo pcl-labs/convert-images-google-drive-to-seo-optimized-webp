@@ -69,6 +69,7 @@ from .deps import (
 )
 from .utils import enqueue_job_with_guard
 from core.url_utils import parse_youtube_video_id
+from .drive_workspace import ensure_drive_workspace, ensure_document_drive_structure
 from .database import get_usage_summary, list_usage_events, count_usage_events
 from fastapi import Query
 
@@ -148,6 +149,10 @@ def _serialize_document(doc: dict) -> Document:
         drive_revision_id=parsed.get("drive_revision_id"),
         created_at=_parse_db_datetime(parsed.get("created_at")),
         updated_at=_parse_db_datetime(parsed.get("updated_at")),
+        drive_folder_id=parsed.get("drive_folder_id"),
+        drive_drafts_folder_id=parsed.get("drive_drafts_folder_id"),
+        drive_media_folder_id=parsed.get("drive_media_folder_id"),
+        drive_published_folder_id=parsed.get("drive_published_folder_id"),
     )
 
 
@@ -195,7 +200,18 @@ async def _load_document_for_user(db, document_id: str, user_id: str) -> dict:
 def _drive_folder_from_document(doc: dict) -> str:
     if doc.get("source_type") not in {"drive", "drive_folder"}:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Document is not backed by a Drive folder")
-    folder_id = doc.get("source_ref") or doc["metadata"].get("drive_folder_id")
+    metadata = doc.get("metadata") or {}
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata)
+        except Exception:
+            metadata = {}
+    folder_id = (
+        doc.get("drive_folder_id")
+        or doc.get("source_ref")
+        or metadata.get("drive_folder_id")
+        or (metadata.get("drive") or {}).get("folder_id")
+    )
     if not folder_id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Document is missing Drive folder metadata")
     return folder_id
@@ -226,26 +242,58 @@ async def create_drive_document_for_user(db, user_id: str, drive_source: str) ->
             pass
         HttpError = _GoogleHttpError  # type: ignore
 
+    folder_id = None
     try:
         service = await build_drive_service_for_user(db, user_id)  # type: ignore
         folder_id = extract_folder_id_from_input(drive_source, service=service)
-    except (ValueError, HttpError) as e:
-        logger.error("drive_folder_prepare_error", exc_info=True, extra={"user_id": user_id, "drive_source": drive_source})
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Google not linked or folder not accessible") from None
+    except (ValueError, HttpError):
+        folder_id = None
     except HTTPException:
         raise
     except Exception as e:
         logger.error("drive_folder_unexpected_error", exc_info=True, extra={"user_id": user_id, "drive_source": drive_source})
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to create Drive document") from None
+
+    try:
+        structure = await ensure_document_drive_structure(
+            db,
+            user_id,
+            name=drive_source,
+            existing_folder_id=folder_id,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("drive_document_structure_failed", exc_info=True, extra={"user_id": user_id, "input": drive_source})
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to prepare Drive workspace") from exc
+
+    drive_file = structure["file"]
+    drive_meta = {
+        "folder": structure["folder"],
+        "folder_id": structure["folder"]["id"],
+        "drafts_folder_id": structure["drafts"]["id"],
+        "media_folder_id": structure["media"]["id"],
+        "published_folder_id": structure["published"]["id"],
+        "file_id": drive_file.get("id"),
+        "revision_id": drive_file.get("revision_id"),
+        "web_view_link": drive_file.get("webViewLink"),
+    }
+
     document_id = str(uuid.uuid4())
     doc = await create_document(
         db,
         document_id=document_id,
         user_id=user_id,
         source_type="drive",
-        source_ref=folder_id,
+        source_ref=structure["folder"]["id"],
         raw_text=None,
-        metadata={"input": drive_source},
+        metadata={"input": drive_source, "drive": drive_meta},
+        drive_file_id=drive_file.get("id"),
+        drive_revision_id=drive_file.get("revision_id"),
+        drive_folder_id=structure["folder"]["id"],
+        drive_drafts_folder_id=structure["drafts"]["id"],
+        drive_media_folder_id=structure["media"]["id"],
+        drive_published_folder_id=structure["published"]["id"],
     )
     return _serialize_document(doc)
 
@@ -494,12 +542,16 @@ async def google_auth_start(
 ):
     try:
         integration_key = normalize_google_integration(integration)
-        if settings.base_url:
+        # Check if base_url is set and not empty/whitespace
+        if settings.base_url and settings.base_url.strip():
             redirect_uri = f"{settings.base_url.rstrip('/')}/auth/google/callback"
+            logger.info(f"Using base_url from settings: {settings.base_url} -> redirect_uri: {redirect_uri}")
         else:
             redirect_uri = str(request.url.replace(path="/auth/google/callback", query=""))
+            logger.info(f"base_url not set (value: {repr(settings.base_url)}), using request URL -> redirect_uri: {redirect_uri}")
         state = secrets.token_urlsafe(16)
         auth_url = get_google_oauth_url(state, redirect_uri, integration=integration_key)
+        logger.debug(f"Generated Google OAuth URL with redirect_uri: {redirect_uri}")
 
         is_secure = settings.environment == "production" or request.url.scheme == "https"
         response = RedirectResponse(url=auth_url)

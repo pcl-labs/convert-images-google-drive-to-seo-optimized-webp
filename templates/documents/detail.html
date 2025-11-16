@@ -17,6 +17,58 @@
 
   <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
     {% from 'components/elements/card.html' import card %}
+    {% if drive_meta %}
+      {% set folder = drive_meta.get('folder', {}) %}
+      {% set drafts = drive_meta.get('drafts', {}) %}
+      {% set media = drive_meta.get('media', {}) %}
+      {% set published = drive_meta.get('published', {}) %}
+      {% call card(title='Drive Workspace') %}
+        <dl class="space-y-2 text-sm">
+          <div>
+            <dt class="text-contentMuted uppercase text-xs tracking-wide">Document folder</dt>
+            <dd class="break-all">
+              {% if folder.webViewLink %}
+                <a href="{{ folder.webViewLink }}" target="_blank" rel="noopener" class="text-primary hover:text-primary/80">
+                  {{ folder.name or drive_meta.folder_id or 'Open in Drive' }}
+                </a>
+              {% else %}
+                {{ folder.name or drive_meta.folder_id or '—' }}
+              {% endif %}
+            </dd>
+          </div>
+          <div class="grid grid-cols-3 gap-2 text-xs">
+            {% if drafts %}
+              <div>
+                <dt class="text-contentMuted uppercase tracking-wide">Drafts</dt>
+                <dd><a href="{{ drafts.webViewLink }}" target="_blank" rel="noopener" class="text-primary">Open</a></dd>
+              </div>
+            {% endif %}
+            {% if media %}
+              <div>
+                <dt class="text-contentMuted uppercase tracking-wide">Media</dt>
+                <dd><a href="{{ media.webViewLink }}" target="_blank" rel="noopener" class="text-primary">Open</a></dd>
+              </div>
+            {% endif %}
+            {% if published %}
+              <div>
+                <dt class="text-contentMuted uppercase tracking-wide">Published</dt>
+                  <dd><a href="{{ published.webViewLink }}" target="_blank" rel="noopener" class="text-primary">Open</a></dd>
+              </div>
+            {% endif %}
+          </div>
+          <div>
+            <dt class="text-contentMuted uppercase text-xs tracking-wide">Draft document</dt>
+            <dd>
+              {% if drive_meta.web_view_link %}
+                <a href="{{ drive_meta.web_view_link }}" target="_blank" rel="noopener" class="text-primary hover:text-primary/80">Open Google Doc</a>
+              {% else %}
+                {{ drive_meta.file_id or '—' }}
+              {% endif %}
+            </dd>
+          </div>
+        </dl>
+      {% endcall %}
+    {% endif %}
     {% call card(title='Metadata') %}
       {% if metadata_items %}
         <dl class="space-y-2 text-sm">

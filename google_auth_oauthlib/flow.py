@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from typing import Any, Dict, Tuple
+from urllib.parse import urlencode
 
 
 class Flow:
@@ -15,7 +16,30 @@ class Flow:
         return cls(client_config=client_config, scopes=scopes)
 
     def authorization_url(self, **kwargs: Any) -> Tuple[str, Dict[str, Any]]:
-        return ("https://example.com/oauth", {})
+        """Generate Google OAuth authorization URL."""
+        web_config = self.client_config.get("web", {})
+        client_id = web_config.get("client_id")
+        auth_uri = web_config.get("auth_uri", "https://accounts.google.com/o/oauth2/v2/auth")
+        redirect_uri = self.redirect_uri or web_config.get("redirect_uris", [None])[0]
+        
+        if not client_id or not redirect_uri:
+            raise ValueError("client_id and redirect_uri are required")
+        
+        params = {
+            "client_id": client_id,
+            "redirect_uri": redirect_uri,
+            "scope": " ".join(self.scopes),
+            "response_type": "code",
+            "access_type": kwargs.get("access_type", "offline"),
+            "prompt": kwargs.get("prompt", "consent"),
+            "include_granted_scopes": kwargs.get("include_granted_scopes", "false"),
+        }
+        
+        if "state" in kwargs:
+            params["state"] = kwargs["state"]
+        
+        auth_url = f"{auth_uri}?{urlencode(params)}"
+        return (auth_url, {})
 
 
 class InstalledAppFlow(Flow):  # pragma: no cover - helper only

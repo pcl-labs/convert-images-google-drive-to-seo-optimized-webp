@@ -123,6 +123,14 @@ class Database:
                 cur.execute("ALTER TABLE documents ADD COLUMN drive_file_id TEXT")
             if 'drive_revision_id' not in doc_cols:
                 cur.execute("ALTER TABLE documents ADD COLUMN drive_revision_id TEXT")
+            if 'drive_folder_id' not in doc_cols:
+                cur.execute("ALTER TABLE documents ADD COLUMN drive_folder_id TEXT")
+            if 'drive_drafts_folder_id' not in doc_cols:
+                cur.execute("ALTER TABLE documents ADD COLUMN drive_drafts_folder_id TEXT")
+            if 'drive_media_folder_id' not in doc_cols:
+                cur.execute("ALTER TABLE documents ADD COLUMN drive_media_folder_id TEXT")
+            if 'drive_published_folder_id' not in doc_cols:
+                cur.execute("ALTER TABLE documents ADD COLUMN drive_published_folder_id TEXT")
             # Document versions table
             cur.execute(
                 """
@@ -225,6 +233,21 @@ class Database:
             # Helpful indexes (CREATE INDEX IF NOT EXISTS is idempotent)
             cur.execute("CREATE INDEX IF NOT EXISTS idx_jobs_job_type ON jobs(job_type)")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_jobs_document_id ON jobs(document_id)")
+
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS drive_workspaces (
+                    user_id TEXT PRIMARY KEY,
+                    root_folder_id TEXT NOT NULL,
+                    drafts_folder_id TEXT NOT NULL,
+                    published_folder_id TEXT NOT NULL,
+                    metadata TEXT,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+                )
+                """
+            )
         except Exception as e:
             # Log but do not fail startup; features may be degraded until migration applied
             logger.warning(f"Phase 1 schema ensure failed: {e}")
@@ -1020,6 +1043,37 @@ async def list_documents(
     docs = [dict(row) for row in rows] if rows else []
     return docs, total
 
+
+async def get_drive_workspace(db: Database, user_id: str) -> Optional[Dict[str, Any]]:
+    row = await db.execute("SELECT * FROM drive_workspaces WHERE user_id = ?", (user_id,))
+    return dict(row) if row else None
+
+
+async def upsert_drive_workspace(
+    db: Database,
+    user_id: str,
+    root_folder_id: str,
+    drafts_folder_id: str,
+    published_folder_id: str,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    meta_json = json.dumps(metadata or {})
+    query = (
+        """
+        INSERT INTO drive_workspaces (user_id, root_folder_id, drafts_folder_id, published_folder_id, metadata)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET
+            root_folder_id=excluded.root_folder_id,
+            drafts_folder_id=excluded.drafts_folder_id,
+            published_folder_id=excluded.published_folder_id,
+            metadata=excluded.metadata,
+            updated_at=datetime('now')
+        RETURNING *
+        """
+    )
+    row = await db.execute(query, (user_id, root_folder_id, drafts_folder_id, published_folder_id, meta_json))
+    return dict(row) if row else {}
+
 # Documents operations
 async def create_document(
     db: Database,
@@ -1034,11 +1088,15 @@ async def create_document(
     latest_version_id: Optional[str] = None,
     drive_file_id: Optional[str] = None,
     drive_revision_id: Optional[str] = None,
+    drive_folder_id: Optional[str] = None,
+    drive_drafts_folder_id: Optional[str] = None,
+    drive_media_folder_id: Optional[str] = None,
+    drive_published_folder_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Create a document row."""
     query = (
-        "INSERT INTO documents (document_id, user_id, source_type, source_ref, raw_text, metadata, content_format, frontmatter, latest_version_id, drive_file_id, drive_revision_id) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *"
+        "INSERT INTO documents (document_id, user_id, source_type, source_ref, raw_text, metadata, content_format, frontmatter, latest_version_id, drive_folder_id, drive_drafts_folder_id, drive_media_folder_id, drive_published_folder_id, drive_file_id, drive_revision_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *"
     )
     result = await db.execute(
         query,
@@ -1052,6 +1110,10 @@ async def create_document(
             content_format,
             json.dumps(frontmatter or {}) if frontmatter is not None else None,
             latest_version_id,
+            drive_folder_id,
+            drive_drafts_folder_id,
+            drive_media_folder_id,
+            drive_published_folder_id,
             drive_file_id,
             drive_revision_id,
         ),
