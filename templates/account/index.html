@@ -105,6 +105,34 @@
     </div>
   {% endcall %}
 
+  {% call card(title='Appearance') %}
+    <div x-data="appearanceControls()" x-cloak class="space-y-4">
+      <p class="text-sm text-contentMuted">Choose how Quill looks across sessions.</p>
+      <div class="grid gap-3 sm:grid-cols-3">
+        <template x-for="option in options" :key="option.value">
+          <label
+            class="flex h-full cursor-pointer flex-col gap-1 rounded-lg border border-border bg-surface p-3 text-left shadow-sm transition focus-within:ring-2 focus-within:ring-ring/40"
+            :class="preference === option.value ? 'border-primary ring-2 ring-primary/30' : 'hover:border-contentMuted/50'"
+          >
+            <span class="text-sm font-semibold text-content" x-text="option.label"></span>
+            <span class="text-xs text-contentMuted" x-text="option.description"></span>
+            <input
+              class="sr-only"
+              type="radio"
+              name="appearance"
+              :value="option.value"
+              :checked="preference === option.value"
+              @change="select(option.value)"
+            />
+          </label>
+        </template>
+      </div>
+      <p class="text-xs text-contentMuted">
+        Currently using <span class="font-semibold text-content" x-text="resolvedText()"></span>.
+      </p>
+    </div>
+  {% endcall %}
+
   {% call card(title='Danger zone') %}
     <div class="space-y-3">
       <div class="space-y-1">
@@ -127,6 +155,51 @@
     </form>
   </div>
 {% endcall %}
+
+<script>
+  document.addEventListener('alpine:init', () => {
+    Alpine.data('appearanceControls', () => ({
+      options: [
+        { value: 'system', label: 'System', description: 'Follow your device setting' },
+        { value: 'light', label: 'Light', description: 'Always use light mode' },
+        { value: 'dark', label: 'Dark', description: 'Always use dark mode' }
+      ],
+      preference: 'system',
+      resolved: document.documentElement.classList.contains('dark') ? 'dark' : 'light',
+      media: window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null,
+      init(){
+        if(window.themePreference){
+          this.preference = window.themePreference.get();
+        } else if(this.media && this.media.matches){
+          this.preference = 'dark';
+        } else if(!window.themePreference){
+          this.preference = 'light';
+        }
+        this.resolved = document.documentElement.classList.contains('dark') ? 'dark' : 'light';
+        this.__handler = (event) => {
+          if(event && event.detail){
+            this.preference = event.detail.theme || this.preference;
+            this.resolved = event.detail.resolved || this.resolved;
+          }
+        };
+        window.addEventListener('theme-change', this.__handler);
+      },
+      select(value){
+        this.preference = value;
+        if(window.themePreference){
+          window.themePreference.set(value);
+        } else {
+          this.resolved = value === 'system'
+            ? (this.media && this.media.matches ? 'dark' : 'light')
+            : value;
+        }
+      },
+      resolvedText(){
+        return this.resolved === 'dark' ? 'dark mode' : 'light mode';
+      }
+    }));
+  });
+</script>
 
 {% call modal('delete-account', title='Delete account', confirm_text='Delete', cancel_text='Cancel') %}
   <div class="space-y-4">
