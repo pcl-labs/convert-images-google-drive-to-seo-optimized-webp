@@ -255,19 +255,29 @@ async def google_login_callback(code: str, state: str, request: Request):
             response = JSONResponse(content={"access_token": jwt_token, "token_type": "bearer", "user": user_response})
             response.delete_cookie(key=COOKIE_GOOGLE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
             return response
+    except (ValueError, AuthenticationError) as exc:
+        # Expected auth errors: clear state cookie and return safe message
+        logger.warning("Google callback failed: %s", exc)
+        xf_proto = request.headers.get("x-forwarded-proto", "").lower()
+        is_secure = (xf_proto == "https") if xf_proto else (request.url.scheme == "https")
+        message = str(exc)
+        if settings.jwt_use_cookies:
+            response = RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
+        else:
+            response = JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"detail": message})
+        response.delete_cookie(key=COOKIE_GOOGLE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
+        return response
     except Exception:
+        # Unexpected errors: log with stack, clear state cookie, return generic message
         logger.exception("Google callback failed")
-        detail = "Authentication failed"
-        try:
-            if settings.debug:
-                # When in debug mode, surface the error detail to aid diagnosis
-                import sys
-                exc_type, exc_value, _ = sys.exc_info()
-                if exc_value is not None:
-                    detail = str(exc_value)
-        except Exception:
-            pass
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=detail)
+        xf_proto = request.headers.get("x-forwarded-proto", "").lower()
+        is_secure = (xf_proto == "https") if xf_proto else (request.url.scheme == "https")
+        if settings.jwt_use_cookies:
+            response = RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
+        else:
+            response = JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"detail": "Authentication failed"})
+        response.delete_cookie(key=COOKIE_GOOGLE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
+        return response
 
 
 @router.get("/auth/logout", tags=["Authentication"])
