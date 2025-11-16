@@ -116,37 +116,37 @@ SERVICES_META = {
         "key": "drive",
         "name": "Google Drive",
         "capability": "File uploads",
-        "description": "Create a Quill workspace folder and sync drafts + published docs automatically.",
-        "long_description": "Quill provisions a Drive workspace for you (Quill/Drafts and Quill/Published) the moment you connect Google Drive. Drafts that live inside Quill stay in sync with the documents you see inside Quill, so you never have to duplicate uploads or export manually.",
+        "description": "Create a Quill workspace folder and sync Google Docs automatically.",
+        "long_description": "Quill provisions a Drive workspace for you the moment you connect Google Drive. Each document gets a dedicated folder plus its Google Doc so you can draft directly in Drive while Quill keeps track of versions and publishing status.",
         "value_props": [
             {
                 "title": "Workspace automation",
-                "body": "We create the Quill root folder with Drafts and Published subfolders so every generated document has a predictable home in Drive.",
+                "body": "We create the Quill root folder and per-document subfolders so every generated document has a predictable home in Drive.",
             },
             {
-                "title": "Draft to publish mapping",
-                "body": "Draft versions stay in the Drafts folder until you mark them ready. Published exports are mirrored to Quill/Published so you can hand them to editors without leaving Drive.",
+                "title": "Single source of truth",
+                "body": "The Google Doc inside each folder stays in sync with Quill, so draft vs. published state is tracked in-app instead of by juggling folders.",
             },
             {
-                "title": "Documents stay in sync",
-                "body": "The Documents page in Quill reflects the same Drive-backed content, making it easy to jump between Drive and Quill without losing track of status.",
+                "title": "Media-ready folders",
+                "body": "Each document folder includes a Media directory for screenshots or assets that need to ship with the blog post.",
             },
         ],
         "synced_content": [
             {
                 "label": "Workspace",
                 "path": "My Drive / Quill",
-                "description": "Created automatically with Drive connection. Houses all Quill-managed folders.",
+                "description": "Created automatically with Drive connection. Houses all Quill-managed document folders.",
             },
             {
-                "label": "Drafts",
-                "path": "My Drive / Quill / Drafts",
-                "description": "Every in-progress generation lands here so editors can collaborate before publishing.",
+                "label": "Document folders",
+                "path": "My Drive / Quill / {Document}",
+                "description": "Each Quill document gets its own folder with the linked Google Doc inside.",
             },
             {
-                "label": "Published",
-                "path": "My Drive / Quill / Published",
-                "description": "When you export or publish from Quill we place the final artifact here, mirroring the Documents view.",
+                "label": "Media",
+                "path": "My Drive / Quill / {Document} / Media",
+                "description": "Optional asset folder for screenshots or supporting imagery referenced in the post.",
             },
         ],
         "category": "Storage",
@@ -499,9 +499,7 @@ def _drive_document_entry(doc: dict) -> Optional[dict]:
         return None
     frontmatter = _json_field(doc.get("frontmatter"), {})
     folder = drive_meta.get("folder") or {}
-    drafts = drive_meta.get("drafts") or {}
     media = drive_meta.get("media") or {}
-    published = drive_meta.get("published") or {}
     title = (
         (frontmatter.get("title") if isinstance(frontmatter, dict) else None)
         or folder.get("name")
@@ -516,16 +514,13 @@ def _drive_document_entry(doc: dict) -> Optional[dict]:
         "drive": {
             "folder_link": folder.get("webViewLink"),
             "folder_id": folder.get("id") or drive_meta.get("folder_id"),
-            "draft_link": drafts.get("webViewLink") or drive_meta.get("web_view_link"),
-            "draft_folder_id": drafts.get("id") or drive_meta.get("drafts_folder_id"),
+            "doc_link": drive_meta.get("web_view_link"),
             "media_link": media.get("webViewLink"),
             "media_folder_id": media.get("id") or drive_meta.get("media_folder_id"),
-            "published_link": published.get("webViewLink"),
-            "published_folder_id": published.get("id") or drive_meta.get("published_folder_id"),
             "file_id": drive_meta.get("file_id"),
             "revision_id": drive_meta.get("revision_id"),
-            "doc_link": drive_meta.get("web_view_link"),
         },
+        "stage": drive_meta.get("stage"),
     }
 
 
@@ -563,19 +558,30 @@ def _drive_sync_overview(
     if workspace:
         workspace_meta = _json_field(workspace.get("metadata"), {})
         folders = []
-        def _folder_entry(label: str, key: str, fallback_id: Optional[str]) -> dict:
+        def _folder_entry(label: str, key: str, fallback_id: Optional[str]) -> Optional[dict]:
             data = (workspace_meta or {}).get(key) if isinstance(workspace_meta, dict) else {}
             if not isinstance(data, dict):
                 data = {}
+            folder_id = data.get("id") or fallback_id
+            if not folder_id:
+                return None
             return {
                 "label": label,
                 "name": data.get("name") or key.title(),
-                "id": data.get("id") or fallback_id,
+                "id": folder_id,
                 "link": data.get("webViewLink"),
             }
-        folders.append(_folder_entry("Workspace", "root", workspace.get("root_folder_id") if workspace else None))
-        folders.append(_folder_entry("Drafts", "drafts", workspace.get("drafts_folder_id") if workspace else None))
-        folders.append(_folder_entry("Published", "published", workspace.get("published_folder_id") if workspace else None))
+        root_entry = _folder_entry("Workspace", "root", workspace.get("root_folder_id") if workspace else None)
+        root_id = root_entry.get("id") if root_entry else None
+        if root_entry:
+            folders.append(root_entry)
+        drafts_entry = _folder_entry("Legacy Drafts", "drafts", workspace.get("drafts_folder_id") if workspace else None)
+        if drafts_entry and drafts_entry["id"] != root_id:
+            folders.append(drafts_entry)
+        published_entry = _folder_entry("Legacy Published", "published", workspace.get("published_folder_id") if workspace else None)
+        existing_ids = {entry["id"] for entry in folders}
+        if published_entry and published_entry["id"] not in existing_ids:
+            folders.append(published_entry)
         overview["folders"] = folders
     return overview
 
@@ -673,6 +679,23 @@ async def _render_documents_partial(
     documents, _ = await _load_document_views(db, user["user_id"])
     context = {"request": request, "documents": documents, "flash": flash}
     return templates.TemplateResponse("documents/partials/list.html", context, status_code=status_code)
+
+
+async def _render_ingest_response(
+    request: Request,
+    db,
+    user: dict,
+    flash: dict,
+    status_code: int = status.HTTP_200_OK,
+):
+    """Render either the documents table or a lightweight flash card depending on HX target."""
+    target = (request.headers.get("HX-Target") or "").lower()
+    if target == "documents-table":
+        return await _render_documents_partial(request, db, user, flash, status_code=status_code)
+    flash_kind = "success" if (flash or {}).get("status") == "success" else "error"
+    flash_message = (flash or {}).get("message") or "Request completed."
+    context = {"request": request, "flash_kind": flash_kind, "flash_message": flash_message}
+    return templates.TemplateResponse("documents/partials/flash.html", context, status_code=status_code)
 
 
 def _version_summary_row(row: dict) -> dict:
@@ -1170,18 +1193,18 @@ async def create_drive_document_form(
     source = (drive_source or "").strip()
     if not source:
         flash = {"status": "error", "message": "Drive folder URL or ID is required"}
-        return await _render_documents_partial(request, db, user, flash, status_code=status.HTTP_400_BAD_REQUEST)
+        return await _render_ingest_response(request, db, user, flash, status_code=status.HTTP_400_BAD_REQUEST)
     try:
         doc = await create_drive_document_for_user(db, user["user_id"], source)
         flash = {"status": "success", "message": f"Registered document {doc.document_id}"}
-        return await _render_documents_partial(request, db, user, flash)
+        return await _render_ingest_response(request, db, user, flash)
     except HTTPException as exc:
         flash = {"status": "error", "message": exc.detail or "Failed to register Drive folder"}
-        return await _render_documents_partial(request, db, user, flash, status_code=exc.status_code)
+        return await _render_ingest_response(request, db, user, flash, status_code=exc.status_code)
     except Exception:
         logger.exception("Failed to create Drive document via UI")
         flash = {"status": "error", "message": "Unexpected error while registering Drive folder"}
-        return await _render_documents_partial(request, db, user, flash, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return await _render_ingest_response(request, db, user, flash, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @router.post("/dashboard/documents/youtube", response_class=HTMLResponse)
@@ -1198,7 +1221,7 @@ async def create_youtube_document_form(
     url = (youtube_url or "").strip()
     if not url:
         flash = {"status": "error", "message": "YouTube URL is required"}
-        return await _render_documents_partial(request, db, user, flash, status_code=status.HTTP_400_BAD_REQUEST)
+        return await _render_ingest_response(request, db, user, flash, status_code=status.HTTP_400_BAD_REQUEST)
     _, queue = ensure_services()
     try:
         job = await start_ingest_youtube_job(db, queue, user["user_id"], url)
@@ -1206,14 +1229,14 @@ async def create_youtube_document_form(
             "status": "success",
             "message": f"YouTube ingest job {job.job_id} queued (doc {job.document_id})",
         }
-        return await _render_documents_partial(request, db, user, flash)
+        return await _render_ingest_response(request, db, user, flash)
     except HTTPException as exc:
         flash = {"status": "error", "message": exc.detail or "Failed to ingest YouTube video"}
-        return await _render_documents_partial(request, db, user, flash, status_code=exc.status_code)
+        return await _render_ingest_response(request, db, user, flash, status_code=exc.status_code)
     except Exception:
         logger.exception("Failed to queue YouTube ingest from UI")
         flash = {"status": "error", "message": "Unexpected error while ingesting video"}
-        return await _render_documents_partial(request, db, user, flash, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return await _render_ingest_response(request, db, user, flash, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @router.post("/dashboard/documents/text", response_class=HTMLResponse)
@@ -1232,21 +1255,21 @@ async def create_text_document_form(
     body = (text_body or "").strip()
     if not body:
         flash = {"status": "error", "message": "Text content is required"}
-        return await _render_documents_partial(request, db, user, flash, status_code=status.HTTP_400_BAD_REQUEST)
+        return await _render_ingest_response(request, db, user, flash, status_code=status.HTTP_400_BAD_REQUEST)
     try:
         job = await start_ingest_text_job(db, queue, user["user_id"], body, title)
         flash = {
             "status": "success",
             "message": f"Text ingest job {job.job_id} queued (doc {job.document_id})",
         }
-        return await _render_documents_partial(request, db, user, flash)
+        return await _render_ingest_response(request, db, user, flash)
     except HTTPException as exc:
         flash = {"status": "error", "message": exc.detail or "Failed to ingest text"}
-        return await _render_documents_partial(request, db, user, flash, status_code=exc.status_code)
+        return await _render_ingest_response(request, db, user, flash, status_code=exc.status_code)
     except Exception:
         logger.exception("Failed to queue text ingest from UI")
         flash = {"status": "error", "message": "Unexpected error while ingesting text"}
-        return await _render_documents_partial(request, db, user, flash, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return await _render_ingest_response(request, db, user, flash, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @router.get("/dashboard/jobs/{job_id}", response_class=HTMLResponse)

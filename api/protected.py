@@ -268,15 +268,16 @@ async def create_drive_document_for_user(db, user_id: str, drive_source: str) ->
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to prepare Drive workspace") from exc
 
     drive_file = structure["file"]
+    media_folder = structure.get("media")
     drive_meta = {
         "folder": structure["folder"],
         "folder_id": structure["folder"]["id"],
-        "drafts_folder_id": structure["drafts"]["id"],
-        "media_folder_id": structure["media"]["id"],
-        "published_folder_id": structure["published"]["id"],
+        "media": media_folder,
+        "media_folder_id": (media_folder or {}).get("id"),
         "file_id": drive_file.get("id"),
         "revision_id": drive_file.get("revision_id"),
         "web_view_link": drive_file.get("webViewLink"),
+        "stage": "draft",
     }
 
     document_id = str(uuid.uuid4())
@@ -287,13 +288,13 @@ async def create_drive_document_for_user(db, user_id: str, drive_source: str) ->
         source_type="drive",
         source_ref=structure["folder"]["id"],
         raw_text=None,
-        metadata={"input": drive_source, "drive": drive_meta},
+        metadata={"input": drive_source, "drive_stage": "draft", "drive": drive_meta},
         drive_file_id=drive_file.get("id"),
         drive_revision_id=drive_file.get("revision_id"),
         drive_folder_id=structure["folder"]["id"],
-        drive_drafts_folder_id=structure["drafts"]["id"],
-        drive_media_folder_id=structure["media"]["id"],
-        drive_published_folder_id=structure["published"]["id"],
+        drive_drafts_folder_id=None,
+        drive_media_folder_id=(media_folder or {}).get("id"),
+        drive_published_folder_id=None,
     )
     return _serialize_document(doc)
 
