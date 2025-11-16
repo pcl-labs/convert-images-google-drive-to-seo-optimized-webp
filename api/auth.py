@@ -310,12 +310,11 @@ def get_google_login_oauth_url(redirect_uri: str) -> Tuple[str, str]:
     params = {
         "client_id": settings.google_client_id,
         "response_type": "code",
-        "scope": "openid email profile",
+        "scope": "openid email",
         "redirect_uri": redirect_uri,
         "state": state,
         "access_type": "online",
         "include_granted_scopes": "false",
-        "prompt": "consent",
     }
     query_string = urlencode(params)
     url = f"https://accounts.google.com/o/oauth2/v2/auth?{query_string}"
