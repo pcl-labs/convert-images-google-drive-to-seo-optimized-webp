@@ -41,15 +41,28 @@ def resize_image(input_path, output_path, target_size):
         has_alpha = 'A' in img.mode
         output_ext = os.path.splitext(output_path)[1].lower()
         
-        # Only use PNG format if source has alpha AND output extension is .png
-        if has_alpha and output_ext == '.png':
+        # Map output extension to Pillow format
+        if output_ext == '.png':
+            detected_format = 'PNG'
+            format_supports_alpha = True
+        elif output_ext in ('.jpg', '.jpeg'):
+            detected_format = 'JPEG'
+            format_supports_alpha = False
+        elif output_ext == '.webp':
+            detected_format = 'WEBP'
+            format_supports_alpha = True
+        else:
+            # Fallback to JPEG for unknown extensions
+            detected_format = 'JPEG'
+            format_supports_alpha = False
+        
+        # Choose image mode based on source alpha and format alpha support
+        if format_supports_alpha and has_alpha:
             # Preserve alpha channel by converting to RGBA
             img = img.convert('RGBA')
-            detected_format = 'PNG'
         else:
-            # Convert to RGB and always use JPEG format
+            # Convert to RGB (required for JPEG, optional for PNG/WEBP without alpha)
             img = img.convert('RGB')
-            detected_format = 'JPEG'
         
         img = img.resize(target_size, Image.Resampling.LANCZOS)
         img.save(output_path, format=detected_format)

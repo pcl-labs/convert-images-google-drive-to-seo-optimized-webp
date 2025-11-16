@@ -1254,9 +1254,7 @@ async def create_youtube_document_form(
     csrf_token: str = Form(...),
     user: dict = Depends(get_current_user),
 ):
-    cookie_token = request.cookies.get("csrf_token")
-    if cookie_token is None or csrf_token is None or not hmac.compare_digest(str(cookie_token), str(csrf_token)):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
+    _validate_csrf(request, csrf_token)
     db = ensure_db()
     url = (youtube_url or "").strip()
     if not url:
