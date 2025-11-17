@@ -198,6 +198,48 @@ CREATE TABLE IF NOT EXISTS document_exports (
 
 CREATE INDEX IF NOT EXISTS idx_document_exports_document ON document_exports(document_id, created_at DESC);
 
+-- Pipeline events for streaming ingest status
+CREATE TABLE IF NOT EXISTS pipeline_events (
+    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id TEXT NOT NULL UNIQUE,
+    user_id TEXT NOT NULL,
+    job_id TEXT,
+    event_type TEXT NOT NULL,
+    stage TEXT,
+    status TEXT,
+    message TEXT,
+    data TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+    FOREIGN KEY (job_id) REFERENCES jobs(job_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_pipeline_events_user ON pipeline_events(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_pipeline_events_job ON pipeline_events(job_id, sequence DESC);
+
+-- Enforce allowed values for pipeline_events.event_type for existing databases
+CREATE TRIGGER IF NOT EXISTS check_pipeline_event_type
+BEFORE INSERT ON pipeline_events
+WHEN NEW.event_type NOT IN (
+    'ingest_youtube',
+    'drive_workspace',
+    'drive_sync'
+)
+BEGIN
+    SELECT RAISE(ABORT, 'Invalid event_type value for pipeline_events.');
+END;
+
+CREATE TRIGGER IF NOT EXISTS check_pipeline_event_type_update
+BEFORE UPDATE ON pipeline_events
+WHEN NEW.event_type NOT IN (
+    'ingest_youtube',
+    'drive_workspace',
+    'drive_sync'
+)
+BEGIN
+    SELECT RAISE(ABORT, 'Invalid event_type value for pipeline_events.');
+END;
+
 -- Constraints and triggers for document_exports status and timestamp maintenance
 CREATE TRIGGER IF NOT EXISTS check_document_export_status 
 BEFORE INSERT ON document_exports

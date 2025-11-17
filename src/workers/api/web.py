@@ -2,7 +2,7 @@ from fastapi import APIRouter, Request, Depends, Form, HTTPException, status
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, PlainTextResponse
 from starlette.templating import Jinja2Templates
 from starlette.responses import Response, StreamingResponse
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import os
 import asyncio
 import uuid
@@ -36,6 +36,8 @@ from .database import (
     update_document,
     get_drive_workspace,
     upsert_drive_workspace,
+    list_pipeline_events,
+    latest_job_by_type,
 )
 from .auth import create_user_api_key
 from .protected import (
@@ -50,6 +52,7 @@ from .protected import (
 from .config import settings
 from .notifications import notify_job
 from .notifications_stream import notifications_stream_response
+from .pipeline_stream import pipeline_stream_response
 from .constants import COOKIE_OAUTH_STATE, COOKIE_GOOGLE_OAUTH_STATE
 from .utils import normalize_ui_status
 from src.workers.core.constants import GOOGLE_SCOPE_DRIVE, GOOGLE_SCOPE_YOUTUBE, GOOGLE_SCOPE_GMAIL, GOOGLE_INTEGRATION_SCOPES
@@ -741,10 +744,40 @@ async def _render_ingest_response(
     target = (request.headers.get("HX-Target") or "").lower()
     if target == "documents-table":
         return await _render_documents_partial(request, db, user, flash, status_code=status_code)
+    if target == "youtube-ingest-panel":
+        return await _render_youtube_ingest_panel(request, db, user, flash, status_code=status_code)
     flash_kind = "success" if (flash or {}).get("status") == "success" else "error"
     flash_message = (flash or {}).get("message") or "Request completed."
     context = {"request": request, "flash_kind": flash_kind, "flash_message": flash_message}
     return templates.TemplateResponse("documents/partials/flash.html", context, status_code=status_code)
+
+
+async def _render_youtube_ingest_panel(
+    request: Request,
+    db,
+    user: dict,
+    flash: Optional[dict] = None,
+    job_id: Optional[str] = None,
+    status_code: int = status.HTTP_200_OK,
+):
+    google_tokens = await list_google_tokens(db, user["user_id"])  # type: ignore
+    token_map = {str(row.get("integration")).lower(): row for row in (google_tokens or []) if row.get("integration")}
+    youtube_connected = "youtube" in token_map
+    ingest_job = None
+    events: List[Dict[str, Any]] = []
+    if job_id:
+        ingest_job = await get_job(db, job_id, user["user_id"])
+        if ingest_job:
+            events = await list_pipeline_events(db, user["user_id"], job_id=job_id, limit=50)
+    context = {
+        "request": request,
+        "csrf_token": _get_csrf_token(request),
+        "youtube_connected": youtube_connected,
+        "flash": flash,
+        "ingest_job": ingest_job,
+        "ingest_events": events,
+    }
+    return templates.TemplateResponse("dashboard/partials/youtube_ingest_panel.html", context, status_code=status_code)
 
 
 def _version_summary_row(row: dict) -> dict:
@@ -842,6 +875,12 @@ async def api_stream(request: Request, user: dict = Depends(get_current_user)):
     return notifications_stream_response(request, db, user)
 
 
+@router.get("/api/pipelines/stream")
+async def api_pipeline_stream(request: Request, job_id: Optional[str] = None, user: dict = Depends(get_current_user)):
+    db = ensure_db()
+    return pipeline_stream_response(request, db, user, job_id=job_id)
+
+
 @router.get("/dashboard/activity", response_class=HTMLResponse)
 async def activity_page(request: Request, user: dict = Depends(get_current_user), after_id: Optional[str] = None):
     db = ensure_db()
@@ -924,6 +963,16 @@ async def dashboard(request: Request, page: int = 1, user: dict = Depends(get_cu
             "created_at": j.get("created_at"),
         }
 
+    recent_youtube_job = await latest_job_by_type(db, user["user_id"], "ingest_youtube")
+    recent_youtube_events: List[Dict[str, Any]] = []
+    if recent_youtube_job:
+        recent_youtube_events = await list_pipeline_events(
+            db,
+            user["user_id"],
+            job_id=recent_youtube_job.get("job_id"),
+            limit=25,
+        )
+
     context = {
         "request": request,
         "user": user,
@@ -937,6 +986,8 @@ async def dashboard(request: Request, page: int = 1, user: dict = Depends(get_cu
         "page_title": "Dashboard",
         "drive_connected": drive_connected,
         "youtube_connected": youtube_connected,
+        "ingest_job": recent_youtube_job,
+        "ingest_events": recent_youtube_events,
     }
     resp = templates.TemplateResponse("dashboard/index.html", context)
     if not request.cookies.get("csrf_token"):
@@ -1273,14 +1324,14 @@ async def create_youtube_document_form(
             "status": "success",
             "message": f"YouTube ingest job {job.job_id} queued (doc {job.document_id})",
         }
-        return await _render_ingest_response(request, db, user, flash)
+        return await _render_youtube_ingest_panel(request, db, user, flash, job_id=job.job_id)
     except HTTPException as exc:
         flash = {"status": "error", "message": exc.detail or "Failed to ingest YouTube video"}
-        return await _render_ingest_response(request, db, user, flash, status_code=exc.status_code)
+        return await _render_youtube_ingest_panel(request, db, user, flash, status_code=exc.status_code)
     except Exception:
         logger.exception("Failed to queue YouTube ingest from UI")
         flash = {"status": "error", "message": "Unexpected error while ingesting video"}
-        return await _render_ingest_response(request, db, user, flash, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return await _render_youtube_ingest_panel(request, db, user, flash, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @router.post("/dashboard/documents/text", response_class=HTMLResponse)
