@@ -11,7 +11,8 @@ from .cloudflare_queue import QueueProducer
 # Internal state set by main.lifespan
 _db_instance: Optional[Database] = None
 _queue_producer: Optional[QueueProducer] = None
-_db_lock = threading.Lock()
+_db_lock = threading.RLock()
+_queue_lock = threading.Lock()
 _services_lock = threading.Lock()
 logger = logging.getLogger(__name__)
 
@@ -24,7 +25,7 @@ def set_db_instance(db: Database) -> None:
 
 def set_queue_producer(q: QueueProducer) -> None:
     global _queue_producer
-    with _db_lock:
+    with _queue_lock:
         _queue_producer = q
 
 

@@ -7,20 +7,15 @@ from src.workers.api import crypto
 from src.workers.api.config import settings
 
 
-@pytest.fixture(autouse=True)
-def temp_encryption_key():
-    original_key = settings.encryption_key
+@pytest.fixture
+def temp_encryption_key(monkeypatch):
     new_key = base64.urlsafe_b64encode(os.urandom(32)).decode()
-    settings.encryption_key = new_key
-    crypto._RAW_KEY = None  # type: ignore[attr-defined]
-    crypto._CIPHER = None  # type: ignore[attr-defined]
-    yield
-    settings.encryption_key = original_key
-    crypto._RAW_KEY = None  # type: ignore[attr-defined]
-    crypto._CIPHER = None  # type: ignore[attr-defined]
+    monkeypatch.setattr(settings, "encryption_key", new_key)
+    monkeypatch.setattr(crypto, "_RAW_KEY", None, raising=False)
+    monkeypatch.setattr(crypto, "_CIPHER", None, raising=False)
 
 
-def test_encrypt_decrypt_round_trip():
+def test_encrypt_decrypt_round_trip(temp_encryption_key):
     plaintext = "sensitive-token"
     encrypted = crypto.encrypt(plaintext)
     assert isinstance(encrypted, str)
@@ -28,7 +23,7 @@ def test_encrypt_decrypt_round_trip():
     assert decrypted == plaintext
 
 
-def test_decrypt_rejects_tampering():
+def test_decrypt_rejects_tampering(temp_encryption_key):
     token = crypto.encrypt("payload")
     tampered = token[:-2] + ("A" if token[-1] != "A" else "B")
     with pytest.raises(ValueError):
