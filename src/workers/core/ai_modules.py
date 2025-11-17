@@ -345,9 +345,6 @@ def markdown_to_html(markdown_text: str) -> str:
     return "\n".join(lines)
 
 
-_openai_client: Optional[AsyncOpenAI] = None
-
-
 def _should_use_openai() -> bool:
     if os.getenv("PYTEST_CURRENT_TEST"):
         return False
@@ -366,20 +363,6 @@ def _format_chapters_for_prompt(chapters: List[Dict[str, Any]]) -> str:
         summary = (chap or {}).get("summary") or ""
         lines.append(f"{idx}. {title.strip()}\n   Summary: {summary.strip()}")
     return "\n".join(lines)
-
-
-def _get_openai_client() -> AsyncOpenAI:
-    global _openai_client
-    if not settings.openai_api_key:
-        raise ValueError("OPENAI_API_KEY is required for AI blog generation")
-    if AsyncOpenAI is None:
-        raise RuntimeError("openai package is not installed")
-    if _openai_client is None:
-        client_kwargs: Dict[str, Any] = {"api_key": settings.openai_api_key}
-        if settings.openai_api_base:
-            client_kwargs["base_url"] = settings.openai_api_base
-        _openai_client = AsyncOpenAI(**client_kwargs)
-    return _openai_client
 
 
 async def compose_blog(
@@ -432,24 +415,36 @@ async def compose_blog(
         "Requirements:\n- " + "\n- ".join(req for req in requirements if req.strip())
     )
 
+    # Resolve the OpenAI model to use for blog composition. GPT-5.1 is the current target default.
+    # See https://platform.openai.com/docs/models/gpt-5.1
+    model_name = (model or settings.openai_blog_model or "gpt-5.1").strip()
+    temp_value = temperature if temperature is not None else settings.openai_blog_temperature
     try:
-        client = _get_openai_client()
+        if not settings.openai_api_key:
+            raise ValueError("OPENAI_API_KEY is required for AI blog generation")
+        if AsyncOpenAI is None:
+            raise RuntimeError("openai package is not installed")
+
+        client_kwargs: Dict[str, Any] = {"api_key": settings.openai_api_key}
+        if settings.openai_api_base:
+            client_kwargs["base_url"] = settings.openai_api_base
+
+        client = AsyncOpenAI(**client_kwargs)
     except Exception:
         logger.warning("openai_client_unavailable", exc_info=True)
         return _compose_blog_stub(chapters, tone=tone, model=model, temperature=temperature)
 
-    model_name = (model or settings.openai_blog_model or "gpt-5.1").strip()
-    temp_value = temperature if temperature is not None else settings.openai_blog_temperature
     try:
-        response = await client.chat.completions.create(
-            model=model_name,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=temp_value,
-            max_tokens=settings.openai_blog_max_output_tokens,
-        )
+        async with client:
+            response = await client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=temp_value,
+                max_tokens=settings.openai_blog_max_output_tokens,
+            )
     except OpenAIError as exc:
         logger.error(
             "openai_compose_blog_failed",
@@ -457,7 +452,7 @@ async def compose_blog(
             extra={"model": model_name, "reason": getattr(exc, "message", str(exc))},
         )
         return _compose_blog_stub(chapters, tone=tone, model=model_name, temperature=temp_value)
-    except Exception as exc:  # pragma: no cover - network/runtime edge cases
+    except Exception:  # pragma: no cover - network/runtime edge cases
         logger.error("openai_compose_blog_unexpected", exc_info=True, extra={"model": model_name})
         return _compose_blog_stub(chapters, tone=tone, model=model_name, temperature=temp_value)
 
