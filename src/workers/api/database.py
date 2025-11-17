@@ -1028,6 +1028,19 @@ async def list_jobs_by_document(
     return [dict(row) for row in rows] if rows else []
 
 
+async def latest_job_by_type(db: Database, user_id: str, job_type: str) -> Optional[Dict[str, Any]]:
+    row = await db.execute(
+        """
+        SELECT * FROM jobs
+        WHERE user_id = ? AND job_type = ?
+        ORDER BY created_at DESC
+        LIMIT 1
+        """,
+        (user_id, job_type),
+    )
+    return dict(row) if row else None
+
+
 async def list_documents(
     db: Database,
     user_id: str,
@@ -1166,6 +1179,10 @@ async def update_document(
         "latest_version_id",
         "drive_file_id",
         "drive_revision_id",
+        "drive_folder_id",
+        "drive_drafts_folder_id",
+        "drive_media_folder_id",
+        "drive_published_folder_id",
     }
     fields = []
     params: list[Any] = []
@@ -1623,6 +1640,67 @@ async def dismiss_notification(db: Database, user_id: str, notification_id: str)
         "UPDATE notification_deliveries SET dismissed_at = datetime('now') WHERE user_id = ? AND notification_id = ?",
         (user_id, notification_id),
     )
+
+
+async def record_pipeline_event(
+    db: Database,
+    user_id: str,
+    job_id: str,
+    event_type: str,
+    stage: Optional[str] = None,
+    status: Optional[str] = None,
+    message: Optional[str] = None,
+    data: Optional[Dict[str, Any]] = None,
+) -> None:
+    await db.execute(
+        "INSERT INTO pipeline_events (event_id, user_id, job_id, event_type, stage, status, message, data, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))",
+        (
+            str(uuid.uuid4()),
+            user_id,
+            job_id,
+            event_type,
+            stage,
+            status,
+            message,
+            json.dumps(data or {}),
+        ),
+    )
+
+
+async def list_pipeline_events(
+    db: Database,
+    user_id: str,
+    *,
+    job_id: Optional[str] = None,
+    after_sequence: Optional[int] = None,
+    limit: int = 50,
+) -> List[Dict[str, Any]]:
+    query = (
+        "SELECT sequence, event_id, user_id, job_id, event_type, stage, status, message, data, created_at "
+        "FROM pipeline_events WHERE user_id = ?"
+    )
+    params: List[Any] = [user_id]
+    if job_id:
+        query += " AND job_id = ?"
+        params.append(job_id)
+    if after_sequence is not None:
+        query += " AND sequence > ?"
+        params.append(after_sequence)
+    query += " ORDER BY sequence ASC LIMIT ?"
+    params.append(limit)
+    rows = await db.execute_all(query, tuple(params))
+    events: List[Dict[str, Any]] = []
+    for row in rows or []:
+        event = dict(row)
+        payload = event.get("data")
+        if isinstance(payload, str) and payload:
+            try:
+                event["data"] = json.loads(payload)
+            except Exception:
+                event["data"] = {}
+        events.append(event)
+    return events
 
 
 # Usage metering

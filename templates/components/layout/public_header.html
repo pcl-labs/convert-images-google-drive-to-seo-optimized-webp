@@ -1,0 +1,14 @@
+{% macro public_header(active=None, logo_src=None) %}
+  <header class="border-b border-border bg-bg/80 backdrop-blur">
+    <div class="mx-auto max-w-5xl px-4 md:px-6 lg:px-8 h-14 flex items-center justify-between">
+      <a href="/" class="flex items-center gap-2">
+        <img src="{{ logo_src or '/static/logos/quill-logo.png' }}" alt="Quill" class="h-6 w-6 rounded-md object-cover" />
+        <span class="text-sm font-semibold text-content">Quill</span>
+      </a>
+      <nav class="flex items-center gap-2 text-sm">
+        <a href="/login" class="btn-secondary px-4 py-1.5 text-xs md:text-sm">Log in</a>
+        <a href="/signup" class="btn-primary px-4 py-1.5 text-xs md:text-sm">Sign up</a>
+      </nav>
+    </div>
+  </header>
+{% endmacro %}

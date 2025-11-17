@@ -189,7 +189,8 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
     app.state.register_background_task = register_background_task
 
     module_dir = Path(__file__).resolve().parent
-    static_dir = module_dir / "static"
+    project_root = module_dir.parent.parent.parent
+    static_dir = project_root / "static"
     if static_dir.exists():
         app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 

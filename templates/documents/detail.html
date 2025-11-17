@@ -2,6 +2,7 @@
 {% from 'components/elements/input.html' import input %}
 {% from 'components/elements/button.html' import button %}
 {% from 'components/elements/badge.html' import badge %}
+{% from 'components/elements/card.html' import card %}
 {% from 'components/layout/page.html' import page_container, page_header %}
 {% block content %}
 {% call page_container() %}
@@ -14,67 +15,167 @@
   {{ page_header('Document ' ~ document.id, 'Source: ' ~ document.source_label ~ ' • Created ' ~ (document.created_at or 'unknown'), actions=header_actions) }}
   <p class="text-sm text-primary"><a href="/dashboard/documents" class="hover:text-primary/80">&larr; Back to Documents</a></p>
 
+  {% set folder = drive_meta.get('folder') if drive_meta else {} %}
+  {% set media_folder = drive_meta.get('media') if drive_meta else {} %}
+  {% set doc_link = drive_meta.get('web_view_link') %}
+  {% set folder_link = folder.webViewLink if folder else None %}
+  {% set media_link = media_folder.webViewLink if media_folder else None %}
+  <section class="rounded-2xl border border-border/70 bg-card/70 p-5 space-y-4">
+    <div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+      <div>
+        <p class="text-xs uppercase tracking-wide text-contentMuted">{{ document.source_label }}</p>
+        <h1 class="text-2xl font-semibold text-content break-words">{{ document.frontmatter.title or document.metadata.title or 'Untitled draft' }}</h1>
+        <p class="text-sm text-contentMuted break-all">{{ document.origin or 'No origin recorded' }}</p>
+      </div>
+      <div class="flex flex-wrap gap-2 text-xs">
+        {% if drive_meta.stage %}
+          <span class="inline-flex items-center rounded-full border border-border px-3 py-1 uppercase tracking-wide text-[11px] text-contentMuted">
+            {{ drive_meta.stage|capitalize }}
+          </span>
+        {% endif %}
+        {% if doc_link %}
+          <a href="{{ doc_link }}" target="_blank" rel="noopener" class="inline-flex items-center rounded-full border border-border px-3 py-1 text-primary hover:border-primary/70">Open Google Doc</a>
+        {% endif %}
+        {% if folder_link %}
+          <a href="{{ folder_link }}" target="_blank" rel="noopener" class="inline-flex items-center rounded-full border border-border px-3 py-1 hover:border-primary/70">Drive folder</a>
+        {% endif %}
+        {% if media_link %}
+          <a href="{{ media_link }}" target="_blank" rel="noopener" class="inline-flex items-center rounded-full border border-border px-3 py-1 hover:border-primary/70">Media folder</a>
+        {% endif %}
+      </div>
+    </div>
+    <div class="text-xs text-contentMuted flex flex-wrap gap-4">
+      <span>Document ID: {{ document.id }}</span>
+      {% if drive_meta.file_id %}
+        <span>Drive file: {{ drive_meta.file_id }}</span>
+      {% endif %}
+      {% if drive_meta.revision_id %}
+        <span>Revision: {{ drive_meta.revision_id[:10] }}…</span>
+      {% endif %}
+    </div>
+  </section>
+
   <div id="doc-flash" class="space-y-2"></div>
 
-  <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+  <div class="grid gap-6 xl:grid-cols-12">
     {% from 'components/elements/card.html' import card %}
-    {% if drive_meta %}
-      {% set folder = drive_meta.get('folder', {}) %}
-      {% set media = drive_meta.get('media', {}) %}
+    <section class="space-y-4 xl:col-span-7">
+      {% call card(title='Live MDX Preview') %}
+        {% include "documents/partials/version_viewer.html" %}
+      {% endcall %}
+      {% if document.raw_text %}
+        {% call card(title='Raw text') %}
+          <pre class="whitespace-pre-wrap text-sm text-content">{{ document.raw_text }}</pre>
+        {% endcall %}
+      {% endif %}
+      {% call card(title='Versions') %}
+        <div class="space-y-3">
+          {% for version in versions %}
+            <article class="surface rounded-lg p-4 space-y-3">
+              <div class="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                <div>
+                  <p class="text-sm font-semibold text-content">v{{ version.version }} &middot; {{ version.title or 'Untitled' }}</p>
+                  <p class="text-xs text-contentMuted">{{ version.created_at }}</p>
+                </div>
+                <div class="flex flex-col gap-2 text-sm sm:flex-row sm:items-center">
+                  <a class="text-primary hover:text-primary/80" hx-get="/dashboard/documents/{{ document.id }}/versions/{{ version.version_id }}" hx-target="#version-viewer" hx-swap="outerHTML" href="#">View</a>
+                  <a href="/dashboard/documents/{{ document.id }}/versions/{{ version.version_id }}/download?format=mdx" class="text-contentMuted hover:text-content">Download MDX</a>
+                  <a href="/dashboard/documents/{{ document.id }}/versions/{{ version.version_id }}/download?format=html" class="text-contentMuted hover:text-content">Download HTML</a>
+                </div>
+              </div>
+            </article>
+          {% else %}
+            <div class="rounded-lg border border-border p-6 text-center text-sm text-contentMuted">No versions yet.</div>
+          {% endfor %}
+        </div>
+      {% endcall %}
+    </section>
+    <section class="space-y-4 xl:col-span-5">
+      {% if drive_meta %}
+        {% set folder = drive_meta.get('folder', {}) %}
+        {% set media = drive_meta.get('media', {}) %}
       {% call card(title='Drive Workspace') %}
         <dl class="space-y-2 text-sm">
           <div>
             <dt class="text-contentMuted uppercase text-xs tracking-wide">Document folder</dt>
             <dd class="break-all">
               {% if folder.webViewLink %}
-                <a href="{{ folder.webViewLink }}" target="_blank" rel="noopener" class="text-primary hover:text-primary/80">
-                  {{ folder.name or drive_meta.folder_id or 'Open in Drive' }}
-                </a>
-              {% else %}
-                {{ folder.name or drive_meta.folder_id or '—' }}
-              {% endif %}
-            </dd>
-          </div>
-          <div>
-            <dt class="text-contentMuted uppercase text-xs tracking-wide">Google Doc</dt>
-            <dd>
-              {% if drive_meta.web_view_link %}
-                <a href="{{ drive_meta.web_view_link }}" target="_blank" rel="noopener" class="text-primary hover:text-primary/80">Open Google Doc</a>
-              {% else %}
-                {{ drive_meta.file_id or '—' }}
-              {% endif %}
-            </dd>
-          </div>
+                  <a href="{{ folder.webViewLink }}" target="_blank" rel="noopener" class="text-primary hover:text-primary/80">
+                    {{ folder.name or drive_meta.folder_id or 'Open in Drive' }}
+                  </a>
+                {% else %}
+                  {{ folder.name or drive_meta.folder_id or '—' }}
+                {% endif %}
+              </dd>
+            </div>
+            <div>
+              <dt class="text-contentMuted uppercase text-xs tracking-wide">Google Doc</dt>
+              <dd>
+                {% if drive_meta.web_view_link %}
+                  <a href="{{ drive_meta.web_view_link }}" target="_blank" rel="noopener" class="text-primary hover:text-primary/80">Open Google Doc</a>
+                {% else %}
+                  {{ drive_meta.file_id or '—' }}
+                {% endif %}
+              </dd>
+            </div>
           <div>
             <dt class="text-contentMuted uppercase text-xs tracking-wide">Stage</dt>
             <dd>
               {% if drive_meta.stage %}
                 {{ badge(drive_meta.stage|capitalize, status='completed' if drive_meta.stage == 'published' else 'default') }}
-              {% else %}
-                <span class="text-contentMuted">Not set</span>
-              {% endif %}
-            </dd>
+                {% else %}
+                  <span class="text-contentMuted">Not set</span>
+                {% endif %}
+              </dd>
           </div>
+          {% if drive_meta.last_ingested_at %}
+            <div>
+              <dt class="text-contentMuted uppercase text-xs tracking-wide">Last synced</dt>
+              <dd>{{ drive_meta.last_ingested_at }}</dd>
+            </div>
+          {% endif %}
+          {% if drive_meta.last_ingested_revision %}
+            <div>
+              <dt class="text-contentMuted uppercase text-xs tracking-wide">Last revision ID</dt>
+              <dd class="break-all text-xs text-contentMuted">{{ drive_meta.last_ingested_revision }}</dd>
+            </div>
+          {% endif %}
+          {% if drive_meta.modified_time %}
+            <div>
+              <dt class="text-contentMuted uppercase text-xs tracking-wide">Drive modified time</dt>
+              <dd>{{ drive_meta.modified_time }}</dd>
+            </div>
+          {% endif %}
           {% if media %}
             <div>
               <dt class="text-contentMuted uppercase text-xs tracking-wide">Media folder</dt>
-              {% set media = document.metadata.drive.media if document.metadata and document.metadata.get('drive') else {} %}
               {% if media and media.webViewLink %}
                 <dd>
-                  <a href="{{ media.webViewLink }}" target="_blank" rel="noopener" class="text-primary hover:text-primary/80">
-                    {{ media.name or (document.metadata.drive.media_folder_id) or 'Media' }}
-                  </a>
-                </dd>
-              {% else %}
-                <dd class="break-all">{{ (media.name) or (document.metadata.drive.media_folder_id) or 'Media' }}</dd>
-              {% endif %}
-              <dd class="text-xs text-contentMuted">ID: {{ (media.id) or (document.metadata.drive.media_folder_id) or '—' }}</dd>
-            </div>
-          {% endif %}
+                    <a href="{{ media.webViewLink }}" target="_blank" rel="noopener" class="text-primary hover:text-primary/80">
+                      {{ media.name or (document.metadata.drive.media_folder_id) or 'Media' }}
+                    </a>
+                  </dd>
+                {% else %}
+                  <dd class="break-all">{{ (media.name) or (document.metadata.drive.media_folder_id) or 'Media' }}</dd>
+                {% endif %}
+                <dd class="text-xs text-contentMuted">ID: {{ (media.id) or (document.metadata.drive.media_folder_id) or '—' }}</dd>
+              </div>
+            {% endif %}
         </dl>
+        {% if drive_meta.external_edit_detected %}
+          <div class="mt-4 rounded-lg border border-amber-400/70 bg-amber-100/20 p-3 text-xs text-amber-900 dark:text-amber-200">
+            <p class="font-semibold text-sm text-amber-900 dark:text-amber-200">External edits detected</p>
+            <p class="mt-1 text-content">{{ drive_meta.pending_modified_time or 'Drive shows a newer revision for this document.' }}</p>
+            {% if drive_meta.pending_revision_id %}
+              <p class="mt-1 text-contentMuted">Pending revision: {{ drive_meta.pending_revision_id }}</p>
+            {% endif %}
+            <p class="mt-2 text-contentMuted">Run a Drive sync to pull the latest changes.</p>
+          </div>
+        {% endif %}
       {% endcall %}
     {% endif %}
-    {% call card(title='Metadata') %}
+      <div class="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        {% call card(title='Metadata') %}
       {% if metadata_items %}
         <dl class="space-y-2 text-sm">
           {% for key, value in metadata_items %}
@@ -88,7 +189,8 @@
         <p class="text-sm text-contentMuted">No metadata recorded.</p>
       {% endif %}
     {% endcall %}
-    {% call card(title='Frontmatter') %}
+        {% endcall %}
+        {% call card(title='Frontmatter') %}
       {% if frontmatter_items %}
         <dl class="space-y-2 text-sm">
           {% for key, value in frontmatter_items %}
@@ -101,11 +203,9 @@
       {% else %}
         <p class="text-sm text-contentMuted">No frontmatter recorded yet.</p>
       {% endif %}
-    {% endcall %}
-  </div>
-
-  <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
-    {% call card(title='Generate Blog Draft') %}
+        {% endcall %}
+      </div>
+      {% call card(title='Generate Blog Draft') %}
       <form class="space-y-3" hx-post="/dashboard/documents/{{ document.id }}/generate" hx-target="#doc-flash" hx-swap="innerHTML">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         {{ input('tone', label='Tone', value='informative') }}
@@ -120,7 +220,7 @@
         {{ button('Queue Generation', variant='primary', attrs='type="submit" class="w-full"') }}
       </form>
     {% endcall %}
-    {% call card(title='Latest Draft Summary') %}
+      {% call card(title='Latest Draft Summary') %}
       {% if latest_version %}
         <dl class="space-y-2 text-sm">
           <div>
@@ -145,7 +245,7 @@
         <p class="text-sm text-contentMuted">No blog draft generated yet. Kick off the pipeline to create the first version.</p>
       {% endif %}
     {% endcall %}
-    {% call card(title='Exports & Integrations') %}
+      {% call card(title='Exports & Integrations') %}
       {% set version_selectable = latest_version is not none %}
       <form class="space-y-2" hx-post="/dashboard/documents/{{ document.id }}/exports/google_docs" hx-target="#doc-flash" hx-swap="innerHTML">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -162,49 +262,17 @@
         <input type="hidden" name="version_id" value="{{ latest_version.version_id if latest_version }}">
         {{ button('Queue WordPress Export', variant='secondary', attrs='type="submit" class="w-full"' + (' disabled' if not version_selectable else '')) }}
       </form>
-    {% endcall %}
+      {% call card(title='Activity for this document', actions='<a href="/api/v1/jobs?document_id=' ~ document.id ~ '" class="text-sm text-primary hover:text-primary/80" target="_blank" rel="noopener">Open Activity API</a>') %}
+        <p class="text-sm text-content">
+          Job history now lives in the Activity API so you can filter, export, or embed however you like. Use the link above to fetch a JSON response scoped to this document.
+        </p>
+        <p class="mt-3 text-xs text-contentMuted">
+          Tip: pass <code>status=running</code> or <code>status=failed</code> query params to zero in on specific states.
+        </p>
+      {% endcall %}
+    </section>
   </div>
 
-  {% if document.raw_text %}
-    {% call card(title='Raw text') %}
-      <pre class="whitespace-pre-wrap text-sm text-content">{{ document.raw_text }}</pre>
-    {% endcall %}
-  {% endif %}
-
-  {% call card(title='Draft Preview') %}
-    {% include "documents/partials/version_viewer.html" %}
-  {% endcall %}
-
-  {% call card(title='Versions', actions='') %}
-    <div class="space-y-3">
-      {% for version in versions %}
-        <article class="surface rounded-lg p-4 space-y-3">
-          <div class="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-            <div>
-              <p class="text-sm font-semibold text-content">v{{ version.version }} &middot; {{ version.title or 'Untitled' }}</p>
-              <p class="text-xs text-contentMuted">{{ version.created_at }}</p>
-            </div>
-            <div class="flex flex-col gap-2 text-sm sm:flex-row sm:items-center">
-              <a class="text-primary hover:text-primary/80" hx-get="/dashboard/documents/{{ document.id }}/versions/{{ version.version_id }}" hx-target="#version-viewer" hx-swap="outerHTML" href="#">View</a>
-              <a href="/dashboard/documents/{{ document.id }}/versions/{{ version.version_id }}/download?format=mdx" class="text-contentMuted hover:text-content">Download MDX</a>
-              <a href="/dashboard/documents/{{ document.id }}/versions/{{ version.version_id }}/download?format=html" class="text-contentMuted hover:text-content">Download HTML</a>
-            </div>
-          </div>
-        </article>
-      {% else %}
-        <div class="rounded-lg border border-border p-6 text-center text-sm text-contentMuted">No versions yet.</div>
-      {% endfor %}
-    </div>
-  {% endcall %}
-
-  {% call card(title='Activity for this document', actions='<a href="/api/v1/jobs?document_id=' ~ document.id ~ '" class="text-sm text-primary hover:text-primary/80" target="_blank" rel="noopener">Open Activity API</a>') %}
-    <p class="text-sm text-content">
-      Job history now lives in the Activity API so you can filter, export, or embed however you like. Use the link above to fetch a JSON response scoped to this document.
-    </p>
-    <p class="mt-3 text-xs text-contentMuted">
-      Tip: pass <code>status=running</code> or <code>status=failed</code> query params to zero in on specific states.
-    </p>
-  {% endcall %}
 {% endcall %}
 {% endblock %}
 
