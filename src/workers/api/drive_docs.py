@@ -41,8 +41,9 @@ def merge_metadata_for_updates(
 
 def _build_drive_update_requests(end_index: int, text: str) -> List[Dict[str, Any]]:
     requests: List[Dict[str, Any]] = []
-    if end_index > 1:
-        requests.append({"deleteContentRange": {"range": {"startIndex": 1, "endIndex": end_index}}})
+    safe_end = end_index - 1
+    if safe_end > 1:
+        requests.append({"deleteContentRange": {"range": {"startIndex": 1, "endIndex": safe_end}}})
     requests.append({"insertText": {"location": {"index": 1}, "text": text}})
     return requests
 
@@ -131,7 +132,9 @@ async def sync_drive_doc_after_persist(
     drive_file_id = document.get("drive_file_id") or drive_block.get("file_id")
     if not drive_file_id:
         return
-    new_text = updates.get("raw_text")
+    new_text = updates.get("drive_text")
+    if new_text is None:
+        new_text = updates.get("raw_text")
     if new_text is None:
         new_text = document.get("raw_text")
     if new_text is None:

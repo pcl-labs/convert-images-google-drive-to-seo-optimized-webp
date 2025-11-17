@@ -180,15 +180,17 @@ class OptimizeDocumentRequest(BaseModel):
 
 
 class GenerateBlogOptions(BaseModel):
-    tone: str = Field(default="informative", min_length=3, max_length=40)
-    max_sections: int = Field(default=5, ge=1, le=12)
-    target_chapters: int = Field(default=4, ge=1, le=12)
-    include_images: bool = Field(default=True)
+    tone: Optional[str] = Field(default=None, min_length=3, max_length=40)
+    max_sections: Optional[int] = Field(default=None, ge=1, le=12)
+    target_chapters: Optional[int] = Field(default=None, ge=1, le=12)
+    include_images: Optional[bool] = Field(default=None)
+    model: Optional[str] = Field(default=None, min_length=3, max_length=60)
+    temperature: Optional[float] = Field(default=None, ge=0, le=2)
     section_index: Optional[int] = Field(default=None, ge=0, le=50)
 
     @model_validator(mode="after")
     def validate_section_index_bounds(self):
-        if self.section_index is not None:
+        if self.section_index is not None and self.max_sections is not None:
             if self.section_index < 0 or self.section_index >= self.max_sections:
                 raise ValueError("section_index must be >= 0 and < max_sections")
         return self

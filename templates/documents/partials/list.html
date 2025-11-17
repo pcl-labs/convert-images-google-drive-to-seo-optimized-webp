@@ -17,19 +17,27 @@
         {% set media = drive_meta.media or {} %}
         {% set doc_title = document.frontmatter.title or meta.title or youtube_meta.title or document.id %}
         <article class="rounded-2xl border border-border/70 bg-card/70 p-4 shadow-sm hover:border-primary/70 transition-colors">
-          <div class="flex items-start justify-between gap-3">
-            <div class="space-y-1">
-              <p class="text-[11px] uppercase tracking-wide text-contentMuted">{{ document.source_label or '—' }}</p>
-              <a href="/dashboard/documents/{{ document.id }}" class="text-base font-semibold text-content hover:text-primary break-words">
-                {{ doc_title }}
-              </a>
-              <p class="text-xs text-contentMuted break-all">Document ID: {{ document.id }}</p>
-            </div>
-            <div class="flex flex-col items-end gap-2 text-xs text-contentMuted">
-              <p>{{ document.created_at or '—' }}</p>
-              {% if drive_meta.stage %}
-                {{ badge(drive_meta.stage|capitalize, status='completed' if drive_meta.stage == 'published' else 'default') }}
-              {% endif %}
+            <div class="flex items-start justify-between gap-3">
+              <div class="space-y-1">
+                <p class="text-[11px] uppercase tracking-wide text-contentMuted">{{ document.source_label or '—' }}</p>
+                <a href="/dashboard/documents/{{ document.id }}" class="text-base font-semibold text-content hover:text-primary break-words">
+                  {{ doc_title }}
+                </a>
+                <p class="text-xs text-contentMuted break-all">Document ID: {{ document.id }}</p>
+                {% if drive_meta.stage or document.drive_sync_status %}
+                  <p class="text-xs text-contentMuted">
+                    Drive: {{ drive_meta.stage|capitalize if drive_meta.stage else '—' }}
+                    {% if document.drive_sync_status %}
+                      · {{ document.drive_sync_status }}
+                    {% endif %}
+                  </p>
+                {% endif %}
+              </div>
+              <div class="flex flex-col items-end gap-2 text-xs text-contentMuted">
+                <p>{{ document.created_at or '—' }}</p>
+                {% if drive_meta.stage %}
+                  {{ badge(drive_meta.stage|capitalize, status='completed' if drive_meta.stage == 'published' else 'default') }}
+                {% endif %}
             </div>
           </div>
           <div class="mt-4 space-y-3 text-sm">
