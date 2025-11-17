@@ -8,10 +8,10 @@ from .google_clients import GoogleAPIError, GoogleHTTPError, YouTubeClient
 def _select_caption_track(items: List[Dict[str, Any]], langs: List[str]) -> Optional[Dict[str, Any]]:
     # Normalize langs like ["en", "en-US"] preference
     prefs = [lang.strip().lower() for lang in (langs or ["en"]) if isinstance(lang, str) and lang.strip()]
-    # Prefer exact languageCode, then try primary language match (e.g., 'en' matches 'en-US')
+    # Prefer exact language, then try primary language match (e.g., 'en' matches 'en-US')
     def score(item: Dict[str, Any]) -> int:
         snippet = item.get("snippet", {})
-        lang = (snippet.get("language") or snippet.get("languageCode") or "").lower()
+        lang = (snippet.get("language") or "").lower()
         if lang in prefs:
             return 2
         for p in prefs:
@@ -128,7 +128,7 @@ def fetch_captions_text(service: YouTubeClient, video_id: str, langs: List[str])
 
     cap_id = chosen.get("id")
     snippet = chosen.get("snippet", {})
-    lang = snippet.get("language") or snippet.get("languageCode") or ""
+    lang = snippet.get("language") or ""
 
     try:
         srt_text = service.download_caption(cap_id, format="srt")

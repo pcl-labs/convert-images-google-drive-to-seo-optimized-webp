@@ -258,8 +258,8 @@ class IngestYouTubeRequest(BaseModel):
 
 
 class IngestTextRequest(BaseModel):
-    text: str = Field(..., max_length=10000)
-    title: Optional[str] = None
+    text: str = Field(..., max_length=20000)
+    title: Optional[str] = Field(default=None, max_length=500)
 
 
 class IngestDriveRequest(BaseModel):
