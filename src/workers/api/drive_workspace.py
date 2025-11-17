@@ -137,8 +137,7 @@ async def ensure_document_drive_structure(
                             "drive_folder_creation_failed_after_404",
                             exc_info=True,
                             extra={
-                                "user_id": user_id,
-                                "folder_id": existing_folder_id,
+                                "workspace_label": "document_folder",
                                 "sanitized_name": _sanitize_folder_name(name),
                             },
                         )
@@ -147,7 +146,7 @@ async def ensure_document_drive_structure(
                 logger.warning(
                     "drive_existing_folder_fetch_retry",
                     exc_info=True,
-                    extra={"user_id": user_id, "folder_id": existing_folder_id, "attempt": i + 1},
+                    extra={"workspace_label": "document_folder", "attempt": i + 1},
                 )
                 await asyncio.sleep(delay)
                 delay *= 2
@@ -158,18 +157,24 @@ async def ensure_document_drive_structure(
                     "drive_folder_creation_failed_after_404_final",
                     exc_info=True,
                     extra={
-                        "user_id": user_id,
-                        "folder_id": existing_folder_id,
+                        "workspace_label": "document_folder",
                         "sanitized_name": _sanitize_folder_name(name),
                     },
                 )
+                # Surface a clear error message indicating create-after-404 failure
+                raise RuntimeError(
+                    "Failed to create Drive folder after 404 when ensuring document workspace"
+                ) from last_exc
             else:
                 logger.error(
                     "drive_existing_folder_fetch_failed_final",
                     exc_info=True,
-                    extra={"user_id": user_id, "folder_id": existing_folder_id},
+                    extra={"workspace_label": "document_folder"},
                 )
-            raise last_exc if last_exc else RuntimeError("Failed to fetch existing Drive folder")
+                # Surface a clear error message indicating fetch failure
+                raise RuntimeError(
+                    "Failed to fetch existing Drive folder when ensuring document workspace"
+                ) from last_exc
     else:
         base_folder = await _create_drive_folder(
             drive_service, _sanitize_folder_name(name), workspace["root_folder_id"]

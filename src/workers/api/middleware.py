@@ -1,16 +1,14 @@
-"""
-Middleware for authentication, rate limiting, and security.
-"""
+"""Middleware for authentication, rate limiting, and security."""
 
+import asyncio
 import time
 import uuid
 from typing import Callable
-from fastapi import Request, Response, status
+from fastapi import HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
 import logging
-import threading
 
 from .config import settings
 from .auth import verify_jwt_token
@@ -20,8 +18,6 @@ from .deps import ensure_db
 from .database import get_user_by_id
 
 logger = logging.getLogger(__name__)
-
-_db_init_lock = threading.Lock()
 
 
 class RequestIDMiddleware(BaseHTTPMiddleware):
@@ -54,10 +50,17 @@ class AuthCookieMiddleware(BaseHTTPMiddleware):
                         db = ensure_db()
                         stored = await get_user_by_id(db, user_id)  # type: ignore
                         if stored:
-                            email = stored.get("email", email)
-                            # Provider IDs remain best-effort; don't force a DB hit just for them.
-                            github_id = github_id or stored.get("github_id")
-                            google_id = google_id or stored.get("google_id")
+                            stored_user_id = stored.get("user_id") or stored.get("id")
+                            if stored_user_id and str(stored_user_id) != str(user_id):
+                                logger.warning(
+                                    "AuthCookieMiddleware: token user mismatch",
+                                    extra={"token_user_id": user_id, "db_user_id": stored_user_id},
+                                )
+                            else:
+                                email = stored.get("email", email)
+                                # Provider IDs remain best-effort; don't force a DB hit just for them.
+                                github_id = github_id or stored.get("github_id")
+                                google_id = google_id or stored.get("google_id")
                     except Exception as exc:
                         logger.debug("AuthCookieMiddleware: failed to fetch user profile: %s", exc)
                 request.state.user = {
@@ -94,9 +97,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         self.max_per_minute = max_per_minute
         self.max_per_hour = max_per_hour
         self.requests: dict[str, list[float]] = {}
-        self.lock = threading.Lock()
+        self.lock = asyncio.Lock()
         self.cleanup_interval = 300  # Clean up every 5 minutes
-        self.last_cleanup = time.time()
+        self.last_cleanup = time.monotonic()
     
     def _get_client_id(self, request: Request) -> str:
         """Get client identifier for rate limiting."""
@@ -105,39 +108,32 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             return f"user:{user_id}"
         # Require valid client info for rate limiting
         if not request.client or not request.client.host:
-            return "ip:unknown"
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Client information missing",
+            )
         return f"ip:{request.client.host}"
     
-    def _is_rate_limited(self, client_id: str) -> bool:
+    async def _is_rate_limited(self, client_id: str) -> bool:
         """Check if client is rate limited (thread-safe)."""
-        now = time.time()
+        now = time.monotonic()
         
-        with self.lock:
-            # Cleanup old entries periodically
+        async with self.lock:
             if now - self.last_cleanup > self.cleanup_interval:
                 self._cleanup_old_entries(now)
                 self.last_cleanup = now
             
-            # Get request history
-            if client_id not in self.requests:
-                self.requests[client_id] = []
+            history = self.requests.setdefault(client_id, [])
+            history[:] = [req_time for req_time in history if now - req_time < 3600]
             
-            requests = self.requests[client_id]
-            
-            # Remove requests older than 1 hour
-            requests[:] = [req_time for req_time in requests if now - req_time < 3600]
-            
-            # Check per-minute limit
-            recent_minute = [req_time for req_time in requests if now - req_time < 60]
+            recent_minute = [req_time for req_time in history if now - req_time < 60]
             if len(recent_minute) >= self.max_per_minute:
                 return True
             
-            # Check per-hour limit
-            if len(requests) >= self.max_per_hour:
+            if len(history) >= self.max_per_hour:
                 return True
             
-            # Add current request
-            requests.append(now)
+            history.append(now)
             return False
     
     def _cleanup_old_entries(self, now: float):
@@ -153,8 +149,18 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if request.url.path in ["/health"]:
             return await call_next(request)
         
-        client_id = self._get_client_id(request)
-        if self._is_rate_limited(client_id):
+        try:
+            client_id = self._get_client_id(request)
+        except HTTPException as exc:
+            return JSONResponse(
+                status_code=exc.status_code,
+                content={
+                    "error": exc.detail,
+                    "error_code": "CLIENT_INFO_REQUIRED",
+                },
+            )
+        
+        if await self._is_rate_limited(client_id):
             return JSONResponse(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 content={
@@ -176,7 +182,6 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         # Security headers
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
-        response.headers["X-XSS-Protection"] = "1; mode=block"
         
         # HSTS header only in production
         if settings.environment == "production" or (not settings.debug and settings.environment != "development"):

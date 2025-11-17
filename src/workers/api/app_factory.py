@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import Optional, Set, Awaitable
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
@@ -50,6 +50,7 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
     # leaking state across isolates.
     db_instance: Optional[Database] = None
     queue_producer: Optional[QueueProducer] = None
+    app_tasks: Set[asyncio.Task] = set()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -95,7 +96,7 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
             try:
                 current_task = asyncio.current_task()
                 all_tasks = [
-                    task for task in asyncio.all_tasks()
+                    task for task in app_tasks
                     if task is not current_task and not task.done()
                 ]
 
@@ -178,8 +179,19 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
         lifespan=lifespan,
     )
 
-    if Path("static").exists():
-        app.mount("/static", StaticFiles(directory="static"), name="static")
+    def register_background_task(coro: Awaitable) -> asyncio.Task:
+        """Create and register a background task tied to this app instance."""
+        task = asyncio.create_task(coro)
+        app_tasks.add(task)
+        task.add_done_callback(app_tasks.discard)
+        return task
+
+    app.state.register_background_task = register_background_task
+
+    module_dir = Path(__file__).resolve().parent
+    static_dir = module_dir / "static"
+    if static_dir.exists():
+        app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
     from .web import router as web_router
     from .public import router as public_router
@@ -208,7 +220,6 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
         )
 
     # Shared middleware stack for local + Worker runtimes.
-    app.add_middleware(RequestIDMiddleware)
     app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(AuthCookieMiddleware)
     app.add_middleware(
@@ -223,6 +234,7 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.add_middleware(RequestIDMiddleware)
 
     return app
 

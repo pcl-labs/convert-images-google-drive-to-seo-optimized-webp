@@ -4,15 +4,20 @@ Cloudflare Worker entrypoint that forwards requests into the shared FastAPI app.
 
 from __future__ import annotations
 
+import asyncio
+import logging
+
 from workers import WorkerEntrypoint
 
 # Lazily initialize the FastAPI app the first time a request hits the worker.
 fastapi_app = None
+_app_lock: asyncio.Lock = asyncio.Lock()
+_app_init_error: Exception | None = None
 
 
 class Default(WorkerEntrypoint):
     async def fetch(self, request):
-        global fastapi_app
+        global fastapi_app, _app_init_error
         
         # Import inside the handler to avoid startup CPU limit
         from workers.runtime import apply_worker_env
@@ -20,8 +25,24 @@ class Default(WorkerEntrypoint):
         from workers.asgi_adapter import handle_worker_request
         
         apply_worker_env(self.env)
-        if fastapi_app is None:
-            fastapi_app = create_app()
+
+        if fastapi_app is None and _app_init_error is None:
+            async with _app_lock:
+                if fastapi_app is None and _app_init_error is None:
+                    try:
+                        fastapi_app = create_app()
+                    except Exception as exc:
+                        logging.getLogger(__name__).exception(
+                            "Failed to initialize FastAPI app in worker",
+                            exc_info=True,
+                        )
+                        _app_init_error = exc
+                        raise
+
+        if _app_init_error is not None:
+            # Re-raise the initialization error for subsequent requests
+            raise _app_init_error
+
         return await handle_worker_request(fastapi_app, request, self.env, self.ctx)
     
     async def queue(self, batch, env):
@@ -38,8 +59,14 @@ class Default(WorkerEntrypoint):
         for message in batch.messages:
             try:
                 await handle_queue_message(message.body, db)
-                message.ack()
             except Exception as e:
                 # Log error and retry (Cloudflare will handle retries based on config)
                 print(f"Error processing queue message: {e}")
                 message.retry()
+                continue
+
+            # Only acknowledge after successful processing; if ack fails, log but do not retry
+            try:
+                message.ack()
+            except Exception as ack_exc:
+                print(f"Error acknowledging queue message: {ack_exc}")

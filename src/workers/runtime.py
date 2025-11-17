@@ -1,19 +1,29 @@
 """
 Helpers for adapting Cloudflare Worker bindings into our Settings object.
+
+NOTE: This module mutates process-wide environment variables so downstream
+code can rely on `os.environ`. When spawning subprocesses, build a sanitized
+environment explicitly rather than relying on these globals.
 """
 
 from __future__ import annotations
 
 import os
+import re
+import threading
 from typing import Any, Dict
 
-from api.config import Settings, replace_settings, settings as global_settings
+from api.config import Settings, replace_settings
 
 
 WORKER_DB_BINDING = "DB"
 WORKER_QUEUE_BINDING = "JOB_QUEUE"
 WORKER_DLQ_BINDING = "DLQ"
 WORKER_KV_BINDING = "KV"
+
+_ENV_LOCK = threading.Lock()
+_KEY_PATTERN = re.compile(r"^[A-Z0-9_]+$")
+_MAX_VALUE_LENGTH = 4096
 
 
 def _string_bindings_from_env(env: Any) -> Dict[str, str]:
@@ -64,8 +74,19 @@ def apply_worker_env(env: Any) -> Settings:
         "TRANSCRIPT_LANGS",
     }
     protected = {"PATH", "HOME", "USER", "SHELL", "LD_LIBRARY_PATH", "PYTHONPATH"}
+    sanitized: Dict[str, str] = {}
     for key, value in string_env.items():
         if key in allowed and key not in protected:
+            if not _KEY_PATTERN.match(key):
+                continue
+            if not isinstance(value, str):
+                continue
+            if len(value) > _MAX_VALUE_LENGTH or any(ord(ch) < 32 for ch in value):
+                continue
+            sanitized[key] = value
+
+    with _ENV_LOCK:
+        for key, value in sanitized.items():
             os.environ[key] = value
 
     worker_kwargs = {}

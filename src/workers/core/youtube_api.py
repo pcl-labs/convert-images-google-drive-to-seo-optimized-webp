@@ -69,7 +69,7 @@ def fetch_video_metadata(client: YouTubeClient, video_id: str) -> Dict[str, Any]
         "title": snippet.get("title") or "Untitled",
         "description": snippet.get("description") or "",
         "tags": tags,
-        "channel_title": snippet.get("channelTitle"),
+        "channel_title": snippet.get("channelTitle") or "",
     }
     metadata = {
         "video_id": video_id,

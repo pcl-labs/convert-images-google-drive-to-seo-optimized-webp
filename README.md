@@ -307,7 +307,7 @@ Set in `.env` or your shell as needed:
 
 **Required:**
 - `JWT_SECRET_KEY` (required) - Secret key for JWT token generation and encryption key derivation
-- `ENCRYPTION_KEY` (required in production) - Base64 URL-safe 32-byte Fernet key for encrypting sensitive data
+- `ENCRYPTION_KEY` (required in production) - Base64 URL-safe 32-byte key used by the ChaCha20-Poly1305 cipher for encrypting sensitive data
 
 **OAuth (optional):**
 - `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_REDIRECT_URI`
@@ -363,25 +363,18 @@ The application includes in-memory rate limiting middleware that tracks requests
 
 ### Token Encryption
 
-Google OAuth tokens (`access_token` and `refresh_token`) are encrypted at rest using a stream cipher with HMAC-SHA256-based keystream generation and authentication. **Cryptographic specification:**
+Google OAuth tokens (`access_token` and `refresh_token`) are encrypted at rest using [ChaCha20-Poly1305](https://cryptography.io/en/latest/hazmat/primitives/aead/#chacha20-poly1305) via the `cryptography` library. Each ciphertext is a URL-safe base64 string containing:
 
-- **Cipher type**: Stream cipher (XOR-based)
-- **Keystream generation**: HMAC-SHA256(key, nonce || counter) in counter mode (CTR-like), generating 32-byte blocks until sufficient keystream length
-- **Encryption**: Plaintext ⊕ keystream
-- **Authentication**: HMAC-SHA256(key, nonce || ciphertext) - 32-byte authentication tag
-- **Nonce**: 16-byte random nonce per record (stored with ciphertext)
-- **Format**: `base64(nonce || mac || ciphertext)`
+- Version byte
+- 96-bit nonce (randomly generated per encryption)
+- ChaCha20-Poly1305 ciphertext + authentication tag
 
-The cipher key comes from the `ENCRYPTION_KEY` environment variable (a base64-encoded 32 byte secret).
+The cipher key comes from the `ENCRYPTION_KEY` environment variable (a base64-encoded 32 byte key suitable for ChaCha20-Poly1305).
 
 **Key Management:**
-- Generate the key with `python -c "import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())"`
-- **Key Rotation**: rotate by deploying a new `ENCRYPTION_KEY` and re-linking accounts so new ciphertext overwrites the old values.
-  1. Generate a new `JWT_SECRET_KEY`
-  2. Re-authenticate all users with Google (they'll need to reconnect their Google accounts)
-  3. Old encrypted tokens cannot be decrypted with the new key
-  4. Alternatively, implement a migration script to decrypt with old key and re-encrypt with new key before rotating
-- **Backup**: Keep secure backups of `JWT_SECRET_KEY` - losing it means all encrypted tokens become unrecoverable
+- Generate the key with `python -c "import os, base64; print(base64.urlsafe_b64encode(os.urandom(32)).decode())"`
+- **Key Rotation**: deploy a new `ENCRYPTION_KEY`, then cycle user tokens (re-link Google integrations) or run a migration script that decrypts with the old key and re-encrypts with the new key. Once data is re-encrypted you can discard the old key.
+- **Backup**: Keep secure backups of both `JWT_SECRET_KEY` and `ENCRYPTION_KEY`; losing either means OAuth tokens become unrecoverable.
 
 ## License
 

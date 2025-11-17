@@ -1,14 +1,3 @@
-def _status_label(value: str) -> str:
-    mapping = {
-        "processing": "Running",
-        "pending": "Queued",
-        "queued": "Queued",
-        "completed": "Completed",
-        "failed": "Failed",
-        "cancelled": "Cancelled",
-    }
-    return mapping.get(value, (value or "").title())
-
 from fastapi import APIRouter, Request, Depends, Form, HTTPException, status
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, PlainTextResponse
 from starlette.templating import Jinja2Templates
@@ -67,6 +56,19 @@ from src.workers.core.constants import GOOGLE_SCOPE_DRIVE, GOOGLE_SCOPE_YOUTUBE,
 from .google_oauth import parse_google_scope_list, build_docs_service_for_user, build_drive_service_for_user
 from src.workers.core.google_async import execute_google_request
 from .drive_workspace import ensure_drive_workspace
+
+
+def _status_label(value: str) -> str:
+    mapping = {
+        "processing": "Running",
+        "pending": "Queued",
+        "queued": "Queued",
+        "completed": "Completed",
+        "failed": "Failed",
+        "cancelled": "Cancelled",
+    }
+    return mapping.get(value, (value or "").title())
+
 
 logger = logging.getLogger(__name__)
 
