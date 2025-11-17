@@ -51,6 +51,11 @@ class AuthCookieMiddleware(BaseHTTPMiddleware):
                         stored = await get_user_by_id(db, user_id)  # type: ignore
                         if stored:
                             stored_user_id = stored.get("user_id") or stored.get("id")
+                            if not stored_user_id:
+                                logger.warning(
+                                    "AuthCookieMiddleware: missing user_id in stored record",
+                                    extra={"token_user_id": user_id, "stored_record": stored},
+                                )
                             if stored_user_id and str(stored_user_id) != str(user_id):
                                 logger.warning(
                                     "AuthCookieMiddleware: token user mismatch",
