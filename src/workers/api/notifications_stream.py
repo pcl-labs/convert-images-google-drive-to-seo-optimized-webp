@@ -50,7 +50,23 @@ def notifications_stream_response(request, db: Database, user: Dict[str, Any]) -
                             try:
                                 context_payload = json.loads(context_payload)
                             except Exception:
-                                context_payload = {}
+                                logger.warning(
+                                    "notifications_stream_context_parse_failed",
+                                    exc_info=True,
+                                    extra={"notification_id": notification_id},
+                                )
+                                context_payload = None
+                        if context_payload is None:
+                            context_payload = {}
+                        elif not isinstance(context_payload, dict):
+                            logger.warning(
+                                "notifications_stream_context_invalid_type",
+                                extra={
+                                    "notification_id": notification_id,
+                                    "context_type": type(context_payload).__name__,
+                                },
+                            )
+                            context_payload = {}
                         payload = json.dumps({
                             "type": "notification.created",
                             "data": {

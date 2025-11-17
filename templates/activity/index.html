@@ -52,6 +52,19 @@
             href = `/dashboard/jobs/${context.job_id}`;
           }
         }
+        const isSafeHref = (value) => {
+          if (!value || typeof value !== 'string') return false;
+          if (value.startsWith('/')) return true;
+          try {
+            const urlObj = new URL(value, window.location.origin);
+            return urlObj.protocol === 'https:' || urlObj.protocol === 'http:';
+          } catch (e) {
+            return false;
+          }
+        };
+        if (!isSafeHref(href)) {
+          href = null;
+        }
         wrapper.innerHTML = `
           <div class="relative rounded-md px-3 py-2 text-sm ${alertClass}">
             <div>${escapeHtml(data.text)}</div>

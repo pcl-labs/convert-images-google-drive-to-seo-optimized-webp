@@ -1215,11 +1215,11 @@ async def process_drive_watch_renewal_job(
     try:
         await update_job_status(db, job_id, "processing", progress=make_progress("drive_watch_renewal"))
         window_minutes = max(int(getattr(settings, "drive_watch_renewal_window_minutes", 60) or 60), 1)
-        candidates = await watches_due_for_renewal(db, window_minutes)
+        candidates = await watches_due_for_renewal(db, window_minutes, user_id=user_id)
         renewed: List[str] = []
+        checked_count = 0
         for watch in candidates:
-            if watch.get("user_id") != user_id:
-                continue
+            checked_count += 1
             document_id = watch.get("document_id")
             drive_file_id = watch.get("drive_file_id")
             if not document_id or not drive_file_id:
@@ -1238,7 +1238,7 @@ async def process_drive_watch_renewal_job(
             job_id,
             {
                 "renewed_documents": renewed,
-                "checked": len([w for w in candidates if w.get("user_id") == user_id]),
+                "checked": checked_count,
             },
         )
         await update_job_status(db, job_id, "completed", progress=make_progress("completed"))

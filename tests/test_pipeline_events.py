@@ -1,4 +1,5 @@
 import os
+import json
 import asyncio
 import pytest
 
@@ -42,4 +43,17 @@ async def test_pipeline_events_round_trip(tmp_path, monkeypatch):
     assert events[0]["stage"] == "test"
     assert events[0]["data"].get("foo") == "bar"
     rows = await db.execute_all("SELECT * FROM notifications WHERE user_id = ?", ("user-1",))
-    assert rows
+    assert rows is not None
+    notifications = [dict(row) for row in rows]
+    assert len(notifications) == 1
+    notif = notifications[0]
+    assert notif.get("level") == "info"
+    assert notif.get("text") == "Test pipeline notification"
+    assert notif.get("user_id") == "user-1"
+    assert notif.get("event_id") is not None
+    assert notif.get("created_at") is not None
+    context = notif.get("context")
+    if isinstance(context, str):
+        context = json.loads(context)
+    assert isinstance(context, dict)
+    assert context.get("document_id") == "doc-1"

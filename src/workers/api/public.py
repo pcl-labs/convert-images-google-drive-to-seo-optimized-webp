@@ -152,11 +152,19 @@ async def drive_webhook(request: Request):
     if not watch:
         logger.warning("drive_webhook_unknown_channel", extra={"channel_id": channel_id})
         return PlainTextResponse("unknown channel", status_code=status.HTTP_202_ACCEPTED)
-    expected = build_channel_token(channel_id, watch.get("user_id"), watch.get("document_id"))
+    watch_user_id = watch.get("user_id")
+    document_id = watch.get("document_id")
+    if not watch_user_id or not document_id:
+        logger.error(
+            "drive_webhook_watch_missing_owner",
+            extra={"channel_id": channel_id, "document_id": document_id, "user_id": watch_user_id},
+        )
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Drive watch metadata missing owner")
+    expected = build_channel_token(channel_id, watch_user_id, document_id)
     if token != expected:
         logger.warning(
             "drive_webhook_invalid_token",
-            extra={"channel_id": channel_id, "document_id": watch.get("document_id")},
+            extra={"channel_id": channel_id, "document_id": document_id},
         )
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid webhook token")
     if resource_id and resource_id != watch.get("resource_id"):
@@ -164,7 +172,7 @@ async def drive_webhook(request: Request):
             "drive_webhook_resource_mismatch",
             extra={
                 "channel_id": channel_id,
-                "document_id": watch.get("document_id"),
+                "document_id": document_id,
                 "expected": watch.get("resource_id"),
                 "received": resource_id,
             },
@@ -172,7 +180,7 @@ async def drive_webhook(request: Request):
     expiration_header = request.headers.get("X-Goog-Channel-Expiration")
     expiration_iso = _parse_channel_expiration(expiration_header)
     if expiration_iso:
-        await update_watch_expiration(db, watch_id=watch.get("watch_id"), expiration=expiration_iso)
+        await update_watch_expiration(db, watch_id=watch.get("watch_id"), user_id=watch.get("user_id"), expiration=expiration_iso)
     resource_state = (request.headers.get("X-Goog-Resource-State") or "").lower()
     if resource_state == "sync":
         return PlainTextResponse("sync", status_code=status.HTTP_200_OK)
@@ -186,33 +194,33 @@ async def drive_webhook(request: Request):
         await create_job_extended(
             db,
             job_id,
-            watch["user_id"],
+            watch_user_id,
             job_type=JobType.DRIVE_CHANGE_POLL.value,
-            document_id=watch.get("document_id"),
-            payload={"document_ids": [watch.get("document_id")]},
+            document_id=document_id,
+            payload={"document_ids": [document_id]},
         )
     except Exception as exc:
         logger.error(
             "drive_webhook_job_create_failed",
             exc_info=True,
-            extra={"channel_id": channel_id, "document_id": watch.get("document_id")},
+            extra={"channel_id": channel_id, "document_id": document_id},
         )
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to enqueue drive poll") from exc
 
     message = {
         "job_id": job_id,
-        "user_id": watch.get("user_id"),
+        "user_id": watch_user_id,
         "job_type": JobType.DRIVE_CHANGE_POLL.value,
-        "document_ids": [watch.get("document_id")],
+        "document_ids": [document_id],
     }
     try:
         await notify_activity(
             db,
-            watch["user_id"],
+            watch_user_id,
             "info",
             "Drive edit detected; syncing document",
             context={
-                "document_id": watch.get("document_id"),
+                "document_id": document_id,
                 "job_id": job_id,
             },
         )
@@ -220,20 +228,20 @@ async def drive_webhook(request: Request):
         logger.warning(
             "drive_webhook_notify_failed",
             exc_info=True,
-            extra={"channel_id": channel_id, "document_id": watch.get("document_id")},
+            extra={"channel_id": channel_id, "document_id": document_id},
         )
-    if queue:
-        try:
-            await queue.send_generic(message)
-        except Exception as exc:
-            logger.error(
-                "drive_webhook_enqueue_failed",
-                exc_info=True,
-                extra={"channel_id": channel_id, "document_id": watch.get("document_id")},
-            )
-            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Queue unavailable") from exc
-    else:
-        logger.warning("drive_webhook_queue_missing", extra={"channel_id": channel_id})
+    if not queue:
+        logger.error("drive_webhook_queue_missing", extra={"channel_id": channel_id})
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Queue not configured")
+    try:
+        await queue.send_generic(message)
+    except Exception as exc:
+        logger.error(
+            "drive_webhook_enqueue_failed",
+            exc_info=True,
+            extra={"channel_id": channel_id, "document_id": document_id},
+        )
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Queue unavailable") from exc
     return PlainTextResponse("queued", status_code=status.HTTP_202_ACCEPTED)
 
 

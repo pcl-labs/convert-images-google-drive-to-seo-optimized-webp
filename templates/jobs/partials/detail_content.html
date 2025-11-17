@@ -6,15 +6,15 @@
 
 {% set header_actions %}
   <div class="flex w-full flex-col gap-2 sm:flex-row sm:justify-end">
-    <form hx-post="/dashboard/jobs/{{ job.id or job.job_id }}/retry" hx-headers='{"X-CSRF-Token":"{{ csrf_token }}"}' hx-swap="none" hx-on:htmx:afterOnLoad="window.dispatchEvent(new CustomEvent('toast',{detail:{type:'success',text:'Job retried'}}))">
+    <form hx-post="/dashboard/jobs/{{ job.id }}/retry" hx-headers='{"X-CSRF-Token":"{{ csrf_token }}"}' hx-swap="none" hx-on:htmx:afterOnLoad="window.dispatchEvent(new CustomEvent('toast',{detail:{type:'success',text:'Job retried'}}))">
       {{ button('Retry','secondary', extra_classes='w-full sm:w-auto') }}
     </form>
-    <form hx-delete="/dashboard/jobs/{{ job.id or job.job_id }}" hx-headers='{"X-CSRF-Token":"{{ csrf_token }}"}' hx-swap="none" hx-on:htmx:afterOnLoad="window.dispatchEvent(new CustomEvent('toast',{detail:{type:'success',text:'Job cancelled'}}))">
+    <form hx-delete="/dashboard/jobs/{{ job.id }}" hx-headers='{"X-CSRF-Token":"{{ csrf_token }}"}' hx-swap="none" hx-on:htmx:afterOnLoad="window.dispatchEvent(new CustomEvent('toast',{detail:{type:'success',text:'Job cancelled'}}))">
       {{ button('Cancel','destructive', extra_classes='w-full sm:w-auto') }}
     </form>
   </div>
 {% endset %}
-{{ page_header('Job ' ~ (job.id or job.job_id), 'Created ' ~ (job.created_at or 'unknown'), actions=header_actions) }}
+{{ page_header('Job ' ~ job.id, 'Created ' ~ (job.created_at or 'unknown'), actions=header_actions) }}
 
 {% call card(title='Metadata', actions='<div>' + badge(job.status_label or job.status, status=job.status) + '</div>') %}
   <dl class="grid gap-3 sm:grid-cols-2">
@@ -60,7 +60,7 @@
   <div id="job-status"
        class="space-y-2"
        data-status="{{ job.status }}"
-       hx-get="/dashboard/jobs/{{ job.id or job.job_id }}"
+       hx-get="/dashboard/jobs/{{ job.id }}"
        hx-trigger="every 2s[document.querySelector('#job-status') && document.querySelector('#job-status').dataset.status === 'processing']"
        hx-swap="outerHTML">
     {% if job.output %}
