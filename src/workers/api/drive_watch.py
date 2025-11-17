@@ -80,8 +80,12 @@ async def ensure_drive_watch(
     try:
         token = build_channel_token(channel_id, user_id, document_id)
     except RuntimeError as exc:
-        logger.error("drive_watch_token_missing_secret", extra={"user_id": user_id}, exc_info=True)
-        raise
+        logger.error(
+            "drive_watch_token_missing_secret",
+            exc_info=True,
+            extra={"user_id": user_id, "document_id": document_id, "channel_id": channel_id},
+        )
+        return None
     body = {
         "id": channel_id,
         "type": "web_hook",
