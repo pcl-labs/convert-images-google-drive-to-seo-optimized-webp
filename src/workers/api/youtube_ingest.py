@@ -11,6 +11,32 @@ from .google_oauth import build_youtube_service_for_user
 from ..core.youtube_captions import fetch_captions_text, YouTubeCaptionsError
 
 
+async def _safe_record_pipeline_event(
+    db,
+    user_id: str,
+    job_id: str,
+    *,
+    event_type: str,
+    stage: str,
+    status: str,
+    message: str,
+    data: Optional[Dict[str, Any]] = None,
+):
+    try:
+        await record_pipeline_event(
+            db,
+            user_id,
+            job_id,
+            event_type=event_type,
+            stage=stage,
+            status=status,
+            message=message,
+            data=data or {},
+        )
+    except Exception:
+        pass
+
+
 def _parse_document_metadata(doc: Dict[str, Any]) -> Dict[str, Any]:
     metadata = doc.get("metadata")
     if isinstance(metadata, str):
@@ -50,7 +76,7 @@ async def ingest_youtube_document(
     document = await get_document(db, document_id, user_id=user_id)
     if not document:
         raise ValueError("Document not found")
-    await record_pipeline_event(
+    await _safe_record_pipeline_event(
         db,
         user_id,
         job_id,
@@ -73,7 +99,7 @@ async def ingest_youtube_document(
         langs = langs_raw or ["en"]
 
     yt_service = await build_youtube_service_for_user(db, user_id)  # type: ignore
-    await record_pipeline_event(
+    await _safe_record_pipeline_event(
         db,
         user_id,
         job_id,
@@ -86,7 +112,7 @@ async def ingest_youtube_document(
     cap = await asyncio.to_thread(fetch_captions_text, yt_service, youtube_video_id, langs)
     if not cap.get("success"):
         raise YouTubeCaptionsError(cap.get("error") or "Captions unavailable for this video.")
-    await record_pipeline_event(
+    await _safe_record_pipeline_event(
         db,
         user_id,
         job_id,
@@ -147,7 +173,7 @@ async def ingest_youtube_document(
     if "title" not in frontmatter and payload_metadata.get("title"):
         frontmatter["title"] = payload_metadata.get("title")
 
-    await record_pipeline_event(
+    await _safe_record_pipeline_event(
         db,
         user_id,
         job_id,
@@ -167,7 +193,7 @@ async def ingest_youtube_document(
             "content_format": "youtube",
         },
     )
-    await record_pipeline_event(
+    await _safe_record_pipeline_event(
         db,
         user_id,
         job_id,
@@ -188,7 +214,7 @@ async def ingest_youtube_document(
         },
     }
 
-    await record_pipeline_event(
+    await _safe_record_pipeline_event(
         db,
         user_id,
         job_id,

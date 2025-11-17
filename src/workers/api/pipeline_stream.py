@@ -46,16 +46,41 @@ def pipeline_stream_response(
             while True:
                 if await request.is_disconnected():
                     break
-                events = await list_pipeline_events(
-                    db,
-                    user_id,
-                    job_id=job_id,
-                    after_sequence=last_sequence,
-                    limit=25,
-                )
+                try:
+                    events = await asyncio.wait_for(
+                        list_pipeline_events(
+                            db,
+                            user_id,
+                            job_id=job_id,
+                            after_sequence=last_sequence,
+                            limit=25,
+                        ),
+                        timeout=5.0,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "pipeline_stream list_pipeline_events timed out",
+                        extra={
+                            "user_id": user_id,
+                            "job_id": job_id,
+                            "after_sequence": last_sequence,
+                        },
+                    )
+                    events = []
                 if events:
                     for event in events:
-                        last_sequence = event.get("sequence")
+                        seq = event.get("sequence")
+                        if isinstance(seq, int):
+                            last_sequence = seq
+                        else:
+                            logger.debug(
+                                "pipeline_stream: skipping event with invalid sequence",
+                                extra={
+                                    "user_id": user_id,
+                                    "job_id": job_id,
+                                    "sequence": seq,
+                                },
+                            )
                         payload = json.dumps({
                             "type": "pipeline.event",
                             "data": event,

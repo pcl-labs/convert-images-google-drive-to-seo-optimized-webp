@@ -528,7 +528,19 @@ class DriveWorkspaceSyncService:
                 data={"document_id": document.get("document_id"), "drive_file_id": file_id, "revision_id": revision_id},
             )
             if on_change:
-                await on_change(document, revision_id, drive_meta or {})
+                try:
+                    await on_change(document, revision_id, drive_meta or {})
+                except Exception as exc:
+                    logger.error(
+                        "drive_sync_on_change_failed",
+                        exc_info=True,
+                        extra={
+                            "document_id": document.get("document_id"),
+                            "drive_file_id": file_id,
+                            "revision_id": revision_id,
+                            "error": str(exc),
+                        },
+                    )
 
         await self._emit(
             "drive.sync.scan",
