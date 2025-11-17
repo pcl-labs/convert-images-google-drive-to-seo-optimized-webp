@@ -45,21 +45,7 @@
     {% endcall %}
 
     {% call card(title='Ingest YouTube Video') %}
-      <p class="text-xs text-contentMuted mb-2">Capture transcripts + metadata for AI blog generation.</p>
-      <div class="flex items-center justify-between mb-3">
-        <small class="text-contentMuted">Requires YouTube scopes</small>
-        {% if youtube_connected %}
-          {% from 'components/elements/badge.html' import badge %}
-          {{ badge('Connected', status='completed') }}
-        {% else %}
-          <a href="/auth/google/start?integration=youtube&redirect=/dashboard" class="text-xs text-primary hover:text-primary/80">Connect YouTube</a>
-        {% endif %}
-      </div>
-      <form class="space-y-3" hx-post="/dashboard/documents/youtube" hx-target="#dashboard-flash" hx-swap="innerHTML">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-        {{ input('youtube_url', label='YouTube URL', type='url', placeholder='https://www.youtube.com/watch?v=...', attrs='required' + (' disabled' if not youtube_connected else '')) }}
-        {{ button('Queue Transcript & Chapters', variant='primary', attrs='type=\"submit\" class=\"w-full\"' + (' disabled' if not youtube_connected else '')) }}
-      </form>
+      {% include 'dashboard/partials/youtube_ingest_panel.html' %}
     {% endcall %}
 
     {% call card(title='Paste Raw Text') %}
@@ -75,35 +61,6 @@
       </form>
     {% endcall %}
   </div>
-
-  {% call card(title="Launch workflows") %}
-    <p class="text-sm text-content">
-      Run Drive optimizations or blog generation jobs once content is registered. Watch the stats above and trigger work from the API or CLI when drafts are ready.
-    </p>
-    <div class="mt-3 flex flex-wrap gap-2">
-      <a href="/dashboard/documents" class="btn-primary">View documents</a>
-      <a href="/dashboard/integrations" class="btn-secondary">Manage integrations</a>
-    </div>
-  {% endcall %}
-
-  {% call card(title="Latest activity", actions='<a href="/api/v1/jobs?limit=20" class="text-sm text-primary hover:text-primary/80" target="_blank" rel="noopener">Open Activity API</a>') %}
-    <p class="text-sm text-content">
-      Inspect job history directly from the API. Responses include pagination, status filters, and document IDs so you can script monitoring or plug into your own dashboards.
-    </p>
-    <div class="mt-3 flex flex-wrap gap-2 text-xs text-contentMuted">
-      <span class="inline-flex items-center rounded-full border border-border px-3 py-1 uppercase tracking-wide">API-first</span>
-      <span class="inline-flex items-center rounded-full border border-border px-3 py-1 uppercase tracking-wide">JSON output</span>
-      <span class="inline-flex items-center rounded-full border border-border px-3 py-1 uppercase tracking-wide">Mobile friendly</span>
-    </div>
-  {% endcall %}
-
-  {% call card(title="Developer Docs") %}
-    <div class="flex flex-wrap gap-3 text-sm">
-      <a href="/docs" class="btn-secondary">Swagger UI</a>
-      <a href="/redoc" class="btn-secondary">ReDoc</a>
-      <a href="/openapi.json" class="btn-secondary">OpenAPI JSON</a>
-      <a href="/api" class="btn-secondary">API Index</a>
-    </div>
-  {% endcall %}
 {% endcall %}
 {% endblock %}
+

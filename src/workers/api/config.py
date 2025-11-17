@@ -95,12 +95,16 @@ class Settings:
 
     cors_origins: List[str] = field(default_factory=lambda: ["http://localhost:8000"])
     transcript_langs: List[str] = field(default_factory=lambda: ["en"])
+    enable_drive_pipeline: bool = True
+    static_files_dir: str = "./static"
 
     def __post_init__(self) -> None:
         self.environment = (self.environment or "development").lower()
         self.debug = _bool(self.debug)
         self.jwt_use_cookies = _bool(self.jwt_use_cookies)
         self.use_inline_queue = _bool(self.use_inline_queue)
+        self.enable_drive_pipeline = _bool(self.enable_drive_pipeline)
+        self.static_files_dir = str(self.static_files_dir or "./static")
         self.rate_limit_per_minute = _int(self.rate_limit_per_minute, 60)
         self.rate_limit_per_hour = _int(self.rate_limit_per_hour, 1000)
         self.api_key_length = _int(self.api_key_length, 32)

@@ -1,0 +1,150 @@
+{% from 'components/elements/input.html' import input %}
+{% from 'components/elements/button.html' import button %}
+{% from 'components/elements/badge.html' import badge %}
+<div id="youtube-ingest-panel" x-data="youtubeIngestPanel({
+    jobId: {{ (ingest_job.job_id if ingest_job else None)|tojson }},
+    initialEvents: {{ (ingest_events or [])|tojson }},
+    connected: {{ (youtube_connected)|tojson }}
+  })" x-init="init()" class="space-y-4">
+  {% if flash %}
+    {% set flash_kind = 'success' if flash.status == 'success' else 'error' %}
+    {% set flash_message = flash.message %}
+    {% include 'documents/partials/flash.html' %}
+  {% endif %}
+  <div class="space-y-3">
+    <p class="text-xs text-contentMuted">Paste any YouTube link to kick off transcript + metadata ingestion.</p>
+    <div class="flex items-center justify-between text-xs text-contentMuted">
+      <span>Requires YouTube scopes</span>
+      {% if youtube_connected %}
+        {{ badge('Connected', status='completed') }}
+      {% else %}
+        <a href="/auth/google/start?integration=youtube&redirect=/dashboard" class="text-primary hover:text-primary/80">Connect Google</a>
+      {% endif %}
+    </div>
+    <form class="space-y-3" hx-post="/dashboard/documents/youtube" hx-target="#youtube-ingest-panel" hx-swap="outerHTML">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+      {{ input('youtube_url', label='YouTube URL', type='url', placeholder='https://www.youtube.com/watch?v=...', attrs='required' + (' disabled' if not youtube_connected else '')) }}
+      {{ button('Start Ingest', variant='primary', attrs='type="submit" class="w-full"' + (' disabled' if not youtube_connected else '')) }}
+    </form>
+  </div>
+  <div class="surface-muted rounded-lg p-4" x-show="jobId" x-transition>
+    <div class="flex items-center justify-between text-xs text-contentMuted">
+      <span>Live status</span>
+      <span x-text="jobId ? ('Job ' + jobId) : ''"></span>
+    </div>
+    <div class="mt-3 space-y-3" x-cloak>
+      <template x-if="events.length === 0">
+        <p class="text-sm text-contentMuted">Waiting for pipeline events...</p>
+      </template>
+      <template x-for="event in events" :key="event.event_id">
+        <div class="border border-border rounded-lg p-3 space-y-1">
+          <div class="flex items-center justify-between text-xs">
+            <span class="font-semibold" x-text="event.stage || event.event_type"></span>
+            <span class="text-contentMuted" x-text="event.created_at ? new Date(event.created_at).toLocaleTimeString() : ''"></span>
+          </div>
+          <div class="text-sm" x-text="event.message || '...' "></div>
+          <div class="text-xs text-contentMuted">
+            <span class="uppercase tracking-wide" x-text="event.status || ''"></span>
+            <template x-if="event.data && event.data.video_id">
+              <span class="ml-2" x-text="'Video ' + event.data.video_id"></span>
+            </template>
+          </div>
+        </div>
+      </template>
+    </div>
+  </div>
+</div>
+<script>
+if(!window.__youtubeIngestInit){
+  const cleanupPanel = (panel) => {
+    if(!panel){
+      return;
+    }
+    const component = panel.__x;
+    if(component && component.$data && typeof component.$data.destroy === 'function'){
+      try {
+        component.$data.destroy();
+      } catch (err) {
+        console.warn('Failed to cleanup YouTube ingest panel', err);
+      }
+    }
+  };
+  document.addEventListener('alpine:init', () => {
+    Alpine.data('youtubeIngestPanel', (config) => ({
+      jobId: config.jobId || null,
+      events: config.initialEvents || [],
+      connected: !!config.connected,
+      es: null,
+      connecting: false,
+      init(){
+        if(this.jobId){
+          this.startStream();
+        }
+      },
+      startStream(){
+        if(!this.jobId || this.connecting){
+          return;
+        }
+        this.connecting = true;
+        const url = `/api/pipelines/stream?job_id=${this.jobId}`;
+        this.es = new EventSource(url);
+        this.es.onopen = () => {
+          this.connecting = false;
+        };
+        this.es.onmessage = (evt) => {
+          try {
+            const payload = JSON.parse(evt.data || '{}');
+            if(payload.type !== 'pipeline.event' || !payload.data){
+              return;
+            }
+            if(this.jobId && payload.data.job_id !== this.jobId){
+              return;
+            }
+            this.upsertEvent(payload.data);
+          } catch (err) {
+            console.error('Pipeline stream parse error', err);
+          }
+        };
+        this.es.onerror = () => {
+          if(this.es){
+            this.es.close();
+            this.es = null;
+          }
+          this.connecting = false;
+          if(this.jobId){
+            setTimeout(() => this.startStream(), 2000);
+          }
+        };
+      },
+      upsertEvent(evt){
+        if(!evt){
+          return;
+        }
+        const idx = this.events.findIndex((item) => item.event_id === evt.event_id);
+        if(idx >= 0){
+          this.events.splice(idx, 1, evt);
+        } else {
+          this.events.push(evt);
+          this.events.sort((a, b) => (a.sequence || 0) - (b.sequence || 0));
+        }
+      },
+      destroy(){
+        if(this.es){
+          this.es.close();
+          this.es = null;
+        }
+      }
+    }));
+  });
+  window.addEventListener('beforeunload', () => {
+    document.querySelectorAll('#youtube-ingest-panel').forEach(cleanupPanel);
+  });
+  document.addEventListener('htmx:beforeSwap', (event) => {
+    const target = event.detail && event.detail.target;
+    if(target && target.id === 'youtube-ingest-panel'){
+      cleanupPanel(target);
+    }
+  });
+  window.__youtubeIngestInit = true;
+}
+</script>

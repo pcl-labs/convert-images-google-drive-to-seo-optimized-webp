@@ -5,17 +5,25 @@
 {% call page_container() %}
   {{ page_header(
     'Documents',
-    'Mirror your Drive workspace and jump into synced drafts.',
+    'Mirror your Drive workspace, preview MDX drafts, and jump back into Drive whenever you need.',
     actions='<a href="/dashboard" class="btn-primary">New ingest</a>'
   ) }}
 
-  {% if drive_sync_overview %}
-    {% include 'documents/partials/drive_browser.html' %}
-  {% endif %}
+  <div class="space-y-6">
+    {% if drive_sync_overview %}
+      {% include 'documents/partials/drive_browser.html' %}
+    {% endif %}
 
-  {% from 'components/elements/card.html' import card %}
-  {% call card(title='All Documents', actions='<p class="text-xs text-contentMuted">' ~ total_documents ~ ' total</p><p class="text-xs text-contentMuted">Use Document IDs when scheduling optimization or blog generation jobs.</p>') %}
-    {% include "documents/partials/list.html" %}
-  {% endcall %}
+    <section class="space-y-3">
+      <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h2 class="text-lg font-semibold text-content">Workspace library</h2>
+          <p class="text-sm text-contentMuted">Each card mirrors a Drive folder with its Google Doc + media kit.</p>
+        </div>
+        <p class="text-xs text-contentMuted">{{ total_documents }} total documents</p>
+      </div>
+      {% include "documents/partials/list.html" %}
+    </section>
+  </div>
 {% endcall %}
 {% endblock %}

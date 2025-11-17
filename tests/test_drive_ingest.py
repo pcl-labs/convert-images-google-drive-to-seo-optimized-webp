@@ -169,6 +169,12 @@ async def test_drive_change_poll_marks_external_and_triggers_ingest(monkeypatch)
         "src.workers.consumer.build_drive_service_for_user",
         AsyncMock(return_value=drive_stub),
     )
+    # DriveChangeSyncService in drive_workspace also calls build_drive_service_for_user
+    # directly; patch it as well so the test does not require a real Drive token.
+    monkeypatch.setattr(
+        "src.workers.api.drive_workspace.build_drive_service_for_user",
+        AsyncMock(return_value=drive_stub),
+    )
     called = AsyncMock()
     monkeypatch.setattr("src.workers.consumer.process_ingest_drive_job", called)
 

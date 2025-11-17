@@ -10,8 +10,8 @@ from urllib.parse import urlencode
 
 from simple_http import AsyncSimpleClient, HTTPStatusError, RequestError
 
-from ..core.constants import GOOGLE_INTEGRATION_SCOPES
-from ..core.google_clients import GoogleDocsClient, GoogleDriveClient, OAuthToken, YouTubeClient
+from src.workers.core.constants import GOOGLE_INTEGRATION_SCOPES
+from src.workers.core.google_clients import GoogleDocsClient, GoogleDriveClient, OAuthToken, YouTubeClient
 
 from .config import settings
 from .database import Database, get_google_token, upsert_google_token
