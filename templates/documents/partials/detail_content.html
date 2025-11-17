@@ -198,11 +198,11 @@
     switch (event.key) {
       case 'ArrowLeft':
         event.preventDefault();
-        targetIndex = currentIndex > 0 ? currentIndex - 1 : tabs.length - 1;
+        targetIndex = currentIndex > 0 ? currentIndex - 1 : VERSION_TABS.length - 1;
         break;
       case 'ArrowRight':
         event.preventDefault();
-        targetIndex = currentIndex < tabs.length - 1 ? currentIndex + 1 : 0;
+        targetIndex = currentIndex < VERSION_TABS.length - 1 ? currentIndex + 1 : 0;
         break;
       case 'Home':
         event.preventDefault();
@@ -210,7 +210,7 @@
         break;
       case 'End':
         event.preventDefault();
-        targetIndex = tabs.length - 1;
+        targetIndex = VERSION_TABS.length - 1;
         break;
       default:
         return;

@@ -1241,8 +1241,12 @@ async def dashboard_document_export(
                     message,
                     context={"document_id": document_id, "href": f"/dashboard/documents/{document_id}"},
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning(
+                    "drive_export_notify_failed",
+                    exc_info=True,
+                    extra={"document_id": document_id, "user_id": user["user_id"], "error": str(exc)},
+                )
             return _render_flash(request, message, "success")
         except HTTPException as exc:
             return _render_flash(request, exc.detail, "error", exc.status_code)
