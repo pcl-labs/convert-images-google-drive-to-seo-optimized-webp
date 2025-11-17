@@ -1,0 +1,9 @@
+{% from 'components/layout/page.html' import page_container, page_header %}
+<div id="documents-page-root"
+     data-documents-page
+     hx-get="{{ request.url.path }}{% if request.query_params %}?{{ request.query_params|urlencode }}{% endif %}"
+     hx-target="#documents-page-root"
+     hx-swap="outerHTML"
+     hx-trigger="refreshDocuments">
+  {% include 'documents/partials/index_content.html' %}
+</div>

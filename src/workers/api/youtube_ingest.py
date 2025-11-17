@@ -25,6 +25,9 @@ async def _safe_record_pipeline_event(
     status: str,
     message: str,
     data: Optional[Dict[str, Any]] = None,
+    notify_level: Optional[str] = None,
+    notify_text: Optional[str] = None,
+    notify_context: Optional[Dict[str, Any]] = None,
 ):
     try:
         await record_pipeline_event(
@@ -36,6 +39,9 @@ async def _safe_record_pipeline_event(
             status=status,
             message=message,
             data=data or {},
+            notify_level=notify_level,
+            notify_text=notify_text,
+            notify_context=notify_context,
         )
     except Exception as exc:
         logger.error(
