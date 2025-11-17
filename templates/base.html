@@ -15,7 +15,7 @@
     <meta property="og:description" content="Create SEO Ranking blogs from YouTube. Ship fast, flexible, and SEO-optimized blogs with AI assist out of box. Quill brings the best of the LLM ecosystem.">
     <meta property="og:type" content="website">
     <meta property="og:image" content="{{ url_for('static', path='og/og-image.png') }}">
-    <meta property="og:url" content="https://<your-domain>">
+    <meta property="og:url" content="{{ (base_url or (request.url.scheme ~ '://' ~ request.url.netloc)) }}">
     <meta property="og:site_name" content="Quill">
 
     <!-- Twitter -->
