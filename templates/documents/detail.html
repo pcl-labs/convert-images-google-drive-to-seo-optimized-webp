@@ -58,7 +58,6 @@
   <div id="doc-flash" class="space-y-2"></div>
 
   <div class="grid gap-6 xl:grid-cols-12">
-    {% from 'components/elements/card.html' import card %}
     <section class="space-y-4 xl:col-span-7">
       {% call card(title='Live MDX Preview') %}
         {% include "documents/partials/version_viewer.html" %}
@@ -262,6 +261,7 @@
         <input type="hidden" name="version_id" value="{{ latest_version.version_id if latest_version }}">
         {{ button('Queue WordPress Export', variant='secondary', attrs='type="submit" class="w-full"' + (' disabled' if not version_selectable else '')) }}
       </form>
+      {% endcall %}
       {% call card(title='Activity for this document', actions='<a href="/api/v1/jobs?document_id=' ~ document.id ~ '" class="text-sm text-primary hover:text-primary/80" target="_blank" rel="noopener">Open Activity API</a>') %}
         <p class="text-sm text-content">
           Job history now lives in the Activity API so you can filter, export, or embed however you like. Use the link above to fetch a JSON response scoped to this document.

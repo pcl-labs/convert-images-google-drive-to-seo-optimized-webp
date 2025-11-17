@@ -188,11 +188,14 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
 
     app.state.register_background_task = register_background_task
 
-    module_dir = Path(__file__).resolve().parent
-    project_root = module_dir.parent.parent.parent
-    static_dir = project_root / "static"
+    static_dir_setting = Path(active_settings.static_files_dir).expanduser()
+    if not static_dir_setting.is_absolute():
+        static_dir_setting = Path.cwd() / static_dir_setting
+    static_dir = static_dir_setting.resolve()
     if static_dir.exists():
         app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+    else:
+        app_logger.warning("Static directory '%s' not found; skipping static mount", static_dir_setting)
 
     from .web import router as web_router
     from .public import router as public_router

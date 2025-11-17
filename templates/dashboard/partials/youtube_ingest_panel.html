@@ -56,6 +56,19 @@
 </div>
 <script>
 if(!window.__youtubeIngestInit){
+  const cleanupPanel = (panel) => {
+    if(!panel){
+      return;
+    }
+    const component = panel.__x;
+    if(component && component.$data && typeof component.$data.destroy === 'function'){
+      try {
+        component.$data.destroy();
+      } catch (err) {
+        console.warn('Failed to cleanup YouTube ingest panel', err);
+      }
+    }
+  };
   document.addEventListener('alpine:init', () => {
     Alpine.data('youtubeIngestPanel', (config) => ({
       jobId: config.jobId || null,
@@ -124,12 +137,13 @@ if(!window.__youtubeIngestInit){
     }));
   });
   window.addEventListener('beforeunload', () => {
-    document.querySelectorAll('#youtube-ingest-panel').forEach((panel) => {
-      const cmp = Alpine.$data(panel);
-      if(cmp && typeof cmp.destroy === 'function'){
-        cmp.destroy();
-      }
-    });
+    document.querySelectorAll('#youtube-ingest-panel').forEach(cleanupPanel);
+  });
+  document.addEventListener('htmx:beforeSwap', (event) => {
+    const target = event.detail && event.detail.target;
+    if(target && target.id === 'youtube-ingest-panel'){
+      cleanupPanel(target);
+    }
   });
   window.__youtubeIngestInit = true;
 }
