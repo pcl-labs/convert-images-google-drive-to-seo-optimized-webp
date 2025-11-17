@@ -402,7 +402,19 @@ async def start_ingest_youtube_job(db, queue, user_id: str, url: str) -> JobStat
                 extra={"job_id": job_id, "document_id": document_id, "error": str(exc)},
             )
             raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to ingest YouTube video inline.") from exc
-        await set_job_output(db, job_id, result["job_output"])
+        if isinstance(result, dict) and "job_output" in result:
+            await set_job_output(db, job_id, result["job_output"])
+        else:
+            logger.error(
+                "inline_youtube_missing_job_output",
+                extra={
+                    "job_id": job_id,
+                    "document_id": document_id,
+                    "result_type": type(result).__name__,
+                    "result_keys": list(result.keys()) if isinstance(result, dict) else None,
+                },
+            )
+            await set_job_output(db, job_id, {})
         await update_job_status(db, job_id, JobStatusEnum.COMPLETED.value, progress={"stage": "completed"})
         try:
             await notify_job(db, user_id=user_id, job_id=job_id, level="success", text=f"Ingested YouTube {video_id}")
