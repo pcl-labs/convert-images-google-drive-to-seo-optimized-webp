@@ -15,6 +15,7 @@ from src.workers.api.database import (
 )
 from src.workers.api.protected import start_ingest_drive_job
 from src.workers.consumer import process_ingest_drive_job, process_drive_change_poll_job
+from src.workers.api.drive_docs import sync_drive_doc_for_document
 
 
 class _StubRequest:
@@ -185,3 +186,48 @@ async def test_drive_change_poll_marks_external_and_triggers_ingest(monkeypatch)
     if isinstance(metadata, str):
         metadata = json.loads(metadata)
     assert metadata["drive"]["external_edit_detected"] is True
+
+
+@pytest.mark.asyncio
+async def test_sync_drive_doc_for_document_updates_drive(monkeypatch):
+    db = Database()
+    user_id = f"user-{uuid.uuid4()}"
+    await create_user(db, user_id=user_id, github_id=None, email=f"{user_id}@example.com")
+    document_id = str(uuid.uuid4())
+    file_id = "4" * 44
+    await create_document(
+        db,
+        document_id=document_id,
+        user_id=user_id,
+        source_type="text",
+        metadata={"drive": {"file_id": file_id}},
+        drive_file_id=file_id,
+        raw_text="Seed text",
+    )
+
+    docs_stub = _StubDocsService("Previous text")
+    drive_stub = _StubDriveService("rev-sync")
+    monkeypatch.setattr(
+        "src.workers.api.drive_docs.build_docs_service_for_user",
+        AsyncMock(return_value=docs_stub),
+    )
+    monkeypatch.setattr(
+        "src.workers.api.drive_docs.build_drive_service_for_user",
+        AsyncMock(return_value=drive_stub),
+    )
+
+    await sync_drive_doc_for_document(
+        db,
+        user_id,
+        document_id,
+        {"metadata": {"drive_stage": "outline"}},
+    )
+    stored = await get_document(db, document_id, user_id=user_id)
+    assert stored.get("drive_revision_id") == "rev-sync"
+    metadata = stored.get("metadata")
+    if isinstance(metadata, str):
+        metadata = json.loads(metadata)
+    assert metadata["drive"]["stage"] == "outline"
+    assert docs_stub.updates, "Expected Docs batchUpdate call"
+    inserted = docs_stub.updates[0]["requests"][-1]["insertText"]["text"]
+    assert inserted == "Seed text"

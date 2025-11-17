@@ -45,13 +45,21 @@ def notifications_stream_response(request, db: Database, user: Dict[str, Any]) -
                             logger.warning(f"Notification missing ID field, skipping: {n}")
                             continue
                         last_sent = notification_id
+                        context_payload = n.get("context")
+                        if isinstance(context_payload, str):
+                            try:
+                                context_payload = json.loads(context_payload)
+                            except Exception:
+                                context_payload = {}
                         payload = json.dumps({
                             "type": "notification.created",
                             "data": {
                                 "id": notification_id,
                                 "level": n.get("level"),
                                 "text": n.get("text"),
+                                "title": n.get("title"),
                                 "created_at": n.get("created_at"),
+                                "context": context_payload or {},
                             },
                         })
                         yield f"data: {payload}\n\n"

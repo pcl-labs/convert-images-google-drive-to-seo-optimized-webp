@@ -16,6 +16,7 @@ from .database import (
     upsert_drive_workspace,
 )
 from .google_oauth import build_docs_service_for_user, build_drive_service_for_user
+from .drive_watch import ensure_drive_watch
 from src.workers.core.google_async import execute_google_request
 
 logger = get_logger(__name__)
@@ -44,6 +45,9 @@ async def _emit_pipeline_event(
     message: str,
     data: Optional[Dict[str, Any]] = None,
     event_type: str = "drive_workspace",
+    notify_level: Optional[str] = None,
+    notify_text: Optional[str] = None,
+    notify_context: Optional[Dict[str, Any]] = None,
 ):
     if not job_id:
         return
@@ -57,6 +61,9 @@ async def _emit_pipeline_event(
             status=status,
             message=message,
             data=data or {},
+            notify_level=notify_level,
+            notify_text=notify_text,
+            notify_context=notify_context,
         )
     except Exception:
         logger.debug("drive_workspace_pipeline_event_failed", exc_info=True)
@@ -406,7 +413,26 @@ async def link_document_drive_workspace(
             "folder_id": folder.get("id"),
         },
         event_type=event_type,
+        notify_level="success",
+        notify_text="Drive workspace linked",
+        notify_context={
+            "document_id": document_id,
+            "drive_file_id": file_info.get("id"),
+        },
     )
+    try:
+        await ensure_drive_watch(
+            db,
+            user_id=user_id,
+            document_id=document_id,
+            drive_file_id=file_info.get("id"),
+        )
+    except Exception as exc:
+        logger.warning(
+            "drive_watch_register_on_link_failed",
+            exc_info=True,
+            extra={"document_id": document_id, "drive_file_id": file_info.get("id"), "error": str(exc)},
+        )
     return drive_block
 
 
@@ -426,7 +452,17 @@ class DriveWorkspaceSyncService:
         self.job_id = job_id
         self.event_type = event_type
 
-    async def _emit(self, stage: str, status: str, message: str, data: Optional[Dict[str, Any]] = None):
+    async def _emit(
+        self,
+        stage: str,
+        status: str,
+        message: str,
+        data: Optional[Dict[str, Any]] = None,
+        *,
+        notify_level: Optional[str] = None,
+        notify_text: Optional[str] = None,
+        notify_context: Optional[Dict[str, Any]] = None,
+    ):
         await _emit_pipeline_event(
             self.db,
             self.user_id,
@@ -436,6 +472,9 @@ class DriveWorkspaceSyncService:
             message=message,
             data=data,
             event_type=self.event_type,
+            notify_level=notify_level,
+            notify_text=notify_text,
+            notify_context=notify_context,
         )
 
     async def _load_documents(self, document_ids: Optional[Iterable[str]]) -> List[Dict[str, Any]]:
@@ -489,6 +528,9 @@ class DriveWorkspaceSyncService:
                 "error",
                 "Drive not linked or access denied",
                 data={"error": str(exc)},
+                notify_level="error",
+                notify_text="Drive sync failed: Drive not linked",
+                notify_context={"error": str(exc)},
             )
             raise
         changed: List[Dict[str, Any]] = []
@@ -512,6 +554,12 @@ class DriveWorkspaceSyncService:
                     "error",
                     f"Failed to fetch Drive metadata for {file_id}",
                     data={"document_id": document.get("document_id"), "error": str(exc)},
+                    notify_level="error",
+                    notify_text=f"Drive sync failed for {document.get('document_id')}",
+                    notify_context={
+                        "document_id": document.get("document_id"),
+                        "drive_file_id": file_id,
+                    },
                 )
                 continue
             revision_id = (drive_meta or {}).get("headRevisionId")
@@ -526,6 +574,12 @@ class DriveWorkspaceSyncService:
                 "running",
                 "Detected external Drive edits",
                 data={"document_id": document.get("document_id"), "drive_file_id": file_id, "revision_id": revision_id},
+                notify_level="info",
+                notify_text="Drive edits detected",
+                notify_context={
+                    "document_id": document.get("document_id"),
+                    "drive_file_id": file_id,
+                },
             )
             if on_change:
                 try:

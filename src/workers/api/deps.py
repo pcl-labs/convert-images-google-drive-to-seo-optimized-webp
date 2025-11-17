@@ -45,6 +45,11 @@ def ensure_db() -> Database:
     return _db_instance
 
 
+def get_queue_producer() -> Optional[QueueProducer]:
+    with _queue_lock:
+        return _queue_producer
+
+
 def ensure_services() -> Tuple[Database, QueueProducer]:
     with _services_lock:
         if _db_instance is None or _queue_producer is None:

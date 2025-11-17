@@ -1,0 +1,12 @@
+{% from 'components/layout/page.html' import page_container %}
+<div id="document-detail-root"
+     data-document-detail
+     data-document-id="{{ document.id }}"
+     hx-get="{{ request.url.path }}"
+     hx-target="#document-detail-root"
+     hx-swap="outerHTML"
+     hx-trigger="refreshDocument">
+  {% call page_container() %}
+    {% include 'documents/partials/detail_content.html' %}
+  {% endcall %}
+</div>
