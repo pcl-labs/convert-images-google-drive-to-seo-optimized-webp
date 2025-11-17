@@ -1,19 +1,20 @@
 import asyncio
 import json
 import uuid
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import HTTPException
 
-from api.database import (
+from src.workers.api.database import (
     Database,
     create_user,
     create_document,
     create_job_extended,
     get_document,
 )
-from api.protected import start_ingest_drive_job
-from workers.consumer import process_ingest_drive_job, process_drive_change_poll_job
+from src.workers.api.protected import start_ingest_drive_job
+from src.workers.consumer import process_ingest_drive_job, process_drive_change_poll_job
 
 
 class _StubRequest:
@@ -124,14 +125,14 @@ async def test_process_ingest_drive_job_persists_text(monkeypatch):
     docs_stub = _StubDocsService("Hello from Drive")
     drive_stub = _StubDriveService("rev-2")
     monkeypatch.setattr(
-        "workers.consumer.build_docs_service_for_user",
-        pytest.AsyncMock(return_value=docs_stub),
+        "src.workers.consumer.build_docs_service_for_user",
+        AsyncMock(return_value=docs_stub),
     )
     monkeypatch.setattr(
-        "workers.consumer.build_drive_service_for_user",
-        pytest.AsyncMock(return_value=drive_stub),
+        "src.workers.consumer.build_drive_service_for_user",
+        AsyncMock(return_value=drive_stub),
     )
-    monkeypatch.setattr("workers.consumer.notify_job", pytest.AsyncMock(return_value=None))
+    monkeypatch.setattr("src.workers.consumer.notify_job", AsyncMock(return_value=None))
 
     await process_ingest_drive_job(db, job_id, user_id, document_id, file_id)
     stored = await get_document(db, document_id, user_id=user_id)
@@ -165,11 +166,11 @@ async def test_drive_change_poll_marks_external_and_triggers_ingest(monkeypatch)
 
     drive_stub = _StubDriveService("rev-9")
     monkeypatch.setattr(
-        "workers.consumer.build_drive_service_for_user",
-        pytest.AsyncMock(return_value=drive_stub),
+        "src.workers.consumer.build_drive_service_for_user",
+        AsyncMock(return_value=drive_stub),
     )
-    called = pytest.AsyncMock()
-    monkeypatch.setattr("workers.consumer.process_ingest_drive_job", called)
+    called = AsyncMock()
+    monkeypatch.setattr("src.workers.consumer.process_ingest_drive_job", called)
 
     await process_drive_change_poll_job(db, job_id, user_id, [document_id], queue_producer=None)
     assert called.await_count == 1

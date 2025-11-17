@@ -1,7 +1,7 @@
 import pytest
 
-from api.config import Settings
-from api.cloudflare_queue import QueueProducer
+from src.workers.api.config import Settings
+from src.workers.api.cloudflare_queue import QueueProducer
 
 
 @pytest.fixture(autouse=True)
@@ -88,11 +88,11 @@ def test_valid_api_config_passes():
 
 
 def test_queue_producer_skips_cloudflare_clients_without_account(monkeypatch):
-    monkeypatch.setattr("api.cloudflare_queue.settings.use_inline_queue", False)
-    monkeypatch.setattr("api.cloudflare_queue.settings.cloudflare_api_token", "token")
-    monkeypatch.setattr("api.cloudflare_queue.settings.cf_queue_name", "queue")
-    monkeypatch.setattr("api.cloudflare_queue.settings.cf_queue_dlq", "dlq")
-    monkeypatch.setattr("api.cloudflare_queue.settings.cloudflare_account_id", None)
+    monkeypatch.setattr("src.workers.api.cloudflare_queue.settings.use_inline_queue", False)
+    monkeypatch.setattr("src.workers.api.cloudflare_queue.settings.cloudflare_api_token", "token")
+    monkeypatch.setattr("src.workers.api.cloudflare_queue.settings.cf_queue_name", "queue")
+    monkeypatch.setattr("src.workers.api.cloudflare_queue.settings.cf_queue_dlq", "dlq")
+    monkeypatch.setattr("src.workers.api.cloudflare_queue.settings.cloudflare_account_id", None)
 
     producer = QueueProducer(queue=None, dlq=None)
     # Access properties to trigger initialization

@@ -37,6 +37,7 @@ pip install -r requirements.txt
      - `https://www.googleapis.com/auth/documents`
      - (YouTube ingestion continues to use `https://www.googleapis.com/auth/youtube.force-ssl`)
    - Download the credentials and save as `credentials.json` in the project root
+   - Quill now ships lightweight REST clients (see `src/workers/core/google_clients.py`) so you do **not** need `google-api-python-client` or `google-auth-httplib2` installed locally—only your OAuth credentials and the scopes above.
 
 ## Usage
 
@@ -306,7 +307,7 @@ Set in `.env` or your shell as needed:
 
 **Required:**
 - `JWT_SECRET_KEY` (required) - Secret key for JWT token generation and encryption key derivation
-- `ENCRYPTION_KEY` (required in production) - Base64 URL-safe 32-byte Fernet key for encrypting sensitive data
+- `ENCRYPTION_KEY` (required in production) - Base64 URL-safe 32-byte key used by the ChaCha20-Poly1305 cipher for encrypting sensitive data
 
 **OAuth (optional):**
 - `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_REDIRECT_URI`
@@ -333,17 +334,14 @@ For production, set `USE_INLINE_QUEUE=false` and provide `CLOUDFLARE_ACCOUNT_ID`
 
 ## Dependencies
 
-- `google-api-python-client`: Google Drive API client
-- `google-auth-httplib2`: Google authentication
-- `google-auth-oauthlib`: OAuth 2.0 authentication
-- `Pillow`: Image processing
-- `pillow-heif`: HEIC image support
+- `urllib` (standard library, wrapped in [`simple_http.py`](simple_http.py)): Lightweight HTTP client used for Google REST calls without third-party deps
+- `Pillow`: Image processing (convert HEIC/HEIF assets to JPEG/PNG before invoking the CLI/Worker)
 - `tqdm`: Progress bars
 - `fastapi`: Web API framework
 - `uvicorn`: ASGI server for FastAPI
 - `python-multipart`: Form data support
-- `pydantic` & `pydantic-settings`: Data validation and settings management (V2 compatible)
-- `cryptography`: Encryption support for sensitive data at rest
+- `pydantic`: Data validation for request/response models
+- `pyjwt`: JWT handling (HMAC-only)
 - `pytest`: Testing framework
 
 ## Security Features
@@ -365,16 +363,18 @@ The application includes in-memory rate limiting middleware that tracks requests
 
 ### Token Encryption
 
-Google OAuth tokens (`access_token` and `refresh_token`) are encrypted at rest using Fernet symmetric encryption. The encryption key is derived from `JWT_SECRET_KEY` using SHA256.
+Google OAuth tokens (`access_token` and `refresh_token`) are encrypted at rest using [ChaCha20-Poly1305](https://cryptography.io/en/latest/hazmat/primitives/aead/#chacha20-poly1305) via the `cryptography` library. Each ciphertext is a URL-safe base64 string containing:
+
+- Version byte
+- 96-bit nonce (randomly generated per encryption)
+- ChaCha20-Poly1305 ciphertext + authentication tag
+
+The cipher key comes from the `ENCRYPTION_KEY` environment variable (a base64-encoded 32 byte key suitable for ChaCha20-Poly1305).
 
 **Key Management:**
-- The encryption key is derived from `JWT_SECRET_KEY` - ensure this is a strong, randomly generated secret
-- **Key Rotation**: If you need to rotate `JWT_SECRET_KEY`:
-  1. Generate a new `JWT_SECRET_KEY`
-  2. Re-authenticate all users with Google (they'll need to reconnect their Google accounts)
-  3. Old encrypted tokens cannot be decrypted with the new key
-  4. Alternatively, implement a migration script to decrypt with old key and re-encrypt with new key before rotating
-- **Backup**: Keep secure backups of `JWT_SECRET_KEY` - losing it means all encrypted tokens become unrecoverable
+- Generate the key with `python -c "import os, base64; print(base64.urlsafe_b64encode(os.urandom(32)).decode())"`
+- **Key Rotation**: deploy a new `ENCRYPTION_KEY`, then cycle user tokens (re-link Google integrations) or run a migration script that decrypts with the old key and re-encrypts with the new key. Once data is re-encrypted you can discard the old key.
+- **Backup**: Keep secure backups of both `JWT_SECRET_KEY` and `ENCRYPTION_KEY`; losing either means OAuth tokens become unrecoverable.
 
 ## License
 

@@ -1,7 +1,10 @@
 # Deployment Guide for Cloudflare Workers
 
+## Python Dependencies
 
-### 5. Set Secrets
+Cloudflare's Python Workers runtime automatically detects and bundles Python dependencies from your project. Dependencies are defined in `pyproject.toml` and are automatically included during deployment. The worker bundles all necessary modules from your `src/workers/` directory and their dependencies.
+
+### Set Secrets
 
 ```bash
 # GitHub OAuth credentials
@@ -11,8 +14,8 @@ wrangler secret put GITHUB_CLIENT_SECRET
 # JWT secret (generate a strong random string)
 wrangler secret put JWT_SECRET_KEY
 
-# Encryption key for Fernet (32-byte base64 URL-safe). Generate with:
-# python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+# Encryption key for ChaCha20-Poly1305 (32-byte base64 URL-safe). Generate with:
+# python -c "import os, base64; print(base64.urlsafe_b64encode(os.urandom(32)).decode())"
 wrangler secret put ENCRYPTION_KEY
 
 # Google OAuth client (single client with Drive + YouTube scopes)
@@ -29,14 +32,14 @@ wrangler secret put CF_QUEUE_NAME
 wrangler secret put CF_QUEUE_DLQ
 ```
 
-### 6. Configure GitHub OAuth App
+### Configure GitHub OAuth App
 
 1. Go to GitHub Settings > Developer settings > OAuth Apps
 2. Create a new OAuth App
 3. Set Authorization callback URL to your deployed API URL + `/auth/github/callback`
 4. Copy Client ID and Client Secret
 
-### 7. Deploy
+### Deploy
 
 ```bash
 # Deploy the main API worker
@@ -46,7 +49,7 @@ wrangler deploy
 # Note: Queue consumer can be part of the same worker or separate
 ```
 
-### 8. Verify Deployment
+### Verify Deployment
 
 ```bash
 # Check health endpoint
@@ -89,7 +92,7 @@ These are set as secrets in Cloudflare Workers:
 - `GITHUB_CLIENT_ID` - GitHub OAuth Client ID (required)
 - `GITHUB_CLIENT_SECRET` - GitHub OAuth Client Secret (required)
 - `JWT_SECRET_KEY` - Secret key for JWT tokens (required)
-- `ENCRYPTION_KEY` - Base64 URL-safe 32-byte Fernet key for encrypting sensitive data at rest (required)
+- `ENCRYPTION_KEY` - Base64 URL-safe 32-byte key for ChaCha20-Poly1305 encryption (required)
 - `GITHUB_REDIRECT_URI` - OAuth redirect URI (optional, defaults to callback URL)
 - `ENVIRONMENT` - Environment name (optional, defaults to "production")
 - `DEBUG` - Enable debug mode (optional, defaults to "false")
@@ -112,6 +115,7 @@ For local development with the DB-backed inline queue:
 - Enable both **Google Drive API** and **YouTube Data API v3** on the same Google Cloud project.
 - Configure the OAuth consent screen with the scopes listed in `core/constants.py` (`GOOGLE_INTEGRATION_SCOPES`). Each integration (Drive, YouTube, Gmail) runs its own OAuth flow.
 - Users only link their Google account once; missing scopes cause the YouTube ingest endpoint (`/ingest/youtube`) to return `400` with a helpful message instead of falling back to unofficial transcript scraping.
+- The worker bundles lightweight REST clients (in `src/workers/core/google_clients.py`) that talk directly to the Drive, Docs, and YouTube APIs using `simple_http`. No `google-api-python-client` or `google-auth-httplib2` dependency is required in production anymore.
 
 ## Local Development
 
@@ -176,7 +180,7 @@ pytest --cov=. tests/
 - [ ] D1 database created and schema migrated
 - [ ] Queues created (`quill-jobs` and `quill-dlq`)
 - [ ] All secrets set via `wrangler secret put`
-  - [ ] ENCRYPTION_KEY set (Fernet key). Plan key rotation and data re-encryption outside of runtime.
+  - [ ] ENCRYPTION_KEY set (ChaCha20-Poly1305 key). Plan key rotation and data re-encryption outside of runtime.
 - [ ] Environment variables configured (`.env` for local, secrets for production)
 - [ ] `wrangler.toml` configured with queue bindings
 - [ ] Health endpoint responding

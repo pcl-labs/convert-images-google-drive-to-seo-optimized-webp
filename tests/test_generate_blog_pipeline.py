@@ -2,15 +2,15 @@ import asyncio
 import json
 import uuid
 
-from api.database import (
+from src.workers.api.database import (
     Database,
     create_document,
     create_job_extended,
     get_job,
     get_document,
 )
-from api.models import JobType
-from workers.consumer import process_generate_blog_job
+from src.workers.api.models import JobType
+from src.workers.consumer import process_generate_blog_job
 
 
 def test_process_generate_blog_job_creates_output():

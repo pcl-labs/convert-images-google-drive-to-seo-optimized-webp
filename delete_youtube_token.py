@@ -2,10 +2,19 @@
 """Delete YouTube token for a user to force reconnection."""
 import asyncio
 import sys
-from api.database import Database, delete_google_tokens
+from src.workers.api.database import Database, delete_google_tokens
 
 async def main():
-    user_id = sys.argv[1] if len(sys.argv) > 1 else "github_5694308"
+    if len(sys.argv) < 2:
+        print("Usage: delete_youtube_token.py <user_id>", file=sys.stderr)
+        sys.exit(1)
+
+    user_id = sys.argv[1]
+
+    if user_id == "user_id_placeholder":
+        print("Error: replace 'user_id_placeholder' with a real user_id to perform deletion.", file=sys.stderr)
+        sys.exit(1)
+
     try:
         db = Database()
         await delete_google_tokens(db, user_id, integration="youtube")
@@ -17,4 +26,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
