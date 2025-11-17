@@ -516,6 +516,7 @@ def _document_to_view(doc: dict) -> dict:
         "latest_title": frontmatter.get("title") if isinstance(frontmatter, dict) else None,
         "latest_generation": latest_generation,
         "created_at": doc.get("created_at"),
+        "raw_text": doc.get("raw_text"),
     }
 
 

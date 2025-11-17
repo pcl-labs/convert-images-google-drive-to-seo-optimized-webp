@@ -44,6 +44,7 @@ from .database import (
     list_document_versions,
     get_document_version,
     create_document_export,
+    set_job_output,
 )
 from .notifications import notify_job
 from .auth import create_user_api_key
@@ -61,6 +62,7 @@ from .exceptions import JobNotFoundError
 from ..core.drive_utils import extract_folder_id_from_input
 from ..core.google_clients import GoogleAPIError
 from ..core.youtube_api import fetch_video_metadata, YouTubeAPIError
+from ..core.youtube_captions import YouTubeCaptionsError
 from .deps import (
     ensure_db,
     ensure_services,
@@ -69,6 +71,8 @@ from .deps import (
 )
 from .utils import enqueue_job_with_guard
 from ..core.url_utils import parse_youtube_video_id
+from .drive_workspace import ensure_drive_workspace, ensure_document_drive_structure
+from .youtube_ingest import ingest_youtube_document
 from .database import get_usage_summary, list_usage_events, count_usage_events
 from fastapi import Query
 
@@ -366,6 +370,66 @@ async def start_ingest_youtube_job(db, queue, user_id: str, url: str) -> JobStat
             "duration_s": youtube_meta.get("duration_seconds"),
         },
     )
+    if settings.use_inline_queue:
+        inline_progress = {"stage": "ingesting_youtube"}
+        await update_job_status(db, job_id, JobStatusEnum.PROCESSING.value, progress=inline_progress)
+        try:
+            result = await ingest_youtube_document(
+                db,
+                job_id,
+                user_id,
+                document_id,
+                video_id,
+                youtube_meta,
+                frontmatter,
+                youtube_meta.get("duration_seconds"),
+            )
+        except YouTubeCaptionsError as exc:
+            await update_job_status(db, job_id, JobStatusEnum.FAILED.value, error=str(exc))
+            try:
+                await notify_job(db, user_id=user_id, job_id=job_id, level="error", text=f"YouTube ingestion failed: {exc}")
+            except Exception:
+                pass
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(exc))
+        except Exception as exc:
+            await update_job_status(db, job_id, JobStatusEnum.FAILED.value, error=str(exc))
+            try:
+                await notify_job(db, user_id=user_id, job_id=job_id, level="error", text="YouTube ingestion failed")
+            except Exception:
+                pass
+            logger.exception(
+                "inline_youtube_ingest_failed",
+                extra={"job_id": job_id, "document_id": document_id, "error": str(exc)},
+            )
+            raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to ingest YouTube video inline.") from exc
+        await set_job_output(db, job_id, result["job_output"])
+        await update_job_status(db, job_id, JobStatusEnum.COMPLETED.value, progress={"stage": "completed"})
+        try:
+            await notify_job(db, user_id=user_id, job_id=job_id, level="success", text=f"Ingested YouTube {video_id}")
+        except Exception:
+            pass
+        final_row = await get_job(db, job_id, user_id)
+        if not final_row:
+            raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Job not found after inline ingestion.")
+        progress = _parse_job_progress_model(final_row.get("progress", "{}"))
+        output = final_row.get("output")
+        if isinstance(output, str):
+            try:
+                output = json.loads(output)
+            except Exception:
+                output = None
+        completed_at = final_row.get("completed_at")
+        return JobStatus(
+            job_id=job_id,
+            user_id=user_id,
+            status=JobStatusEnum.COMPLETED,
+            progress=progress,
+            created_at=_parse_db_datetime(final_row.get("created_at")),
+            completed_at=_parse_db_datetime(completed_at) if completed_at else None,
+            job_type=JobType.INGEST_YOUTUBE.value,
+            document_id=document_id,
+            output=output,
+        )
     payload = {
         "job_id": job_id,
         "user_id": user_id,
