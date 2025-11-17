@@ -10,14 +10,11 @@ from urllib.parse import urlencode
 
 from simple_http import AsyncSimpleClient, HTTPStatusError, RequestError
 
-from google.oauth2.credentials import Credentials
-from googleapiclient.discovery import build
-
 from ..core.constants import GOOGLE_INTEGRATION_SCOPES
-from ..core.google_clients import GoogleDriveClient, OAuthToken, YouTubeClient
+from ..core.google_clients import GoogleDocsClient, GoogleDriveClient, OAuthToken, YouTubeClient
 
 from .config import settings
-from .database import Database, get_google_token, update_google_token_expiry, upsert_google_token
+from .database import Database, get_google_token, upsert_google_token
 
 logger = logging.getLogger(__name__)
 
@@ -231,99 +228,10 @@ async def build_youtube_service_for_user(db: Database, user_id: str) -> YouTubeC
     return YouTubeClient(token)
 
 
-async def _refresh_and_update_token(
-    db: Database,
-    user_id: str,
-    integration: str,
-    creds: Credentials,
-    scopes: List[str],
-) -> None:
-    """Refresh credentials and update stored token."""
-    import asyncio
-    loop = asyncio.get_running_loop()
-    from google.auth.transport.requests import Request
-    
-    def _refresh():
-        request = Request()
-        creds.refresh(request)
-        return creds
-    
-    refreshed_creds = await loop.run_in_executor(None, _refresh)
-    expiry_iso = None
-    if refreshed_creds.expiry:
-        expiry_iso = refreshed_creds.expiry.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
-    await update_google_token_expiry(
-        db,
-        user_id=user_id,
-        integration=integration,
-        access_token=refreshed_creds.token,
-        expiry=expiry_iso,
-    )
-
-
-async def _build_google_service_for_user(
-    db: Database,
-    user_id: str,
-    *,
-    integration: str,
-    missing_scope_message: str,
-    service_name: str,
-    service_version: str,
-):
-    """Shared helper that loads/refreshes user creds and returns a Google API client."""
-    integration_key = _normalize_integration(integration)
-    token_row = await get_google_token(db, user_id, integration_key)
-    if not token_row:
-        raise ValueError("Google account not linked for this integration")
-
-    scopes = parse_google_scope_list(token_row.get("scopes"))
-    required_scopes = _scopes_for_integration(integration_key)
-    if not all(scope in scopes for scope in required_scopes):
-        raise ValueError(missing_scope_message)
-
-    # Use the scopes that were actually granted (may include additional scopes like youtube.readonly)
-    # and restore stored expiry so google-auth can determine when to refresh
-    expiry_dt = None
-    raw_expiry = token_row.get("expiry")
-    if raw_expiry:
-        try:
-            expiry_dt = datetime.fromisoformat(str(raw_expiry).replace("Z", "+00:00"))
-        except ValueError:
-            expiry_dt = None
-    creds = Credentials(
-        token=token_row.get("access_token"),
-        refresh_token=token_row.get("refresh_token"),
-        token_uri="https://oauth2.googleapis.com/token",
-        client_id=settings.google_client_id,
-        client_secret=settings.google_client_secret,
-        scopes=scopes,  # Use actual granted scopes, not just requested ones
-        expiry=expiry_dt,
-    )
-
-    if not creds.valid:
-        if creds.expired and creds.refresh_token:
-            try:
-                await _refresh_and_update_token(db, user_id, integration_key, creds, scopes)
-            except Exception as e:
-                # Log refresh error and re-raise to surface credential failures to the caller
-                logger.warning(f"Token refresh had issues (may be scope-related): {e}")
-                raise
-        else:
-            raise ValueError("Google credentials invalid and no refresh token available")
-
-    return build(service_name, service_version, credentials=creds)
-
-
 async def build_docs_service_for_user(db: Database, user_id: str):
-    """Build a Google Docs v1 service using the Drive integration token."""
-    return await _build_google_service_for_user(
-        db,
-        user_id,
-        integration="drive",
-        missing_scope_message="Google account missing Docs access; reconnect Drive integration",
-        service_name="docs",
-        service_version="v1",
-    )
+    """Return a lightweight Google Docs client using the Drive integration token."""
+    token, _ = await _load_token_for_user(db, user_id, "drive")
+    return GoogleDocsClient(token)
 
 
 __all__ = [

@@ -37,6 +37,7 @@ pip install -r requirements.txt
      - `https://www.googleapis.com/auth/documents`
      - (YouTube ingestion continues to use `https://www.googleapis.com/auth/youtube.force-ssl`)
    - Download the credentials and save as `credentials.json` in the project root
+   - Quill now ships lightweight REST clients (see `src/workers/core/google_clients.py`) so you do **not** need `google-api-python-client` or `google-auth-httplib2` installed locally—only your OAuth credentials and the scopes above.
 
 ## Usage
 

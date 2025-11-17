@@ -115,6 +115,7 @@ For local development with the DB-backed inline queue:
 - Enable both **Google Drive API** and **YouTube Data API v3** on the same Google Cloud project.
 - Configure the OAuth consent screen with the scopes listed in `core/constants.py` (`GOOGLE_INTEGRATION_SCOPES`). Each integration (Drive, YouTube, Gmail) runs its own OAuth flow.
 - Users only link their Google account once; missing scopes cause the YouTube ingest endpoint (`/ingest/youtube`) to return `400` with a helpful message instead of falling back to unofficial transcript scraping.
+- The worker bundles lightweight REST clients (in `src/workers/core/google_clients.py`) that talk directly to the Drive, Docs, and YouTube APIs using `simple_http`. No `google-api-python-client` or `google-auth-httplib2` dependency is required in production anymore.
 
 ## Local Development
 

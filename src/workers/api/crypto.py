@@ -33,6 +33,7 @@ from .config import settings
 _KEY_BYTES: Optional[bytes] = None
 _KEY_ENCRYPTION: Optional[bytes] = None
 _KEY_MAC: Optional[bytes] = None
+_KEY_RAW: Optional[str] = None
 _KEY_LOCK = threading.Lock()
 _VERSION = 1
 _NONCE_SIZE = 16
@@ -69,14 +70,25 @@ def _derive_keys(master_key: bytes) -> tuple[bytes, bytes]:
 
 def _get_keys() -> tuple[bytes, bytes]:
     """Get derived encryption and MAC keys."""
-    global _KEY_BYTES, _KEY_ENCRYPTION, _KEY_MAC
-    if _KEY_ENCRYPTION is not None and _KEY_MAC is not None:
+    global _KEY_BYTES, _KEY_ENCRYPTION, _KEY_MAC, _KEY_RAW
+    current_key = (settings.encryption_key or "").strip()
+    if (
+        _KEY_ENCRYPTION is not None
+        and _KEY_MAC is not None
+        and _KEY_RAW == current_key
+    ):
         return _KEY_ENCRYPTION, _KEY_MAC
     with _KEY_LOCK:
-        if _KEY_ENCRYPTION is None or _KEY_MAC is None:
-            if _KEY_BYTES is None:
-                _KEY_BYTES = _decode_key()
+        current_key = (settings.encryption_key or "").strip()
+        if (
+            _KEY_ENCRYPTION is None
+            or _KEY_MAC is None
+            or _KEY_BYTES is None
+            or _KEY_RAW != current_key
+        ):
+            _KEY_BYTES = _decode_key()
             _KEY_ENCRYPTION, _KEY_MAC = _derive_keys(_KEY_BYTES)
+            _KEY_RAW = current_key
     return _KEY_ENCRYPTION, _KEY_MAC
 
 
