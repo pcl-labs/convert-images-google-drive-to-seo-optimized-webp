@@ -1697,7 +1697,14 @@ async def list_pipeline_events(
         if isinstance(payload, str) and payload:
             try:
                 event["data"] = json.loads(payload)
-            except Exception:
+            except (json.JSONDecodeError, ValueError) as exc:
+                logger.debug(
+                    "pipeline_events_json_decode_failed",
+                    extra={
+                        "sequence": event.get("sequence"),
+                        "event_id": event.get("event_id"),
+                    },
+                )
                 event["data"] = {}
         events.append(event)
     return events
