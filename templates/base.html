@@ -78,7 +78,65 @@
 
         // Notifications via SSE (replace polling)
         try {
+          const TOAST_STORAGE_KEY = '__toast_history_v1';
+          const MAX_TOAST_HISTORY = 200;
           window.__notifiedIds = new Set();
+
+          const pruneToastHistory = () => {
+            if (!window.__notifiedIds || window.__notifiedIds.size <= MAX_TOAST_HISTORY) {
+              return;
+            }
+            const removeCount = window.__notifiedIds.size - MAX_TOAST_HISTORY;
+            const iterator = window.__notifiedIds.values();
+            for (let i = 0; i < removeCount; i++) {
+              const next = iterator.next();
+              if (next.done) break;
+              window.__notifiedIds.delete(next.value);
+            }
+          };
+
+          const persistToastHistory = () => {
+            try {
+              if (!window.sessionStorage) return;
+              const keys = Array.from(window.__notifiedIds || []).slice(-MAX_TOAST_HISTORY);
+              window.sessionStorage.setItem(TOAST_STORAGE_KEY, JSON.stringify(keys));
+            } catch (err) {
+              if (console && console.warn) console.warn('Failed to persist toast history', err);
+            }
+          };
+
+          const loadToastHistory = () => {
+            let hydrated = false;
+            try {
+              if (!window.sessionStorage) return;
+              const raw = window.sessionStorage.getItem(TOAST_STORAGE_KEY);
+              if (!raw) return;
+              const parsed = JSON.parse(raw);
+              if (Array.isArray(parsed)) {
+                parsed.forEach((key) => {
+                  if (typeof key === 'string' && key) {
+                    window.__notifiedIds.add(key);
+                    hydrated = true;
+                  }
+                });
+              }
+              if (hydrated) {
+                pruneToastHistory();
+                persistToastHistory();
+              }
+            } catch (err) {
+              if (console && console.warn) console.warn('Failed to load toast history', err);
+            }
+          };
+
+          const rememberToastKey = (key) => {
+            if (!key) return;
+            window.__notifiedIds.add(key);
+            pruneToastHistory();
+            persistToastHistory();
+          };
+
+          loadToastHistory();
           // simple fixed-size hash (FNV-1a 32-bit) for dedupe key
           function hashKey(str){
             let h = 0x811c9dc5;
@@ -103,7 +161,7 @@
                   const n = msg.data;
                   const key = hashKey(`${n.id}:${n.level}:${n.text || ''}`);
                   if (window.__notifiedIds.has(key)) return;
-                  window.__notifiedIds.add(key);
+                  rememberToastKey(key);
                   const type = n.level === 'error' ? 'error' : (n.level === 'success' ? 'success' : 'info');
                   window.dispatchEvent(new CustomEvent('toast', { detail: { type, text: n.text } }));
                 }
