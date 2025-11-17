@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
@@ -9,6 +10,9 @@ from .config import settings
 from .database import get_document, update_document, record_usage_event, record_pipeline_event
 from .google_oauth import build_youtube_service_for_user
 from ..core.youtube_captions import fetch_captions_text, YouTubeCaptionsError
+
+
+logger = logging.getLogger(__name__)
 
 
 async def _safe_record_pipeline_event(
@@ -33,8 +37,19 @@ async def _safe_record_pipeline_event(
             message=message,
             data=data or {},
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.error(
+            "Failed to record pipeline event",
+            exc_info=True,
+            extra={
+                "user_id": user_id,
+                "job_id": job_id,
+                "event_type": event_type,
+                "stage": stage,
+                "status": status,
+                "message": message,
+            },
+        )
 
 
 def _parse_document_metadata(doc: Dict[str, Any]) -> Dict[str, Any]:
