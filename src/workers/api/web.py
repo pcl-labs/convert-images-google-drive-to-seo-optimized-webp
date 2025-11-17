@@ -50,7 +50,7 @@ from .protected import (
     enqueue_job_with_guard,
 )
 from .config import settings
-from .notifications import notify_job
+from .notifications import notify_job, notify_activity
 from .notifications_stream import notifications_stream_response
 from .pipeline_stream import pipeline_stream_response
 from .constants import COOKIE_OAUTH_STATE, COOKIE_GOOGLE_OAUTH_STATE
@@ -81,6 +81,7 @@ KIND_MAP = {
     "ingest_drive_folder": "Drive",
     "ingest_drive": "Drive",
     "drive_change_poll": "Drive",
+    "drive_watch_renewal": "Drive",
     "ingest_youtube": "YouTube",
     "ingest_text": "Text",
     "generate_blog": "Blog",
@@ -997,6 +998,10 @@ async def dashboard(request: Request, page: int = 1, user: dict = Depends(get_cu
     return resp
 
 
+def _is_htmx(request: Request) -> bool:
+    return request.headers.get("HX-Request") == "true"
+
+
 @router.get("/dashboard/documents", response_class=HTMLResponse)
 async def documents_page(request: Request, page: int = 1, user: dict = Depends(get_current_user)):
     db = ensure_db()
@@ -1033,7 +1038,8 @@ async def documents_page(request: Request, page: int = 1, user: dict = Depends(g
         "page_title": "Documents",
         "flash": None,
     }
-    resp = templates.TemplateResponse("documents/index.html", context)
+    template_name = "documents/index_fragment.html" if _is_htmx(request) else "documents/index.html"
+    resp = templates.TemplateResponse(template_name, context)
     if not request.cookies.get("csrf_token"):
         is_secure = _is_secure_request(request, settings)
         resp.set_cookie("csrf_token", csrf, httponly=True, samesite="lax", secure=is_secure)
@@ -1085,7 +1091,8 @@ async def document_detail_page(document_id: str, request: Request, user: dict = 
         "drive_meta": drive_meta,
         "page_title": title_hint or f"Document {document_id}",
     }
-    resp = templates.TemplateResponse("documents/detail.html", context)
+    template_name = "documents/detail_fragment.html" if _is_htmx(request) else "documents/detail.html"
+    resp = templates.TemplateResponse(template_name, context)
     if not request.cookies.get("csrf_token"):
         is_secure = _is_secure_request(request, settings)
         resp.set_cookie("csrf_token", csrf, httponly=True, samesite="lax", secure=is_secure)
@@ -1226,6 +1233,20 @@ async def dashboard_document_export(
         try:
             export_meta = await _export_version_to_drive(db, user["user_id"], doc, version)
             message = f"Google Docs updated • Revision {export_meta.get('revision_id') or 'n/a'}"
+            try:
+                await notify_activity(
+                    db,
+                    user["user_id"],
+                    "success",
+                    message,
+                    context={"document_id": document_id, "href": f"/dashboard/documents/{document_id}"},
+                )
+            except Exception as exc:
+                logger.warning(
+                    "drive_export_notify_failed",
+                    exc_info=True,
+                    extra={"document_id": document_id, "user_id": user["user_id"], "error": str(exc)},
+                )
             return _render_flash(request, message, "success")
         except HTTPException as exc:
             return _render_flash(request, exc.detail, "error", exc.status_code)
@@ -1386,7 +1407,8 @@ async def job_detail_partial(job_id: str, request: Request, user: dict = Depends
         "csrf_token": csrf,
         "user": user,
     }
-    resp = templates.TemplateResponse("jobs/detail.html", context)
+    template_name = "jobs/detail_fragment.html" if _is_htmx(request) else "jobs/detail.html"
+    resp = templates.TemplateResponse(template_name, context)
     if not request.cookies.get("csrf_token"):
         is_secure = _is_secure_request(request, settings)
         resp.set_cookie("csrf_token", csrf, httponly=True, samesite="lax", secure=is_secure)
@@ -1445,7 +1467,8 @@ async def jobs_page(request: Request, user: dict = Depends(get_current_user), pa
         "stats": stats or {},
         "load_error": load_error,
     }
-    resp = templates.TemplateResponse("jobs/index.html", context)
+    template_name = "jobs/index_fragment.html" if _is_htmx(request) else "jobs/index.html"
+    resp = templates.TemplateResponse(template_name, context)
     if not request.cookies.get("csrf_token"):
         is_secure = _is_secure_request(request, settings)
         resp.set_cookie("csrf_token", csrf, httponly=True, samesite="lax", secure=is_secure)
