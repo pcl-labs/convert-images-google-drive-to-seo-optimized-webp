@@ -18,7 +18,7 @@ from .models import (
     GenerateBlogRequest,
     GenerateBlogOptions,
 )
-from .steps import OutlineGenerateRequest, outline_generate
+from .steps import OutlineGenerateRequest, run_outline_generate
 from .deps import ensure_services, ensure_db, parse_job_progress, get_current_user
 from .auth import verify_jwt_token
 from .database import (
@@ -1266,35 +1266,24 @@ async def dashboard_outline_regenerate(
     user: dict = Depends(get_current_user),
 ):
     _validate_csrf(request, csrf_token)
+    db = ensure_db()
+    document = await get_document(db, document_id, user_id=user["user_id"])
+    if not document:
+        return _render_flash(request, "Document not found", "error", status.HTTP_404_NOT_FOUND)
     step_request = OutlineGenerateRequest(document_id=document_id)
-    async def _empty_receive() -> Any:
-        return {"type": "http.request", "body": b"", "more_body": False}
-    scope = {
-        "type": "http",
-        "asgi": {"version": "3.0"},
-        "http_version": "1.1",
-        "method": "POST",
-        "scheme": request.scope.get("scheme", "http"),
-        "path": "/dashboard/internal/outline",
-        "raw_path": b"/dashboard/internal/outline",
-        "root_path": request.scope.get("root_path", ""),
-        "query_string": b"",
-        "headers": [
-            (b"idempotency-key", uuid.uuid4().hex.encode("ascii")),
-        ],
-        "client": request.scope.get("client"),
-        "server": request.scope.get("server"),
-        "app": request.app,
-    }
-    step_req = Request(scope, _empty_receive)
     try:
-        await outline_generate(step_req, step_request, user)
+        await run_outline_generate(db, user["user_id"], step_request)
     except HTTPException as exc:
         detail = exc.detail if isinstance(exc.detail, str) else "Failed to regenerate outline"
         return _render_flash(request, detail, "error", exc.status_code)
     except Exception as exc:
         logger.exception("outline_regenerate_failed", extra={"document_id": document_id})
-        return _render_flash(request, f"Outline failed: {exc}", "error", status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return _render_flash(
+            request,
+            "Outline regeneration failed. Please try again.",
+            "error",
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
     return _render_flash(request, "Outline regenerated", "success")
 
 

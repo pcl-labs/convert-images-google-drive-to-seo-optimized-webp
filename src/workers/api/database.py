@@ -636,7 +636,9 @@ async def update_user_preferences(db: Database, user_id: str, preferences: Dict[
         (payload, user_id),
     )
     if result:
-        return dict(result)
+        row = dict(result)
+        row["preferences"] = _parse_preferences(row.get("preferences"))
+        return row
     raise DatabaseError("User not found for preferences update")
 
 
