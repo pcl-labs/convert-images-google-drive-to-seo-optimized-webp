@@ -121,10 +121,8 @@ class GoogleDriveClient:
         boundary = uuid.uuid4().hex
 
         def _part(name: str, filename: Optional[str], content_type: Optional[str], value) -> bytes:
-            disposition = f'Content-Disposition: form-data; name="{name}"'
-            if filename:
-                disposition += f'; filename="{filename}"'
-            headers = disposition + "\r\n"
+            # For multipart/related, only emit Content-Type for each part
+            headers = ""
             if content_type:
                 headers += f"Content-Type: {content_type}\r\n"
             headers += "\r\n"

@@ -20,7 +20,7 @@ def generate_outline(text: str, max_sections: int = 5) -> List[Dict[str, str]]:
     # Ensure positive section count
     try:
         max_sections = int(max_sections)
-    except Exception:
+    except (ValueError, TypeError):
         max_sections = 5
     if max_sections < 1:
         max_sections = 1
@@ -197,7 +197,7 @@ def organize_chapters(text: str, target_chapters: int = 4) -> List[Dict[str, str
     # Ensure positive chapters target
     try:
         target_chapters = int(target_chapters)
-    except Exception:
+    except (ValueError, TypeError):
         target_chapters = 4
     if target_chapters <= 0:
         target_chapters = 1

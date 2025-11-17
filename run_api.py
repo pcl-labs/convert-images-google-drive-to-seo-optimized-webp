@@ -30,19 +30,8 @@ if _workers_path.exists():
         sys.path.insert(0, workers_path_str)
 
 if __name__ == "__main__":
-    # Verify PYTHONPATH is set (should already be set above)
-    if _workers_path.exists():
-        workers_path_str = str(_workers_path.resolve())
-        current_pythonpath = os.environ.get("PYTHONPATH", "")
-        path_list = current_pythonpath.split(os.pathsep) if current_pythonpath else []
-        if workers_path_str not in path_list:
-            if current_pythonpath:
-                os.environ["PYTHONPATH"] = os.pathsep.join([workers_path_str, current_pythonpath])
-            else:
-                os.environ["PYTHONPATH"] = workers_path_str
-    
     uvicorn.run(
-        "src.workers.api.main:app",  # Full module path for proper package resolution
+        "api.main:app",  # Module path matches src/workers added to PYTHONPATH
         host=os.getenv("HOST", "127.0.0.1"),  # Default to localhost for security
         port=8000,
         reload=True,  # Auto-reload on code changes

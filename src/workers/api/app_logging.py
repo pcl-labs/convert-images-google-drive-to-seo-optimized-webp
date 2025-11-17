@@ -18,8 +18,9 @@ class JSONFormatter(logging.Formatter):
     
     def format(self, record: logging.LogRecord) -> str:
         """Format log record as JSON."""
-        # Extract safe fields first for fallback
-        timestamp = datetime.now(timezone.utc).isoformat()
+        # Extract safe fields first for fallback, using the record's original
+        # creation time (seconds since epoch) converted to UTC.
+        timestamp = datetime.fromtimestamp(record.created, timezone.utc).isoformat()
         level = record.levelname
         logger = record.name
         message = record.getMessage()

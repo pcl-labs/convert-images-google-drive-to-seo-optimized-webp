@@ -17,6 +17,11 @@ router = APIRouter()
 logger = get_logger(__name__)
 
 
+def _is_secure_request(request: Request) -> bool:
+    xf_proto = request.headers.get("x-forwarded-proto", "").lower()
+    return (xf_proto == "https") if xf_proto else (request.url.scheme == "https")
+
+
 def _get_github_oauth_redirect(request: Request) -> tuple[str, str]:
     if settings.base_url and settings.base_url.strip():
         stripped_base = settings.base_url.strip()
@@ -30,8 +35,7 @@ def _get_github_oauth_redirect(request: Request) -> tuple[str, str]:
 
 
 def _build_github_oauth_response(request: Request, auth_url: str, state: str) -> RedirectResponse:
-    xf_proto = request.headers.get("x-forwarded-proto", "").lower()
-    is_secure = (xf_proto == "https") if xf_proto else (request.url.scheme == "https")
+    is_secure = _is_secure_request(request)
     response = RedirectResponse(url=auth_url, status_code=status.HTTP_303_SEE_OTHER)
     response.set_cookie(
         key=COOKIE_OAUTH_STATE,
@@ -63,8 +67,7 @@ def _get_google_login_oauth_redirect(request: Request) -> tuple[str, str]:
 
 
 def _build_google_oauth_response(request: Request, auth_url: str, state: str) -> RedirectResponse:
-    xf_proto = request.headers.get("x-forwarded-proto", "").lower()
-    is_secure = (xf_proto == "https") if xf_proto else (request.url.scheme == "https")
+    is_secure = _is_secure_request(request)
     response = RedirectResponse(url=auth_url, status_code=status.HTTP_303_SEE_OTHER)
     response.set_cookie(
         key=COOKIE_GOOGLE_OAUTH_STATE,
@@ -80,8 +83,7 @@ def _build_google_oauth_response(request: Request, auth_url: str, state: str) ->
 
 def _build_logout_response(request: Request, *, redirect: str = "/") -> RedirectResponse:
     response = RedirectResponse(url=redirect, status_code=status.HTTP_302_FOUND)
-    xf_proto = request.headers.get("x-forwarded-proto", "").lower()
-    is_secure = (xf_proto == "https") if xf_proto else (request.url.scheme == "https")
+    is_secure = _is_secure_request(request)
     response.delete_cookie("access_token", path="/", samesite="lax", httponly=True, secure=is_secure)
     response.delete_cookie(COOKIE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
     response.delete_cookie(COOKIE_GOOGLE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
@@ -200,8 +202,7 @@ async def github_callback(code: str, state: str, request: Request):
         jwt_token, user = await authenticate_github(db, code)
         user_response = {"user_id": user["user_id"], "email": user.get("email"), "github_id": user.get("github_id")}
 
-        xf_proto = request.headers.get("x-forwarded-proto", "").lower()
-        is_secure = (xf_proto == "https") if xf_proto else (request.url.scheme == "https")
+        is_secure = _is_secure_request(request)
         if settings.jwt_use_cookies:
             max_age_seconds = settings.jwt_expiration_hours * 3600
             response = RedirectResponse(url="/dashboard", status_code=status.HTTP_302_FOUND)
@@ -244,8 +245,7 @@ async def google_login_callback(code: str, state: str, request: Request):
             "google_id": user.get("google_id"),
         }
 
-        xf_proto = request.headers.get("x-forwarded-proto", "").lower()
-        is_secure = (xf_proto == "https") if xf_proto else (request.url.scheme == "https")
+        is_secure = _is_secure_request(request)
         if settings.jwt_use_cookies:
             max_age_seconds = settings.jwt_expiration_hours * 3600
             response = RedirectResponse(url="/dashboard", status_code=status.HTTP_302_FOUND)
@@ -267,8 +267,7 @@ async def google_login_callback(code: str, state: str, request: Request):
     except (ValueError, AuthenticationError) as exc:
         # Expected auth errors: clear state cookie and return safe message
         logger.warning("Google callback failed: %s", exc)
-        xf_proto = request.headers.get("x-forwarded-proto", "").lower()
-        is_secure = (xf_proto == "https") if xf_proto else (request.url.scheme == "https")
+        is_secure = _is_secure_request(request)
         message = str(exc)
         if settings.jwt_use_cookies:
             response = RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
@@ -279,8 +278,7 @@ async def google_login_callback(code: str, state: str, request: Request):
     except Exception:
         # Unexpected errors: log with stack, clear state cookie, return generic message
         logger.exception("Google callback failed")
-        xf_proto = request.headers.get("x-forwarded-proto", "").lower()
-        is_secure = (xf_proto == "https") if xf_proto else (request.url.scheme == "https")
+        is_secure = _is_secure_request(request)
         if settings.jwt_use_cookies:
             response = RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
         else:

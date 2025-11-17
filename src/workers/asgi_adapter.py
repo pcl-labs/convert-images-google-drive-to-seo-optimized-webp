@@ -40,19 +40,11 @@ async def handle_worker_request(app, request, env, ctx):
     
     # Try to get raw bytes if available, otherwise encode with UTF-8 surrogateescape
     # to preserve all bytes without loss
-    raw_path_bytes = None
-    if hasattr(request, "scope") and isinstance(request.scope, dict):
-        raw_path_bytes = request.scope.get("raw_path")
-    if raw_path_bytes is None:
-        raw_path_bytes = getattr(request, "raw_path_bytes", None)
+    raw_path_bytes = getattr(request, "raw_path_bytes", None)
     if raw_path_bytes is None:
         raw_path_bytes = path.encode("utf-8", "surrogateescape")
-    
-    raw_query_bytes = None
-    if hasattr(request, "scope") and isinstance(request.scope, dict):
-        raw_query_bytes = request.scope.get("raw_query_string")
-    if raw_query_bytes is None:
-        raw_query_bytes = getattr(request, "raw_query_bytes", None)
+
+    raw_query_bytes = getattr(request, "raw_query_bytes", None)
     if raw_query_bytes is None:
         raw_query_bytes = query.encode("utf-8", "surrogateescape")
     
@@ -62,7 +54,8 @@ async def handle_worker_request(app, request, env, ctx):
         if header_key == b"cf-connecting-ip":
             cf_client_ip = header_value.decode("latin-1")
             break
-    client_host = cf_client_ip or getattr(getattr(request, "client", None), "host", "")
+    client = getattr(request, "client", None)
+    client_host = cf_client_ip or (getattr(client, "host", "") if client is not None else "")
     client_tuple = (client_host, 0)
     scope: Dict[str, Any] = {
         "type": "http",

@@ -109,11 +109,14 @@ async def _handle_job_failure(
         previous_attempts = 0
     new_attempt = previous_attempts + 1
     # Interpret max_job_retries as TOTAL allowed attempts (including the first).
-    # 0 means no retries and the first failure immediately fails the job.
+    # None or values <1 are treated as "at least one attempt".
     try:
         _mr = settings.max_job_retries
-        max_attempts = 1 if _mr is None else max(0, int(_mr))
-    except Exception:
+        if _mr is None:
+            max_attempts = 1
+        else:
+            max_attempts = max(1, int(_mr))
+    except (TypeError, ValueError):
         max_attempts = 1
 
     if new_attempt >= max_attempts:
@@ -1382,7 +1385,9 @@ async def handle_queue_message(message: Dict[str, Any], db: Database, queue_prod
             doc_ids = message.get("document_ids") or payload_data.get("document_ids")
             await process_drive_change_poll_job(db, job_id, user_id, doc_ids, queue_producer)
         else:
-            app_logger.error(f"Unknown job_type '{job_type}' for job {job_id}")
+            error_msg = f"Unknown job_type '{job_type}' for job {job_id}"
+            app_logger.error(error_msg)
+            await _handle_job_failure(db, job_row, error_msg, message, queue_producer)
     except Exception as e:
         app_logger.error(f"Failed to process job {job_id}: {e}", exc_info=True)
         await _handle_job_failure(db, job_row, str(e), message, queue_producer)
@@ -1390,8 +1395,8 @@ async def handle_queue_message(message: Dict[str, Any], db: Database, queue_prod
 
 async def run_inline_queue_consumer(poll_interval: float = 1.0, recover_pending: bool = True):
     """Inline consumer that polls the DB for pending jobs."""
-    from api.config import settings
-    from api.database import get_pending_jobs
+    from src.workers.api.config import settings
+    from src.workers.api.database import get_pending_jobs
 
     app_logger.info("Starting inline queue consumer (DB polling)")
     db = Database(db=settings.d1_database)

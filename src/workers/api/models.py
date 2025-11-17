@@ -248,7 +248,11 @@ class IngestYouTubeRequest(BaseModel):
     @classmethod
     def validate_youtube_host(cls, v: HttpUrl) -> HttpUrl:
         host = (v.host or "").lower()
-        if not (host.endswith("youtube.com") or host == "youtu.be"):
+        if not (
+            host == "youtube.com" or
+            host.endswith(".youtube.com") or
+            host == "youtu.be"
+        ):
             raise ValueError("URL must be a YouTube URL (youtube.com or youtu.be)")
         return v
 

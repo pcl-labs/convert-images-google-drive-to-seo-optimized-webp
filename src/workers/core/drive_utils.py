@@ -10,7 +10,7 @@ import tempfile
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, Optional, Set, Tuple
+from typing import Dict, Optional, Set, Tuple, overload, Literal
 
 from simple_http import HTTPStatusError, RequestError, SimpleClient
 
@@ -239,6 +239,32 @@ def upload_images(
     return uploaded, failed
 
 
+@overload
+def download_images(
+    drive_folder_id: str,
+    local_temp_dir: str,
+    extensions=DEFAULT_EXTENSIONS,
+    fail_log_path: Optional[str] = None,
+    max_retries: int = 3,
+    return_filename_mapping: Literal[False] = False,
+    service: Optional[GoogleDriveClient] = None,
+) -> Tuple[list[str], list[str]]:
+    ...
+
+
+@overload
+def download_images(
+    drive_folder_id: str,
+    local_temp_dir: str,
+    extensions=DEFAULT_EXTENSIONS,
+    fail_log_path: Optional[str] = None,
+    max_retries: int = 3,
+    return_filename_mapping: Literal[True] = True,
+    service: Optional[GoogleDriveClient] = None,
+) -> Tuple[list[str], list[str], Dict[str, str]]:
+    ...
+
+
 def download_images(
     drive_folder_id: str,
     local_temp_dir: str,
@@ -247,7 +273,7 @@ def download_images(
     max_retries: int = 3,
     return_filename_mapping: bool = False,
     service: Optional[GoogleDriveClient] = None,
-):
+) -> tuple[list[str], list[str]] | tuple[list[str], list[str], Dict[str, str]]:
     extensions = normalize_extensions(extensions)
     os.makedirs(local_temp_dir, exist_ok=True)
     service = service or get_drive_service()
@@ -379,7 +405,9 @@ def extract_folder_id_from_input(folder_input: str, service: Optional[GoogleDriv
 
 
 def is_valid_drive_file_id(file_id: str) -> bool:
-    if not file_id or len(file_id) < 25 or len(file_id) > 44:
+    # Drive IDs observed in practice vary in length; enforce only the documented
+    # minimum length and character set.
+    if not file_id or len(file_id) < 25:
         return False
     return bool(re.match(r"^[a-zA-Z0-9_-]+$", file_id))
 

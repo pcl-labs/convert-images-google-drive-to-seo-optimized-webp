@@ -47,7 +47,6 @@ class CloudflareQueueAPI:
     async def send(self, message: Dict[str, Any]) -> None:
         payload = {
             "body": json.dumps(message),
-            "id": message.get("job_id"),
             "timestamp_ms": int(datetime.datetime.now(tz=datetime.timezone.utc).timestamp() * 1000),
         }
         headers = {"Authorization": f"Bearer {self.api_token}", "Content-Type": "application/json"}
@@ -65,8 +64,20 @@ class CloudflareQueueAPI:
             resp.raise_for_status()
 
     async def close(self) -> None:
-        if self._client:
+        if self._client is not None:
+            client = self._client
             self._client = None
+            try:
+                # Prefer async close if available
+                close = getattr(client, "aclose", None)
+                if callable(close):
+                    await close()
+                else:
+                    close_sync = getattr(client, "close", None)
+                    if callable(close_sync):
+                        close_sync()
+            except Exception:
+                logger.warning("Error while closing CloudflareQueueAPI HTTP client", exc_info=True)
 
 
 class QueueProducer:

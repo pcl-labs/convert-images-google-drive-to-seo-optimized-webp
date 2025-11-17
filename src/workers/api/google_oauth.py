@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import urlencode
 
 from simple_http import AsyncSimpleClient, HTTPStatusError, RequestError
@@ -63,6 +63,17 @@ def parse_google_scope_list(raw_scopes: Optional[object]) -> List[str]:
     return [scope for scope in scope_text.replace(",", " ").split() if scope.strip()]
 
 
+def _scope_text(scopes: Any) -> str:
+    if scopes is None:
+        return ""
+    if isinstance(scopes, str):
+        return scopes
+    if isinstance(scopes, Iterable):
+        parts = [str(scope).strip() for scope in scopes if str(scope).strip()]
+        return " ".join(parts)
+    return str(scopes)
+
+
 def get_google_oauth_url(state: str, redirect_uri: str, *, integration: str) -> str:
     if not settings.google_client_id or not settings.google_client_secret:
         raise ValueError("Google OAuth not configured")
@@ -90,8 +101,10 @@ async def _exchange_token(payload: Dict[str, str]) -> Dict[str, Any]:
             response = await client.post(TOKEN_ENDPOINT, data=payload)
             response.raise_for_status()
     except HTTPStatusError as exc:
-        text = exc.response.text
-        logger.error("Google token endpoint error: %s", text)
+        logger.error(
+            "Google token endpoint error",
+            extra={"status": exc.response.status_code, "endpoint": TOKEN_ENDPOINT},
+        )
         raise ValueError(f"Failed to fetch Google tokens: HTTP {exc.response.status_code}") from exc
     except RequestError as exc:
         logger.error("Network error talking to Google token endpoint: %s", exc)
@@ -100,7 +113,11 @@ async def _exchange_token(payload: Dict[str, str]) -> Dict[str, Any]:
     try:
         return response.json()
     except (ValueError, json.JSONDecodeError) as exc:
-        logger.error("Unable to parse Google token response: %s", response.text)
+        status = getattr(response, "status_code", "unknown")
+        logger.error(
+            "Unable to parse Google token response",
+            extra={"status": status},
+        )
         raise ValueError("Invalid response from Google OAuth") from exc
 
 
@@ -131,8 +148,7 @@ async def exchange_google_code(
             expiry = datetime.now(timezone.utc) + timedelta(seconds=int(expires_in))
     except (ValueError, TypeError):
         expiry = None
-    scopes = token_json.get("scope") or ""
-    scope_text = scopes if isinstance(scopes, str) else " ".join(scopes)
+    scope_text = _scope_text(token_json.get("scope"))
     await upsert_google_token(
         db,
         user_id=user_id,
@@ -168,8 +184,7 @@ async def _refresh_access_token(
             expiry = datetime.now(timezone.utc) + timedelta(seconds=int(expires_in))
     except (ValueError, TypeError):
         expiry = None
-    scopes = token_json.get("scope") or ""
-    scope_text = scopes if isinstance(scopes, str) else " ".join(scopes)
+    scope_text = _scope_text(token_json.get("scope"))
     await upsert_google_token(
         db,
         user_id=user_id,
@@ -228,7 +243,7 @@ async def build_youtube_service_for_user(db: Database, user_id: str) -> YouTubeC
     return YouTubeClient(token)
 
 
-async def build_docs_service_for_user(db: Database, user_id: str):
+async def build_docs_service_for_user(db: Database, user_id: str) -> GoogleDocsClient:
     """Return a lightweight Google Docs client using the Drive integration token."""
     token, _ = await _load_token_for_user(db, user_id, "drive")
     return GoogleDocsClient(token)

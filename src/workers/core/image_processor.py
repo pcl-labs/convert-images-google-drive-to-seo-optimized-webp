@@ -10,13 +10,14 @@ import json
 from .constants import PORTRAIT_SIZE, LANDSCAPE_SIZE, DEFAULT_MAX_SIZE_KB
 
 # Sizes and defaults are defined in core.constants
+MAX_VERSION_ATTEMPTS = 1000
 
 logger = logging.getLogger(__name__)
 
 
 def _save_as_webp_under_size(img, max_size_kb, start_quality=80, min_quality=10, step=5):
     buffer = io.BytesIO()
-    for q in range(start_quality, min_quality, -step):
+    for q in range(start_quality, min_quality - 1, -step):
         buffer.seek(0)
         buffer.truncate(0)
         img.save(buffer, format='WEBP', quality=q)
@@ -97,6 +98,7 @@ def process_image(input_path, output_dir, overwrite=False, skip_existing=False, 
         if not overwrite and versioned:
             # Find next available versioned filename
             v = 2
+            attempts = 0
             while True:
                 if seo_prefix:
                     versioned_name = f"{seo_prefix}-{name}_v{v}.webp"
@@ -107,6 +109,9 @@ def process_image(input_path, output_dir, overwrite=False, skip_existing=False, 
                     output_path = versioned_path
                     break
                 v += 1
+                attempts += 1
+                if attempts >= MAX_VERSION_ATTEMPTS:
+                    raise RuntimeError(f"Exceeded maximum version attempts ({MAX_VERSION_ATTEMPTS}) for {output_dir}/{name}.webp")
         elif not overwrite:
             logger.info(f"Skipping (exists, no overwrite): {output_path}")
             return output_path, 'skipped'
@@ -124,17 +129,15 @@ def process_image(input_path, output_dir, overwrite=False, skip_existing=False, 
             f.write(data)
         if size_kb <= max_size_kb:
             logger.info(f"Optimized: {output_path} ({int(size_kb)} KB)")
-            alt_text = extract_alt_text(base)
-            try:
-                update_alt_text_map(os.path.basename(output_path), alt_text, alt_text_map_path)
-            except Exception as e:
-                logger.error(f"Failed to update alt text map for {output_path}: {e}")
-            return output_path, 'ok'
-        logger.info(f"Saved at lowest quality: {output_path}")
-        alt_text = extract_alt_text(base)
-        try:
-            update_alt_text_map(os.path.basename(output_path), alt_text, alt_text_map_path)
-        except Exception as e:
-            logger.error(f"Failed to update alt text map for {output_path}: {e}")
-    return output_path, 'low_quality'
+            result_status = 'ok'
+        else:
+            logger.info(f"Saved at lowest quality: {output_path}")
+            result_status = 'low_quality'
+
+    alt_text = extract_alt_text(base)
+    try:
+        update_alt_text_map(os.path.basename(output_path), alt_text, alt_text_map_path)
+    except Exception as e:
+        logger.error(f"Failed to update alt text map for {output_path}: {e}")
+    return output_path, result_status
  

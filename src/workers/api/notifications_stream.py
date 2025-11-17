@@ -23,6 +23,11 @@ def _sse_headers() -> Dict[str, str]:
 
 
 def notifications_stream_response(request, db: Database, user: Dict[str, Any]) -> StreamingResponse:
+    user_id = user.get("user_id")
+    if not user_id:
+        logger.warning("notifications_stream_response called without user_id in user context: %s", user)
+        raise ValueError("Missing user_id in user context for notifications stream")
+
     async def event_generator():
         last_sent: Optional[str] = None
         task = asyncio.current_task()
@@ -32,7 +37,7 @@ def notifications_stream_response(request, db: Database, user: Dict[str, Any]) -
             while True:
                 if await request.is_disconnected():
                     break
-                notifs = await list_notifications(db, user["user_id"], after_id=last_sent, limit=20)
+                notifs = await list_notifications(db, user_id, after_id=last_sent, limit=20)
                 if notifs:
                     for n in notifs:
                         notification_id = n.get("id")
