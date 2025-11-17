@@ -165,6 +165,12 @@
     {% endcall %}
   </div>
 
+  {% if document.raw_text %}
+    {% call card(title='Raw text') %}
+      <pre class="whitespace-pre-wrap text-sm text-content">{{ document.raw_text }}</pre>
+    {% endcall %}
+  {% endif %}
+
   {% call card(title='Draft Preview') %}
     {% include "documents/partials/version_viewer.html" %}
   {% endcall %}

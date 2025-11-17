@@ -75,6 +75,18 @@ def test_ingest_youtube_authed(authed_client, monkeypatch):
 
     monkeypatch.setattr("src.workers.api.protected.fetch_video_metadata", _fake_fetch)
 
+    async def _fake_ingest(db, job_id, user_id, document_id, video_id, metadata, frontmatter_payload, duration):
+        return {
+            "job_output": {
+                "document_id": document_id,
+                "youtube_video_id": video_id,
+                "transcript": {"chars": 10, "duration_s": duration, "lang": "en"},
+                "metadata": {"frontmatter": frontmatter_payload, "youtube": metadata},
+            }
+        }
+
+    monkeypatch.setattr("src.workers.api.protected.ingest_youtube_document", _fake_ingest)
+
     # Use a simple valid-looking short URL pattern matched by regex
     resp = authed_client.post("/ingest/youtube", json={"url": "https://youtu.be/abc12345678"})
     assert resp.status_code in [200, 201]
