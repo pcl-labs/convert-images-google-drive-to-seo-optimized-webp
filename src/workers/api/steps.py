@@ -27,8 +27,6 @@ from src.workers.core.youtube_captions import fetch_captions_text
 from src.workers.core.ai_modules import generate_outline, organize_chapters, compose_blog, default_title_from_outline
 from src.workers.core.google_async import execute_google_request
 from .app_logging import get_logger
-from googleapiclient.errors import HttpError  # type: ignore
-
 logger = get_logger(__name__)
 
 

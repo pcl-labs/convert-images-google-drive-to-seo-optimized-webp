@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from googleapiclient.errors import HttpError
+from .google_clients import GoogleAPIError, GoogleHTTPError, YouTubeClient
 
 
 def _select_caption_track(items: List[Dict[str, Any]], langs: List[str]) -> Optional[Dict[str, Any]]:
@@ -107,16 +107,15 @@ def _strip_srt_formatting(srt_text: str) -> str:
     return "\n".join(text_lines)
 
 
-def fetch_captions_text(service, video_id: str, langs: List[str]) -> Dict[str, Any]:
+def fetch_captions_text(service: YouTubeClient, video_id: str, langs: List[str]) -> Dict[str, Any]:
     """
     Fetch caption text via official YouTube Data API for a given video owned by the authenticated user.
 
     Returns { success, text, lang, source } or { success: False, error }.
     """
     try:
-        req = service.captions().list(part="id,snippet", videoId=video_id)
-        resp = req.execute()
-    except HttpError as exc:
+        resp = service.list_captions(video_id)
+    except GoogleAPIError as exc:
         return {"success": False, "error": f"YouTube Captions API error: {exc}"}
 
     items = resp.get("items") or []
@@ -132,16 +131,8 @@ def fetch_captions_text(service, video_id: str, langs: List[str]) -> Dict[str, A
     lang = snippet.get("language") or snippet.get("languageCode") or ""
 
     try:
-        # Download captions in SRT format (SubRip Subtitle format).
-        # SRT includes sequence numbers, timestamps, and caption text. We'll extract plain text via post-processing.
-        # Some APIs support 'tfmt' or 'tlang'; googleapiclient handles 'tfmt' via .download with 'tfmt' query param.
-        req_dl = service.captions().download(id=cap_id, tfmt="srt")  # type: ignore[arg-type]
-        # Media download requires the MediaIoBaseDownload pattern; however, googleapiclient supports .execute() for captions.download
-        # which returns the body text directly when using built-in discovery.
-        data = req_dl.execute()
-        # data can be bytes or str depending on client; ensure str
-        srt_text = data.decode("utf-8") if isinstance(data, (bytes, bytearray)) else str(data)
-    except HttpError as exc:
+        srt_text = service.download_caption(cap_id, format="srt")
+    except GoogleHTTPError as exc:
         return {"success": False, "error": f"Failed to download captions: {exc}"}
 
     # Extract plain text from SRT format by stripping sequence numbers and timestamps

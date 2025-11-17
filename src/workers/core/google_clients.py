@@ -93,6 +93,7 @@ class GoogleDriveClient:
         self.token = token
         self._metadata_session = GoogleAPISession("https://www.googleapis.com/drive/v3", token)
         self._upload_session = GoogleAPISession("https://www.googleapis.com/upload/drive/v3", token)
+        self._files_resource = _GoogleDriveFilesResource(self._metadata_session)
 
     def list_folder_files(
         self,
@@ -165,9 +166,160 @@ class GoogleDriveClient:
         response = self._metadata_session.request("GET", f"/files/{file_id}", params={"fields": fields})
         return response.json()
 
+    def files(self) -> "_GoogleDriveFilesResource":
+        return self._files_resource
+
     def close(self) -> None:
         self._metadata_session.close()
         self._upload_session.close()
+
+
+class GoogleDocsRequest:
+    """Wrapper mimicking googleapiclient HttpRequest interface for Docs API calls."""
+
+    def __init__(
+        self,
+        session: GoogleAPISession,
+        method: str,
+        path: str,
+        *,
+        params: Optional[Dict[str, Any]] = None,
+        json_body: Optional[Dict[str, Any]] = None,
+    ):
+        self._session = session
+        self._method = method
+        self._path = path
+        self._params = params or None
+        self._json_body = json_body or None
+
+    def execute(self) -> Dict[str, Any]:
+        response = self._session.request(
+            self._method,
+            self._path,
+            params=self._params,
+            json=self._json_body,
+        )
+        if not response.content:
+            return {}
+        try:
+            return response.json()
+        except ValueError as exc:  # pragma: no cover - defensive guard
+            raise GoogleAPIError(f"Docs API returned invalid JSON: {response.text[:200]}") from exc
+
+
+class _GoogleDocsDocumentsResource:
+    def __init__(self, session: GoogleAPISession):
+        self._session = session
+
+    @staticmethod
+    def _require_doc_id(document_id: str) -> str:
+        if not isinstance(document_id, str) or not document_id.strip():
+            raise ValueError("documentId is required for Docs API call")
+        return document_id
+
+    def create(self, body: Optional[Dict[str, Any]] = None) -> GoogleDocsRequest:
+        return GoogleDocsRequest(self._session, "POST", "/documents", json_body=body)
+
+    def get(self, documentId: str) -> GoogleDocsRequest:
+        doc_id = self._require_doc_id(documentId)
+        return GoogleDocsRequest(self._session, "GET", f"/documents/{doc_id}")
+
+    def batchUpdate(self, documentId: str, body: Optional[Dict[str, Any]] = None) -> GoogleDocsRequest:
+        doc_id = self._require_doc_id(documentId)
+        return GoogleDocsRequest(self._session, "POST", f"/documents/{doc_id}:batchUpdate", json_body=body)
+
+
+class GoogleDocsClient:
+    """Minimal Docs API client that mimics the subset of googleapiclient used in the worker."""
+
+    def __init__(self, token: OAuthToken):
+        self._session = GoogleAPISession("https://docs.googleapis.com/v1", token)
+        self._documents_resource = _GoogleDocsDocumentsResource(self._session)
+
+    def documents(self) -> _GoogleDocsDocumentsResource:
+        return self._documents_resource
+
+    def close(self) -> None:
+        self._session.close()
+
+
+class GoogleDriveRequest:
+    """Request shim for Drive API operations."""
+
+    def __init__(
+        self,
+        session: GoogleAPISession,
+        method: str,
+        path: str,
+        *,
+        params: Optional[Dict[str, Any]] = None,
+        json_body: Optional[Dict[str, Any]] = None,
+    ):
+        self._session = session
+        self._method = method
+        self._path = path
+        self._params = params or None
+        self._json_body = json_body or None
+
+    def execute(self) -> Dict[str, Any]:
+        response = self._session.request(
+            self._method,
+            self._path,
+            params=self._params,
+            json=self._json_body,
+        )
+        if not response.content:
+            return {}
+        try:
+            return response.json()
+        except ValueError as exc:  # pragma: no cover
+            raise GoogleAPIError(f"Drive API returned invalid JSON: {response.text[:200]}") from exc
+
+
+class _GoogleDriveFilesResource:
+    """Subset of Drive files resource methods used by the worker code."""
+
+    def __init__(self, session: GoogleAPISession):
+        self._session = session
+
+    @staticmethod
+    def _build_params(fields: Optional[str], extra: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        params: Dict[str, Any] = {}
+        if fields:
+            params["fields"] = fields
+        if extra:
+            params.update({k: v for k, v in extra.items() if v is not None})
+        return params
+
+    @staticmethod
+    def _require_file_id(file_id: str) -> str:
+        if not isinstance(file_id, str) or not file_id.strip():
+            raise ValueError("fileId is required for Drive API call")
+        return file_id
+
+    def list(self, fields: Optional[str] = None, **kwargs) -> GoogleDriveRequest:
+        params = self._build_params(fields, kwargs)
+        return GoogleDriveRequest(self._session, "GET", "/files", params=params)
+
+    def get(self, fileId: str, fields: Optional[str] = None, **kwargs) -> GoogleDriveRequest:
+        file_id = self._require_file_id(fileId)
+        params = self._build_params(fields, kwargs)
+        return GoogleDriveRequest(self._session, "GET", f"/files/{file_id}", params=params)
+
+    def create(self, body: Optional[Dict[str, Any]] = None, fields: Optional[str] = None, **kwargs) -> GoogleDriveRequest:
+        params = self._build_params(fields, kwargs)
+        return GoogleDriveRequest(self._session, "POST", "/files", params=params, json_body=body)
+
+    def update(
+        self,
+        fileId: str,
+        body: Optional[Dict[str, Any]] = None,
+        fields: Optional[str] = None,
+        **kwargs,
+    ) -> GoogleDriveRequest:
+        file_id = self._require_file_id(fileId)
+        params = self._build_params(fields, kwargs)
+        return GoogleDriveRequest(self._session, "PATCH", f"/files/{file_id}", params=params, json_body=body)
 
 
 class YouTubeClient:
@@ -206,6 +358,7 @@ class YouTubeClient:
 __all__ = [
     "GoogleAPIError",
     "GoogleHTTPError",
+    "GoogleDocsClient",
     "GoogleDriveClient",
     "YouTubeClient",
     "OAuthToken",
