@@ -59,10 +59,17 @@ class GoogleAPISession:
         merged["Authorization"] = f"{auth_token} {self.token.access_token}"
         return merged
 
-    def request(self, method: str, path: str, **kwargs) -> SimpleResponse:
+    def request(self, method: str, path: str, *, chunk_size: int = 64 * 1024, stream_to=None, **kwargs) -> SimpleResponse:
         headers = self._inject_headers(kwargs.pop("headers", None))
         try:
-            response = self._client.request(method, path, headers=headers, **kwargs)
+            response = self._client.request(
+                method,
+                path,
+                headers=headers,
+                stream_to=stream_to,
+                chunk_size=chunk_size,
+                **kwargs,
+            )
         except HTTPStatusError as exc:
             raise GoogleHTTPError(exc.response.status_code, exc.response.text, payload=exc.response.text) from exc
         except RequestError as exc:
@@ -113,8 +120,13 @@ class GoogleDriveClient:
         return response.json()
 
     def download_file(self, file_id: str, file_obj) -> None:
-        response = self._metadata_session.request("GET", f"/files/{file_id}", params={"alt": "media"})
-        file_obj.write(response.content)
+        self._metadata_session.request(
+            "GET",
+            f"/files/{file_id}",
+            params={"alt": "media"},
+            headers={"Accept": "application/octet-stream"},
+            stream_to=file_obj,
+        )
 
     def upload_file(self, folder_id: str, filename: str, file_obj, *, mimetype: str = "application/octet-stream") -> Dict[str, Any]:
         metadata = {"name": filename, "parents": [folder_id]}

@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Request, HTTPException, status, Form
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse, PlainTextResponse
 from typing import Optional
 import secrets
 from datetime import datetime, timezone
@@ -115,6 +115,18 @@ async def root():
             "docs": "/docs",
         },
     }
+
+
+@router.get("/robots.txt", response_class=PlainTextResponse, tags=["Public"])
+async def robots_txt(request: Request) -> str:
+    base = (settings.base_url or "").strip().rstrip("/")
+    if not base:
+        base = f"{request.url.scheme}://{request.url.netloc}"
+    return f"""User-agent: *
+Allow: /
+
+Sitemap: {base}/sitemap.xml
+"""
 
 
 @router.get("/health", tags=["Public"]) 

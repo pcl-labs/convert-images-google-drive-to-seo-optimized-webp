@@ -41,24 +41,6 @@ pip install -r requirements.txt
 
 ## Usage
 
-### CLI Usage
-
-#### Basic Usage
-
-```bash
-python cli.py --drive-folder "YOUR_GOOGLE_DRIVE_FOLDER_ID_OR_LINK"
-```
-
-#### Advanced Options
-
-```bash
-python cli.py \
-  --drive-folder "https://drive.google.com/drive/folders/YOUR_FOLDER_ID" \
-  --ext "jpg,jpeg,png,bmp,tiff,heic" \
-  --overwrite \
-  --cleanup
-```
-
 ### Web API Usage (FastAPI)
 
 The project includes a FastAPI web server for programmatic access.
@@ -202,23 +184,10 @@ Visit `http://localhost:8000/docs` in your browser for interactive API testing.
 
 ### Drive workspace sync
 
-- When you connect Google Drive, Quill now creates a dedicated workspace inside your Drive account: `Quill/` with nested `Drafts/` and `Published/` folders.
-- Every Drive-backed document now gets its own subfolder inside that workspace (e.g., `Quill/<slug>/`) with nested `Drafts/`, `Media/`, and `Published/` folders. Quill automatically creates a Google Doc inside `Drafts` to serve as the canonical draft, and drops generated assets into `Media`.
-- When you export or mark a document ready, the final artifact lands inside that document’s `Published/` folder while Quill continues to track the same Drive file ID.
+- When you connect Google Drive, Quill creates a single `Quill/` workspace inside your Drive account and stores every document in its own folder (`Quill/<slug>/`).
+- Each folder contains the canonical Google Doc plus a `Media/` subfolder for screenshots or supporting assets; draft vs. published state now lives inside Quill metadata instead of juggling multiple Drive folders.
 - The integration detail page (`/dashboard/integrations/drive`) shows real-time workspace data (folder links, latest synced file, document counts) so you always know what’s connected.
 - This automation requires the Drive + Docs scopes listed above; if you add them to your OAuth client you’ll be prompted to re-consent the next time you reconnect Drive.
-
-### Command Line Arguments
-
-- `--drive-folder`: Google Drive folder ID or share link (required)
-- `--ext`: Comma-separated list of image extensions to process (default: jpg,jpeg,png,bmp,tiff,heic)
-- `--overwrite`: Overwrite existing optimized files
-- `--skip-existing`: Skip files that are already optimized
-- `--cleanup`: Automatically delete original images after optimization
-- `--max-retries`: Number of retry attempts for failed operations (default: 3)
-- `--versioned`: Save versioned filenames if conflicts occur
-- `--dry-run`: Preview actions without making changes
-- `--reauth`: Force new Google account authentication
 
 ## How It Works
 
@@ -235,7 +204,6 @@ Visit `http://localhost:8000/docs` in your browser for interactive API testing.
 ## File Structure
 
 ```
-├── cli.py                 # CLI entry point
 ├── api/                   # FastAPI web application
 │   └── main.py            # API entry point
 ├── core/                  # Core business logic
@@ -334,8 +302,10 @@ For production, set `USE_INLINE_QUEUE=false` and provide `CLOUDFLARE_ACCOUNT_ID`
 
 ## Dependencies
 
-- `urllib` (standard library, wrapped in [`simple_http.py`](simple_http.py)): Lightweight HTTP client used for Google REST calls without third-party deps
-- `Pillow`: Image processing (convert HEIC/HEIF assets to JPEG/PNG before invoking the CLI/Worker)
+- `google-auth-oauthlib`: OAuth 2.0 authentication helpers
+- `httpx`: REST client for Google APIs
+- `Pillow`: Image processing
+- `pillow-heif`: HEIC image support
 - `tqdm`: Progress bars
 - `fastapi`: Web API framework
 - `uvicorn`: ASGI server for FastAPI

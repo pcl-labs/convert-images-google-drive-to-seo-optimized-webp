@@ -14,6 +14,7 @@ from src.workers.api.database import (
     get_document,
     get_job,
     get_google_token,
+    update_document,
     update_job_status,
     upsert_google_token,
 )
@@ -108,6 +109,92 @@ def test_start_ingest_youtube_job_stores_metadata(monkeypatch):
             assert metadata["url"] == "https://youtu.be/abc12345678"
         finally:
             # cleanup (best-effort)
+            try:
+                if job is not None:
+                    await db.execute("DELETE FROM jobs WHERE job_id = ?", (job.job_id,))
+                    await db.execute("DELETE FROM documents WHERE document_id = ?", (job.document_id,))
+            finally:
+                await db.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
+
+    asyncio.run(_run())
+
+
+def test_start_ingest_youtube_job_inline_executes(monkeypatch):
+    async def _run():
+        db = Database()
+        user_id = f"user-{uuid.uuid4()}"
+        await create_user(db, user_id=user_id, github_id=None, email=f"{user_id}@example.com")
+
+        stub_queue = StubQueue()
+        job = None
+        try:
+            monkeypatch.setattr("src.workers.api.protected.settings.use_inline_queue", True)
+            monkeypatch.setattr("src.workers.api.protected.build_youtube_service_for_user", AsyncMock(return_value=object()))
+
+            metadata_bundle = {
+                "frontmatter": {"title": "Inline Video", "slug": "inline-video"},
+                "metadata": {
+                    "title": "Inline Video",
+                    "description": "Inline description",
+                    "duration_seconds": 90,
+                    "channel_title": "Inline Channel",
+                    "channel_id": "chan-inline",
+                    "published_at": "2024-02-01T00:00:00Z",
+                    "thumbnails": {},
+                    "category_id": "24",
+                    "tags": ["inline"],
+                },
+            }
+            metadata_bundle["metadata"]["url"] = "https://youtu.be/inline123456"
+
+            def _fake_fetch(service, video_id):
+                return metadata_bundle
+
+            monkeypatch.setattr("src.workers.api.protected.fetch_video_metadata", _fake_fetch)
+
+            async def _fake_ingest(
+                db,
+                job_id,
+                user_id,
+                document_id,
+                video_id,
+                metadata,
+                frontmatter_payload,
+                duration,
+            ):
+                await update_document(
+                    db,
+                    document_id,
+                    {
+                        "raw_text": "Inline transcript text",
+                        "metadata": {
+                            "source": "youtube",
+                            "youtube": metadata or {},
+                            "url": metadata.get("url"),
+                        },
+                    },
+                )
+                return {
+                    "job_output": {
+                        "document_id": document_id,
+                        "youtube_video_id": video_id,
+                        "transcript": {"chars": 24, "lang": "en", "duration_s": duration},
+                        "metadata": {
+                            "frontmatter": frontmatter_payload,
+                            "youtube": metadata,
+                        },
+                    }
+                }
+
+            monkeypatch.setattr("src.workers.api.protected.ingest_youtube_document", _fake_ingest)
+
+            job = await start_ingest_youtube_job(db, stub_queue, user_id, "https://youtu.be/inline123456")
+
+            assert job.status == "completed"
+            doc = await get_document(db, job.document_id, user_id=user_id)
+            assert doc is not None
+            assert (doc.get("raw_text") or "").startswith("Inline transcript")
+        finally:
             try:
                 if job is not None:
                     await db.execute("DELETE FROM jobs WHERE job_id = ?", (job.job_id,))
@@ -252,7 +339,6 @@ def test_ingest_youtube_queue_flow(monkeypatch):
         try:
             monkeypatch.setattr("src.workers.api.protected.settings.use_inline_queue", False)
             monkeypatch.setattr("src.workers.api.protected.build_youtube_service_for_user", AsyncMock(return_value=fake_service))
-            monkeypatch.setattr("src.workers.consumer.build_youtube_service_for_user", AsyncMock(return_value=fake_service))
 
             metadata_bundle = {
                 "frontmatter": {"title": "Queue Flow Video", "slug": "queue-flow-video"},
@@ -276,13 +362,41 @@ def test_ingest_youtube_queue_flow(monkeypatch):
                 return metadata_bundle
 
             monkeypatch.setattr("src.workers.api.protected.fetch_video_metadata", _fake_fetch_metadata)
-            def _fake_fetch_captions(service, video_id, langs):
-                assert service is fake_service
-                assert video_id == "queue123456"
-                assert "en" in langs
-                return {"success": True, "text": fake_text, "lang": "en", "source": "captions"}
 
-            monkeypatch.setattr("src.workers.consumer.fetch_captions_text", _fake_fetch_captions)
+            async def _fake_worker_ingest(
+                db,
+                job_id,
+                user_id_param,
+                document_id,
+                video_id,
+                metadata,
+                frontmatter_payload,
+                duration,
+            ):
+                youtube_meta = dict(metadata)
+                youtube_meta.setdefault("video_id", video_id)
+                await update_document(
+                    db,
+                    document_id,
+                    {
+                        "raw_text": fake_text,
+                        "metadata": {
+                            "source": "youtube",
+                            "youtube": youtube_meta,
+                            "transcript": {"chars": len(fake_text), "duration_s": duration, "lang": "en"},
+                        },
+                    },
+                )
+                return {
+                    "job_output": {
+                        "document_id": document_id,
+                        "youtube_video_id": video_id,
+                        "transcript": {"chars": len(fake_text), "duration_s": duration, "lang": "en"},
+                        "metadata": {"frontmatter": frontmatter_payload, "youtube": youtube_meta},
+                    }
+                }
+
+            monkeypatch.setattr("src.workers.consumer.ingest_youtube_document", _fake_worker_ingest)
             monkeypatch.setattr("src.workers.consumer.notify_job", AsyncMock(return_value=None))
 
             job_status = await start_ingest_youtube_job(

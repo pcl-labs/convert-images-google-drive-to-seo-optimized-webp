@@ -5,6 +5,11 @@ from typing import Any, Dict, List, Optional
 from .google_clients import GoogleAPIError, GoogleHTTPError, YouTubeClient
 
 
+class YouTubeCaptionsError(RuntimeError):
+    """Raised when a YouTube captions request fails or captions are unavailable."""
+    pass
+
+
 def _select_caption_track(items: List[Dict[str, Any]], langs: List[str]) -> Optional[Dict[str, Any]]:
     # Normalize langs like ["en", "en-US"] preference
     prefs = [lang.strip().lower() for lang in (langs or ["en"]) if isinstance(lang, str) and lang.strip()]
