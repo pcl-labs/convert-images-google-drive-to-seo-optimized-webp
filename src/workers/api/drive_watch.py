@@ -24,13 +24,11 @@ logger = get_logger(__name__)
 
 
 def build_channel_token(channel_id: str, user_id: str, document_id: str) -> str:
+    if not settings.drive_webhook_secret:
+        raise RuntimeError("DRIVE_WEBHOOK_SECRET is required to register Drive webhooks")
     payload = f"{user_id}:{document_id}:{channel_id}".encode("utf-8")
-    secret = (settings.drive_webhook_secret or "").encode("utf-8")
-    if secret:
-        digest = hmac.new(secret, payload, hashlib.sha256).hexdigest()
-    else:
-        digest = hashlib.sha256(payload).hexdigest()
-    return digest
+    secret = settings.drive_webhook_secret.encode("utf-8")
+    return hmac.new(secret, payload, hashlib.sha256).hexdigest()
 
 
 def _parse_expiration(raw: Optional[str]) -> Optional[str]:
@@ -79,7 +77,11 @@ async def ensure_drive_watch(
         logger.warning("drive_watch_drive_auth_failed", extra={"user_id": user_id, "error": str(exc)})
         return None
     channel_id = str(uuid.uuid4())
-    token = build_channel_token(channel_id, user_id, document_id)
+    try:
+        token = build_channel_token(channel_id, user_id, document_id)
+    except RuntimeError as exc:
+        logger.error("drive_watch_token_missing_secret", extra={"user_id": user_id}, exc_info=True)
+        raise
     body = {
         "id": channel_id,
         "type": "web_hook",
@@ -131,7 +133,7 @@ async def mark_watch_stopped(db: Database, channel_id: str) -> None:
     watch = await get_drive_watch_by_channel(db, channel_id)
     if not watch:
         return
-    await delete_drive_watch(db, channel_id=channel_id)
+    await delete_drive_watch(db, user_id=watch.get("user_id"), channel_id=channel_id)
     logger.info(
         "drive_watch_stopped",
         extra={"document_id": watch.get("document_id"), "channel_id": channel_id},
@@ -142,13 +144,14 @@ async def update_watch_expiration(
     db: Database,
     *,
     watch_id: str,
+    user_id: str,
     expiration: Optional[str],
 ) -> None:
     if expiration is None:
         return
-    await update_drive_watch_fields(db, watch_id=watch_id, expires_at=expiration)
+    await update_drive_watch_fields(db, user_id=user_id, watch_id=watch_id, expires_at=expiration)
 
 
-async def watches_due_for_renewal(db: Database, within_minutes: int) -> list[Dict[str, str]]:
+async def watches_due_for_renewal(db: Database, within_minutes: int, user_id: Optional[str] = None) -> list[Dict[str, str]]:
     seconds = max(within_minutes * 60, 60)
-    return await list_drive_watches_expiring(db, within_seconds=seconds)
+    return await list_drive_watches_expiring(db, within_seconds=seconds, user_id=user_id)

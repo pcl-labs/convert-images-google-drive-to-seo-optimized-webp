@@ -155,7 +155,7 @@ async def sync_drive_doc_after_persist(
             docs_service.documents().batchUpdate(documentId=drive_file_id, body={"requests": requests})
         )
         drive_meta = await execute_google_request(
-            drive_service.files().get(fileId=drive_file_id, fields='id, headRevisionId, parents')
+            drive_service.files().get(fileId=drive_file_id, fields='id,headRevisionId,parents')
         )
     except Exception:
         logger.exception(

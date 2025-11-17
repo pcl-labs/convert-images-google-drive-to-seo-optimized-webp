@@ -1172,9 +1172,12 @@ async def upsert_drive_watch(
 async def delete_drive_watch(
     db: Database,
     *,
+    user_id: str,
     document_id: Optional[str] = None,
     channel_id: Optional[str] = None,
 ) -> None:
+    if not user_id:
+        raise ValueError("user_id is required to delete drive_watches")
     if not document_id and not channel_id:
         return
     clauses = []
@@ -1186,8 +1189,8 @@ async def delete_drive_watch(
         clauses.append("channel_id = ?")
         params.append(channel_id)
     where = " OR ".join(clauses)
-    query = f"DELETE FROM drive_watches WHERE {where}"
-    await db.execute(query, tuple(params))
+    query = f"DELETE FROM drive_watches WHERE user_id = ? AND ({where})"
+    await db.execute(query, tuple([user_id, *params]))
 
 
 async def get_drive_watch_by_document(db: Database, document_id: str) -> Optional[Dict[str, Any]]:
@@ -1216,25 +1219,40 @@ async def list_drive_watches_expiring(
     db: Database,
     *,
     within_seconds: int,
+    user_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     cutoff = datetime.now(timezone.utc) + timedelta(seconds=max(within_seconds, 0))
     cutoff_iso = cutoff.isoformat()
-    rows = await db.execute_all(
-        """
-        SELECT * FROM drive_watches
-        WHERE state = 'active'
-          AND expires_at IS NOT NULL
-          AND expires_at <= ?
-        ORDER BY expires_at ASC
-        """,
-        (cutoff_iso,),
-    )
+    if user_id:
+        rows = await db.execute_all(
+            """
+            SELECT * FROM drive_watches
+            WHERE state = 'active'
+              AND expires_at IS NOT NULL
+              AND expires_at <= ?
+              AND user_id = ?
+            ORDER BY expires_at ASC
+            """,
+            (cutoff_iso, user_id),
+        )
+    else:
+        rows = await db.execute_all(
+            """
+            SELECT * FROM drive_watches
+            WHERE state = 'active'
+              AND expires_at IS NOT NULL
+              AND expires_at <= ?
+            ORDER BY expires_at ASC
+            """,
+            (cutoff_iso,),
+        )
     return [dict(row) for row in rows or []]
 
 
 async def update_drive_watch_fields(
     db: Database,
     *,
+    user_id: str,
     watch_id: str,
     expires_at: Optional[str] = None,
     state: Optional[str] = None,
@@ -1251,7 +1269,8 @@ async def update_drive_watch_fields(
         return
     assignments.append("updated_at = datetime('now')")
     params.append(watch_id)
-    query = f"UPDATE drive_watches SET {', '.join(assignments)} WHERE watch_id = ?"
+    params.append(user_id)
+    query = f"UPDATE drive_watches SET {', '.join(assignments)} WHERE watch_id = ? AND user_id = ?"
     await db.execute(query, tuple(params))
 
 # Documents operations

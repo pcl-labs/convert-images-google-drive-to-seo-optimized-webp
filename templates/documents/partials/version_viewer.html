@@ -34,14 +34,14 @@
           </div>
           <div id="mdx-panel" role="tabpanel" aria-labelledby="mdx-tab" class="hidden space-y-2" data-version-panel="mdx">
             <div class="flex flex-wrap justify-end gap-2">
-              {{ button('Copy', variant='ghost', attrs='type="button" onclick="copyVersionContent(\'mdx-body\')"', extra_classes='text-xs px-2 py-1') }}
+              {{ button('Copy', variant='ghost', attrs='type="button" onclick="copyVersionContent(\'mdx-body\', \'MDX body\')"', extra_classes='text-xs px-2 py-1') }}
               <a href="/dashboard/documents/{{ document.id }}/versions/{{ version.version_id }}/download?format=mdx" class="text-xs px-2 py-1 rounded-md border border-border text-content hover:bg-surface/70">Download</a>
             </div>
             <pre id="mdx-body" class="bg-card border border-border rounded-lg text-xs text-content overflow-auto p-3 whitespace-pre-wrap">{{ version.body_mdx }}</pre>
           </div>
           <div id="html-panel" role="tabpanel" aria-labelledby="html-tab" class="hidden space-y-2" data-version-panel="html">
             <div class="flex flex-wrap justify-end gap-2">
-              {{ button('Copy', variant='ghost', attrs='type="button" onclick="copyVersionContent(\'html-body\')"', extra_classes='text-xs px-2 py-1') }}
+              {{ button('Copy', variant='ghost', attrs='type="button" onclick="copyVersionContent(\'html-body\', \'HTML body\')"', extra_classes='text-xs px-2 py-1') }}
               <a href="/dashboard/documents/{{ document.id }}/versions/{{ version.version_id }}/download?format=html" class="text-xs px-2 py-1 rounded-md border border-border text-content hover:bg-surface/70">Download</a>
             </div>
             <pre id="html-body" class="hidden">{{ version.body_html }}</pre>

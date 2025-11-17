@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, model_validator
+from googleapiclient.errors import HttpError
 
  
 
@@ -36,6 +37,7 @@ from .drive_docs import (
 )
 logger = get_logger(__name__)
 
+DRIVE_SYNC_EXCEPTIONS = (HttpError, RuntimeError, OSError)
 
 router = APIRouter(prefix="/api/v1/steps", tags=["Steps"])
 
@@ -292,10 +294,11 @@ async def outline_generate(request: Request, payload: OutlineGenerateRequest, us
         updated_doc = await _load_document_text(db, user["user_id"], payload.document_id)
         try:
             await _sync_drive_doc_after_persist(db, user["user_id"], updated_doc, updates)
-        except Exception:
+        except DRIVE_SYNC_EXCEPTIONS as exc:
             logger.exception(
                 "drive_sync_outline_failed",
                 extra={"document_id": payload.document_id, "user_id": user["user_id"]},
+                exc_info=True,
             )
             await _schedule_drive_reconcile_job(
                 db,
@@ -304,6 +307,8 @@ async def outline_generate(request: Request, payload: OutlineGenerateRequest, us
                 updated_doc.get("drive_file_id"),
                 metadata_snapshot=_dict_from_field(updated_doc.get("metadata")),
             )
+        except Exception:
+            raise
     response_body = {"outline": outline, "document_id": payload.document_id, "text": outline_text}
     if payload.job_id:
         await record_usage_event(
@@ -464,7 +469,7 @@ async def document_persist(request: Request, payload: DocumentPersistRequest, us
         updated_doc = await _load_document_text(db, user["user_id"], payload.document_id)
         try:
             await _sync_drive_doc_after_persist(db, user["user_id"], updated_doc, updates)
-        except Exception as exc:
+        except DRIVE_SYNC_EXCEPTIONS as exc:
             logger.exception(
                 "drive_sync_after_persist_failed",
                 extra={
@@ -472,6 +477,7 @@ async def document_persist(request: Request, payload: DocumentPersistRequest, us
                     "user_id": user["user_id"],
                     "updates": list(updates.keys()),
                 },
+                exc_info=True,
             )
             await _schedule_drive_reconcile_job(
                 db,
@@ -480,6 +486,8 @@ async def document_persist(request: Request, payload: DocumentPersistRequest, us
                 updated_doc.get("drive_file_id"),
                 metadata_snapshot=_dict_from_field(updated_doc.get("metadata")),
             )
+        except Exception:
+            raise
         response_body = {"document_id": payload.document_id, "updated": requested_fields}
     else:
         response_body = {"document_id": payload.document_id, "updated": []}

@@ -35,8 +35,11 @@
       <div class="flex items-start gap-3">
         <div class="flex-1 space-y-1">
           <p class="font-medium leading-snug" x-text="t.text"></p>
-          <template x-if="t.href">
+          <template x-if="t.href && /^\\/.test(t.href)">
             <a :href="t.href" class="text-xs uppercase tracking-wide text-contentMuted hover:text-primary">View details &rarr;</a>
+          </template>
+          <template x-if="t.href && /^https?:\\/\\//i.test(t.href)">
+            <a :href="t.href" class="text-xs uppercase tracking-wide text-contentMuted hover:text-primary" target="_blank" rel="noopener">Open link &rarr;</a>
           </template>
         </div>
         <button type="button" class="text-contentMuted hover:text-content" aria-label="Close toast" @click="dismiss(t.id)">&#10005;</button>
