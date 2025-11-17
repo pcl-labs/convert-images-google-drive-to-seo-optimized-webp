@@ -31,6 +31,7 @@ env/
 ENV/
 env.bak/
 venv.bak/
+.venv-workers/
 
 # Node.js (not used in this project, but ignore just in case)
 node_modules/
@@ -82,3 +83,15 @@ static/css/app.css
 dev.db
 .queue.json
 .queue.json.lock
+
+# Cloudflare Workers build artifacts
+.wrangler/
+python_modules/
+
+# uv/pywrangler artifacts
+uv.lock
+
+# Backup files
+*.backup
+requirements.txt.local
+cf-requirements.txt.backup

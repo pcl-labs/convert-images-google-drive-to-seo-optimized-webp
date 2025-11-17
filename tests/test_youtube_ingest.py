@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from api.database import (
+from src.workers.api.database import (
     Database,
     create_document,
     create_job_extended,
@@ -17,10 +17,10 @@ from api.database import (
     update_job_status,
     upsert_google_token,
 )
-from api.google_oauth import build_youtube_service_for_user
-from api.protected import start_ingest_youtube_job
-from core.youtube_api import fetch_video_metadata
-from workers.consumer import process_ingest_youtube_job, handle_queue_message
+from src.workers.api.google_oauth import build_youtube_service_for_user
+from src.workers.api.protected import start_ingest_youtube_job
+from src.workers.core.youtube_api import fetch_video_metadata
+from src.workers.consumer import process_ingest_youtube_job, handle_queue_message
 
 
 class StubQueue:
@@ -66,8 +66,8 @@ def test_start_ingest_youtube_job_stores_metadata(monkeypatch):
         job = None
         try:
             # Ensure external enqueue path is used
-            monkeypatch.setattr("api.protected.settings.use_inline_queue", False)
-            monkeypatch.setattr("api.protected.build_youtube_service_for_user", AsyncMock(return_value=object()))
+            monkeypatch.setattr("src.workers.api.protected.settings.use_inline_queue", False)
+            monkeypatch.setattr("src.workers.api.protected.build_youtube_service_for_user", AsyncMock(return_value=object()))
 
             metadata_bundle = {
                 "frontmatter": {"title": "Test Video", "slug": "test-video"},
@@ -88,7 +88,7 @@ def test_start_ingest_youtube_job_stores_metadata(monkeypatch):
             def _fake_fetch(service, video_id):
                 return metadata_bundle
 
-            monkeypatch.setattr("api.protected.fetch_video_metadata", _fake_fetch)
+            monkeypatch.setattr("src.workers.api.protected.fetch_video_metadata", _fake_fetch)
 
             job = await start_ingest_youtube_job(db, stub_queue, user_id, "https://youtu.be/abc12345678")
 
@@ -201,7 +201,7 @@ def test_process_ingest_youtube_job_merges_metadata(monkeypatch):
             await update_job_status(db, job_id, "pending")
 
             # Only mock notify_job to avoid side effects
-            monkeypatch.setattr("workers.consumer.notify_job", AsyncMock(return_value=None))
+            monkeypatch.setattr("src.workers.consumer.notify_job", AsyncMock(return_value=None))
 
             # Use REAL API calls - no mocks for fetch_captions_text or build_youtube_service_for_user
             await process_ingest_youtube_job(db, job_id, user_id, document_id, video_id, payload)
@@ -250,9 +250,9 @@ def test_ingest_youtube_queue_flow(monkeypatch):
         fake_text = "Hello world from captions."
 
         try:
-            monkeypatch.setattr("api.protected.settings.use_inline_queue", False)
-            monkeypatch.setattr("api.protected.build_youtube_service_for_user", AsyncMock(return_value=fake_service))
-            monkeypatch.setattr("workers.consumer.build_youtube_service_for_user", AsyncMock(return_value=fake_service))
+            monkeypatch.setattr("src.workers.api.protected.settings.use_inline_queue", False)
+            monkeypatch.setattr("src.workers.api.protected.build_youtube_service_for_user", AsyncMock(return_value=fake_service))
+            monkeypatch.setattr("src.workers.consumer.build_youtube_service_for_user", AsyncMock(return_value=fake_service))
 
             metadata_bundle = {
                 "frontmatter": {"title": "Queue Flow Video", "slug": "queue-flow-video"},
@@ -266,27 +266,27 @@ def test_ingest_youtube_queue_flow(monkeypatch):
                     "thumbnails": {},
                     "category_id": "24",
                     "tags": ["queue", "demo"],
-                    "url": "https://youtu.be/queue1234567",
+                    "url": "https://youtu.be/queue123456",
                 },
             }
 
             def _fake_fetch_metadata(service, video_id):
                 assert service is fake_service
-                assert video_id == "queue1234567"
+                assert video_id == "queue123456"
                 return metadata_bundle
 
-            monkeypatch.setattr("api.protected.fetch_video_metadata", _fake_fetch_metadata)
+            monkeypatch.setattr("src.workers.api.protected.fetch_video_metadata", _fake_fetch_metadata)
             def _fake_fetch_captions(service, video_id, langs):
                 assert service is fake_service
-                assert video_id == "queue1234567"
+                assert video_id == "queue123456"
                 assert "en" in langs
                 return {"success": True, "text": fake_text, "lang": "en", "source": "captions"}
 
-            monkeypatch.setattr("workers.consumer.fetch_captions_text", _fake_fetch_captions)
-            monkeypatch.setattr("workers.consumer.notify_job", AsyncMock(return_value=None))
+            monkeypatch.setattr("src.workers.consumer.fetch_captions_text", _fake_fetch_captions)
+            monkeypatch.setattr("src.workers.consumer.notify_job", AsyncMock(return_value=None))
 
             job_status = await start_ingest_youtube_job(
-                db, stub_queue, user_id, "https://youtu.be/queue1234567"
+                db, stub_queue, user_id, "https://youtu.be/queue123456"
             )
             job_row = await get_job(db, job_status.job_id, user_id)
 
@@ -307,14 +307,15 @@ def test_ingest_youtube_queue_flow(monkeypatch):
             assert doc.get("raw_text") == fake_text
             metadata = _parse_metadata(doc.get("metadata"))
             assert metadata["transcript"]["duration_s"] == 90
-            assert metadata["youtube"]["video_id"] == "queue1234567"
+            assert metadata["youtube"]["video_id"] == "queue123456"
         finally:
             job_id = job_row["job_id"] if job_row else None
             await db.execute("DELETE FROM usage_events WHERE job_id = ?", ((job_id or ""),))
             if job_id:
                 await db.execute("DELETE FROM jobs WHERE job_id = ?", (job_id,))
             # Precise cleanup: remove only the document created by this test
-            await db.execute("DELETE FROM documents WHERE document_id = ?", (job_status.document_id,))
+            if 'job_status' in locals() and job_status:
+                await db.execute("DELETE FROM documents WHERE document_id = ?", (job_status.document_id,))
             await db.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
 
     asyncio.run(_run())
@@ -328,12 +329,12 @@ def test_ingest_youtube_retry_and_dlq(monkeypatch):
         stub_queue = StubQueue()
         queue_producer = StubQueueProducer()
 
-        monkeypatch.setattr("workers.consumer.settings.use_inline_queue", False)
-        monkeypatch.setattr("workers.consumer.settings.max_job_retries", 2)
-        monkeypatch.setattr("api.protected.settings.use_inline_queue", False)
+        monkeypatch.setattr("src.workers.consumer.settings.use_inline_queue", False)
+        monkeypatch.setattr("src.workers.consumer.settings.max_job_retries", 2)
+        monkeypatch.setattr("src.workers.api.protected.settings.use_inline_queue", False)
 
         fake_service = object()
-        monkeypatch.setattr("api.protected.build_youtube_service_for_user", AsyncMock(return_value=fake_service))
+        monkeypatch.setattr("src.workers.api.protected.build_youtube_service_for_user", AsyncMock(return_value=fake_service))
         metadata_bundle = {
             "frontmatter": {"title": "Retry Video", "slug": "retry-video"},
             "metadata": {
@@ -346,7 +347,7 @@ def test_ingest_youtube_retry_and_dlq(monkeypatch):
                 "thumbnails": {},
                 "category_id": "24",
                 "tags": ["retry"],
-                "url": "https://youtu.be/queue1234567",
+                "url": "https://youtu.be/queue123456",
             },
         }
 
@@ -354,12 +355,12 @@ def test_ingest_youtube_retry_and_dlq(monkeypatch):
             assert service is fake_service
             return metadata_bundle
 
-        monkeypatch.setattr("api.protected.fetch_video_metadata", _fake_meta)
+        monkeypatch.setattr("src.workers.api.protected.fetch_video_metadata", _fake_meta)
         failing_process = AsyncMock(side_effect=RuntimeError("boom"))
-        monkeypatch.setattr("workers.consumer.process_ingest_youtube_job", failing_process)
+        monkeypatch.setattr("src.workers.consumer.process_ingest_youtube_job", failing_process)
 
         job_status = await start_ingest_youtube_job(
-            db, stub_queue, user_id, "https://youtu.be/queue1234567"
+            db, stub_queue, user_id, "https://youtu.be/queue123456"
         )
         message = stub_queue.messages[0]
 

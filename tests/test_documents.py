@@ -1,5 +1,5 @@
 import uuid
-from api.database import Database, create_document, get_document
+from src.workers.api.database import Database, create_document, get_document
 import asyncio
 
 

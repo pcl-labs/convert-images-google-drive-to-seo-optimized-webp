@@ -4,9 +4,9 @@ import uuid
 import pytest
 from fastapi.testclient import TestClient
 
-from api.database import Database, create_document, get_document
-from api.deps import set_db_instance, get_current_user
-from api.main import app
+from src.workers.api.database import Database, create_document, get_document
+from src.workers.api.deps import set_db_instance, get_current_user
+from src.workers.api.main import app
 
 
 @pytest.fixture()

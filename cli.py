@@ -203,21 +203,7 @@ def main():
 
     # Handle reauth flag (do this before any folder ID logic)
     if args.reauth:
-        if os.path.exists('token.json'):
-            try:
-                os.remove('token.json')
-                print('Removed token.json for re-authentication.')
-            except OSError as e:
-                print(f"Error: Failed to delete token.json: {type(e).__name__}: {e}")
-                sys.exit(1)
-        # Trigger auth flow and exit
-        from core.drive_utils import get_drive_service
-        try:
-            get_drive_service()
-        except Exception as e:
-            print(f"Error: Re-authentication failed: {type(e).__name__}: {e}")
-            sys.exit(1)
-        print('Re-authentication complete.')
+        print("Re-auth is now handled via the web UI. Please link your Google Drive account from the dashboard.")
         sys.exit(0)
 
     # Enforce --drive-folder is required for all other operations
@@ -347,8 +333,15 @@ def main():
     if original_file_ids:
         print("Automatically deleting original images from Google Drive...")
         try:
-            delete_images(folder_id, original_file_ids)
-            print("Original images deleted.")
+            deleted_ids, failed_ids = delete_images(folder_id, original_file_ids)
+            deleted_count = len(deleted_ids)
+            failed_count = len(failed_ids)
+            if failed_count > 0:
+                print(f"Deletion completed: {deleted_count} deleted, {failed_count} failed")
+                if failed_ids:
+                    print(f"Failed IDs: {', '.join(failed_ids[:10])}{'...' if len(failed_ids) > 10 else ''}")
+            else:
+                print(f"Original images deleted: {deleted_count} files")
         except Exception as e:
             print(f"\nError: Failed to delete original images from Google Drive.")
             print(f"Exception details: {type(e).__name__}: {e}")
