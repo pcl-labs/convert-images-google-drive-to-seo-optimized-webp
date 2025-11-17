@@ -45,6 +45,7 @@ from .database import (
     get_document_version,
     create_document_export,
     set_job_output,
+    record_pipeline_event,
 )
 from .notifications import notify_job
 from .auth import create_user_api_key
@@ -71,7 +72,7 @@ from .deps import (
 )
 from .utils import enqueue_job_with_guard
 from ..core.url_utils import parse_youtube_video_id
-from .drive_workspace import ensure_drive_workspace, ensure_document_drive_structure
+from .drive_workspace import ensure_drive_workspace, ensure_document_drive_structure, link_document_drive_workspace
 from .youtube_ingest import ingest_youtube_document
 from .database import get_usage_summary, list_usage_events, count_usage_events
 from fastapi import Query
@@ -415,6 +416,60 @@ async def start_ingest_youtube_job(db, queue, user_id: str, url: str) -> JobStat
                 },
             )
             await set_job_output(db, job_id, {})
+
+        title_hint = (
+            frontmatter.get("title")
+            or youtube_meta.get("title")
+            or video_id
+        )
+        if settings.enable_drive_pipeline:
+            await record_pipeline_event(
+                db,
+                user_id,
+                job_id,
+                event_type="ingest_youtube",
+                stage="drive.workspace.ensure",
+                status="running",
+                message="Linking document to Drive workspace",
+                data={"document_id": document_id},
+            )
+            try:
+                drive_block = await link_document_drive_workspace(
+                    db,
+                    user_id=user_id,
+                    document_id=document_id,
+                    document_name=title_hint,
+                    metadata=result.get("document_metadata") if isinstance(result, dict) else {},
+                    job_id=job_id,
+                    event_type="ingest_youtube",
+                )
+            except Exception as exc:
+                logger.warning(
+                    "inline_drive_workspace_link_failed",
+                    exc_info=True,
+                    extra={"job_id": job_id, "document_id": document_id, "error": str(exc)},
+                )
+                await record_pipeline_event(
+                    db,
+                    user_id,
+                    job_id,
+                    event_type="ingest_youtube",
+                    stage="drive.workspace.link",
+                    status="error",
+                    message=f"Drive workspace link failed: {exc}",
+                    data={"document_id": document_id},
+                )
+        else:
+            await record_pipeline_event(
+                db,
+                user_id,
+                job_id,
+                event_type="ingest_youtube",
+                stage="drive.workspace.link",
+                status="skipped",
+                message="Drive workspace linking disabled",
+                data={"document_id": document_id},
+            )
         await update_job_status(db, job_id, JobStatusEnum.COMPLETED.value, progress={"stage": "completed"})
         try:
             await notify_job(db, user_id=user_id, job_id=job_id, level="success", text=f"Ingested YouTube {video_id}")

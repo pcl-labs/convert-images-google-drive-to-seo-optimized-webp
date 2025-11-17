@@ -34,7 +34,8 @@ You’re working in the repo `convert-image-webp-optimizer-google-drive`. Comple
 > ✅ Nothing blocking here—move on to Drive source-of-truth work.
 
 ### 1.b Drive source-of-truth loop
-- **Document ↔ Google Doc mapping**: Extend `documents` metadata to track the Drive file ID + revision so we can treat a Google Doc as the canonical store. Add an ingestion step (queue job) that fetches the doc body via Drive/Docs API, normalizes it into `raw_text`, and updates `document_versions`.
+- **✅ Drive workspace provisioning parity (new)**: YouTube ingest now creates a Drive workspace (folder + media folder) locally and in Workers. `metadata.drive` is stamped with folder/file IDs, last-ingested timestamps, and external-edit flags so the dashboard UI can mirror Drive. Drive overview still only counts `source_type=drive*` docs, so we’ll extend it once Docs ingestion lands.
+- **Document ↔ Google Doc mapping** *(next)*: extend the ingest path to either reuse or create a Docs file (via Docs API) and treat that file’s revision as the canonical store. Persist `drive_file_id`, `revision_id`, and `last_ingested_revision` on the document row.
 - **Editing + publish pipeline**: When the editor (or future AI agent) edits a document, send those diffs back to the Drive file via the Docs batchUpdate API, then mark a “ready for publish” version row so exports can pick it up. Store edit provenance in `document_versions` for auditing.
 - **Drive change detection**: Add a worker/cron that polls Drive change IDs for linked docs, enqueues a lightweight “doc sync” job, and annotates the corresponding document/version when an external edit happens. This keeps the queue busy even if no YouTube ingest is running.
 - **Docs-as-output**: When export jobs target Drive, reuse the same file ID to update specific ranges (e.g., marketing brief, image slots) instead of creating a new file. This keeps the Drive doc authoritative while the API orchestrates ingestion, generation, and publishing.
@@ -42,6 +43,9 @@ You’re working in the repo `convert-image-webp-optimizer-google-drive`. Comple
 (Keep the existing Sections 2–6 as-is; they follow once Section 1 subsections land.)
 
 ## 2. Editor & Pipeline Polish
+- **Milestone: Drive-linked document UI** *(in progress)*:
+  - ✅ Card/grid redesign + detail header now surface Drive metadata (folder/doc links, last ingest timestamp, external-edit warnings).
+  - 🚧 Next: surface Drive status in the dashboard overview, add manual “Sync Drive” controls, and auto-refresh metadata when new pipeline events arrive so the editor always mirrors the workspace.
 - **Composable steps in UI**: surface outline/chapters regenerate options that call the `/api/v1/steps/*` endpoints individually so product teams (or agents) can tweak only a portion of a document without re-running the entire pipeline.
 - **Inline diffing**: show how a regenerated section differs from the previous version (simple Markdown diff) before committing it as a new version row.
 - **Image workflow**: allow users to choose which generated image prompt to keep, upload their own replacements, or re-run image generation per section.

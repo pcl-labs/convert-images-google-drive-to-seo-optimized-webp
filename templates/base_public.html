@@ -51,9 +51,11 @@
   </head>
   <body>
     <div class="min-h-screen bg-bg text-content flex flex-col">
+      {% block shell_header %}{% endblock %}
       <main class="flex-1">
         {% block content %}{% endblock %}
       </main>
+      {% block shell_footer %}{% endblock %}
       {% include 'components/overlays/toast.html' %}
     </div>
   </body>

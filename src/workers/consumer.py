@@ -54,10 +54,12 @@ from src.workers.api.database import (
     get_job,
     update_job_retry_state,
     create_job_extended,
+    record_pipeline_event,
 )
 from src.workers.api.config import settings
 from src.workers.api.cloudflare_queue import QueueProducer
 from src.workers.api.google_oauth import build_youtube_service_for_user, build_docs_service_for_user, build_drive_service_for_user
+from src.workers.api.drive_workspace import DriveWorkspaceSyncService, link_document_drive_workspace
 from src.workers.core.ai_modules import (
     generate_outline,
     organize_chapters,
@@ -189,6 +191,38 @@ def make_progress(
         "processing_failed": processing_failed,
         "recent_logs": recent_logs or [],
     }
+
+
+async def _safe_pipeline_event(
+    db: Database,
+    user_id: str,
+    job_id: Optional[str],
+    *,
+    event_type: str,
+    stage: str,
+    status: str,
+    message: str,
+    data: Optional[Dict[str, Any]] = None,
+) -> None:
+    if not job_id:
+        return
+    try:
+        await record_pipeline_event(
+            db,
+            user_id,
+            job_id,
+            event_type=event_type,
+            stage=stage,
+            status=status,
+            message=message,
+            data=data or {},
+        )
+    except Exception:
+        app_logger.debug(
+            "pipeline_event_emit_failed",
+            exc_info=True,
+            extra={"job_id": job_id, "stage": stage, "event_type": event_type},
+        )
 
 def extract_file_id_from_filename(
     filename: str,
@@ -362,6 +396,16 @@ async def process_optimization_job(
 
         # Extract folder ID (validate access using user's Drive service)
         folder_id = extract_folder_id_from_input(drive_folder, service=service)
+        await _safe_pipeline_event(
+            db,
+            user_id,
+            job_id,
+            event_type="optimize_drive",
+            stage="images.metadata",
+            status="completed",
+            message="Drive folder resolved",
+            data={"folder_id": folder_id},
+        )
         
         # Get folder name for SEO prefix
         folder_name = get_folder_name(folder_id, service=service) or "optimized"
@@ -389,6 +433,16 @@ async def process_optimization_job(
             }
         )
         await update_job_status(db, job_id, "processing", progress=make_progress("downloading", recent_logs=recent_logs))
+        await _safe_pipeline_event(
+            db,
+            user_id,
+            job_id,
+            event_type="optimize_drive",
+            stage="images.download",
+            status="running",
+            message="Downloading Drive images",
+            data={"folder_id": folder_id, "extensions": list(extensions_set)},
+        )
         
         downloaded, failed_downloads, filename_to_file_id = await asyncio.to_thread(
             download_images,
@@ -399,6 +453,16 @@ async def process_optimization_job(
             max_retries,
             True,
             service
+        )
+        await _safe_pipeline_event(
+            db,
+            user_id,
+            job_id,
+            event_type="optimize_drive",
+            stage="images.download",
+            status="completed",
+            message="Images downloaded",
+            data={"folder_id": folder_id, "downloaded": len(downloaded), "failed": len(failed_downloads)},
         )
         
         log_step(f"Download finished: {len(downloaded)} ok, {len(failed_downloads)} failed")
@@ -434,6 +498,16 @@ async def process_optimization_job(
         skipped = []
         failed_processing = []
         PROGRESS_UPDATE_INTERVAL = 10
+        await _safe_pipeline_event(
+            db,
+            user_id,
+            job_id,
+            event_type="optimize_drive",
+            stage="images.optimize",
+            status="running",
+            message="Optimizing images",
+            data={"folder_id": folder_id},
+        )
         
         for idx, fname in enumerate(downloaded, 1):
             try:
@@ -474,6 +548,21 @@ async def process_optimization_job(
                     processing_failed=len(failed_processing),
                     recent_logs=recent_logs,
                 ))
+        await _safe_pipeline_event(
+            db,
+            user_id,
+            job_id,
+            event_type="optimize_drive",
+            stage="images.optimize",
+            status="completed",
+            message="Optimization phase complete",
+            data={
+                "folder_id": folder_id,
+                "optimized": len(optimized),
+                "skipped": len(skipped),
+                "processing_failed": len(failed_processing),
+            },
+        )
         
         # Upload optimized images
         log_step("Upload started")
@@ -501,6 +590,20 @@ async def process_optimization_job(
             processing_failed=len(failed_processing),
             recent_logs=recent_logs,
         ))
+        await _safe_pipeline_event(
+            db,
+            user_id,
+            job_id,
+            event_type="optimize_drive",
+            stage="images.upload",
+            status="running",
+            message="Uploading optimized assets to Drive",
+            data={
+                "folder_id": folder_id,
+                "optimized": len(optimized),
+                "skipped": len(skipped),
+            },
+        )
         
         # Detect actual extensions in output directory, with fallback defaults
         upload_extensions = detect_extensions_in_dir(output_dir)
@@ -517,6 +620,21 @@ async def process_optimization_job(
             FAIL_LOG_PATH,
             max_retries,
             service
+        )
+        await _safe_pipeline_event(
+            db,
+            user_id,
+            job_id,
+            event_type="optimize_drive",
+            stage="images.upload",
+            status="completed",
+            message="Uploaded optimized images",
+            data={
+                "folder_id": folder_id,
+                "uploaded": len(uploaded),
+                "upload_failed": len(failed_uploads),
+                "optimized": len(optimized),
+            },
         )
         
         log_step(f"Upload finished: {len(uploaded)} ok, {len(failed_uploads)} failed")
@@ -685,6 +803,16 @@ async def process_ingest_youtube_job(
     """Fetch transcript, merge stored metadata, persist document contents, and record usage."""
     try:
         await update_job_status(db, job_id, "processing", progress=make_progress("ingesting_youtube"))
+        await record_pipeline_event(
+            db,
+            user_id,
+            job_id,
+            event_type="ingest_youtube",
+            stage="job.start",
+            status="running",
+            message="YouTube ingest job started",
+            data={"video_id": youtube_video_id},
+        )
 
         job_payload = job_payload or {}
 
@@ -727,6 +855,72 @@ async def process_ingest_youtube_job(
             return
 
         await set_job_output(db, job_id, result["job_output"])
+        title_hint = (
+            payload_frontmatter.get("title")
+            or payload_metadata.get("title")
+            or youtube_video_id
+        )
+
+        if settings.enable_drive_pipeline:
+            await _safe_pipeline_event(
+                db,
+                user_id,
+                job_id,
+                event_type="ingest_youtube",
+                stage="drive.workspace.ensure",
+                status="running",
+                message="Linking document to Drive workspace",
+                data={"document_id": document_id},
+            )
+            drive_block = None
+            try:
+                drive_block = await link_document_drive_workspace(
+                    db,
+                    user_id=user_id,
+                    document_id=document_id,
+                    document_name=title_hint,
+                    metadata=result.get("document_metadata"),
+                    job_id=job_id,
+                    event_type="ingest_youtube",
+                )
+            except Exception as exc:
+                app_logger.warning(
+                    "drive_workspace_link_failed",
+                    exc_info=True,
+                    extra={"job_id": job_id, "document_id": document_id, "error": str(exc)},
+                )
+                await _safe_pipeline_event(
+                    db,
+                    user_id,
+                    job_id,
+                    event_type="ingest_youtube",
+                    stage="drive.workspace.link",
+                    status="error",
+                    message=f"Drive workspace link failed: {exc}",
+                    data={"document_id": document_id},
+                )
+        else:
+            await _safe_pipeline_event(
+                db,
+                user_id,
+                job_id,
+                event_type="ingest_youtube",
+                stage="drive.workspace.link",
+                status="skipped",
+                message="Drive workspace linking disabled",
+                data={"document_id": document_id},
+            )
+
+        await record_pipeline_event(
+            db,
+            user_id,
+            job_id,
+            event_type="ingest_youtube",
+            stage="job.persist",
+            status="completed",
+            message="YouTube transcription persisted",
+            data={"document_id": document_id},
+        )
         await update_job_status(db, job_id, "completed", progress=make_progress("completed"))
         try:
             await notify_job(db, user_id=user_id, job_id=job_id, level="success", text=f"Ingested YouTube {youtube_video_id}")
@@ -735,6 +929,19 @@ async def process_ingest_youtube_job(
         return
     except Exception as e:
         await update_job_status(db, job_id, "failed", error=str(e))
+        try:
+            await record_pipeline_event(
+                db,
+                user_id,
+                job_id,
+                event_type="ingest_youtube",
+                stage="job.failed",
+                status="error",
+                message=str(e),
+                data={"video_id": youtube_video_id},
+            )
+        except Exception:
+            pass
         try:
             await notify_job(db, user_id=user_id, job_id=job_id, level="error", text=f"YouTube ingestion failed")
         except Exception:
@@ -755,9 +962,29 @@ async def process_ingest_drive_job(
         document = await get_document(db, document_id, user_id=user_id)
         if not document:
             raise ValueError("Document not found for Drive ingest")
+        await _safe_pipeline_event(
+            db,
+            user_id,
+            job_id,
+            event_type="ingest_drive",
+            stage="drive.sync.fetch",
+            status="running",
+            message="Fetching Google Doc contents",
+            data={"document_id": document_id, "drive_file_id": drive_file_id},
+        )
         docs_service = await build_docs_service_for_user(db, user_id)
         drive_service = await build_drive_service_for_user(db, user_id)
         doc_payload = await execute_google_request(docs_service.documents().get(documentId=drive_file_id))
+        await _safe_pipeline_event(
+            db,
+            user_id,
+            job_id,
+            event_type="ingest_drive",
+            stage="drive.sync.fetch",
+            status="completed",
+            message="Fetched Google Doc",
+            data={"document_id": document_id, "drive_file_id": drive_file_id},
+        )
         text = google_doc_to_text(doc_payload)
         drive_meta = await execute_google_request(
             drive_service.files().get(
@@ -802,6 +1029,16 @@ async def process_ingest_drive_job(
             assets={},
         )
         version_id = version_row.get("version_id")
+        await _safe_pipeline_event(
+            db,
+            user_id,
+            job_id,
+            event_type="ingest_drive",
+            stage="drive.sync.persist",
+            status="running",
+            message="Persisting Drive revision locally",
+            data={"document_id": document_id, "version_id": version_id},
+        )
         await update_document(
             db,
             document_id,
@@ -822,6 +1059,16 @@ async def process_ingest_drive_job(
             "chars": len(text),
             "version_id": version_id,
         }
+        await _safe_pipeline_event(
+            db,
+            user_id,
+            job_id,
+            event_type="ingest_drive",
+            stage="drive.sync.persist",
+            status="completed",
+            message="Drive document synced",
+            data={"document_id": document_id, "drive_revision_id": revision_id},
+        )
         await set_job_output(db, job_id, job_output)
         await update_job_status(db, job_id, "completed", progress=make_progress("completed"))
         try:
@@ -906,70 +1153,20 @@ async def process_drive_change_poll_job(
 ):
     try:
         await update_job_status(db, job_id, "processing", progress=make_progress("drive_poll.fetching"))
-        params: List[Any] = [user_id]
-        if document_ids:
-            placeholders = ",".join(["?"] * len(document_ids))
-            query = f"SELECT * FROM documents WHERE user_id = ? AND drive_file_id IS NOT NULL AND document_id IN ({placeholders})"
-            params.extend(document_ids)
-        else:
-            query = "SELECT * FROM documents WHERE user_id = ? AND drive_file_id IS NOT NULL"
-        rows = await db.execute_all(query, tuple(params))
-        documents = [dict(row) for row in (rows or [])]
-        if not documents:
-            await update_job_status(db, job_id, "completed", progress=make_progress("completed"))
-            await set_job_output(db, job_id, {"documents_checked": 0, "changes": 0})
-            return
-        drive_service = await build_drive_service_for_user(db, user_id)
-        changed = []
-        for doc in documents:
-            file_id = doc.get("drive_file_id")
-            if not file_id:
-                continue
-            try:
-                drive_meta = await execute_google_request(
-                    drive_service.files().get(fileId=file_id, fields='id, headRevisionId, modifiedTime')
-                )
-                drive_meta = drive_meta or {}
-                revision_id = (drive_meta or {}).get("headRevisionId")
-                if revision_id and revision_id != doc.get("drive_revision_id"):
-                    changed.append((doc, revision_id))
-                    metadata = _parse_document_metadata(doc)
-                    drive_block = metadata.get("drive") if isinstance(metadata, dict) else {}
-                    if not isinstance(drive_block, dict):
-                        drive_block = {}
-                    drive_block.update(
-                        {
-                            "external_edit_detected": True,
-                            "pending_revision_id": revision_id,
-                            "pending_modified_time": (drive_meta or {}).get("modifiedTime"),
-                        }
-                    )
-                    metadata["drive"] = drive_block
-                    await update_document(db, doc.get("document_id"), {"metadata": metadata})
-                    await _enqueue_drive_ingest_followup(
-                        db,
-                        user_id,
-                        doc.get("document_id"),
-                        file_id,
-                        revision_id,
-                        queue_producer,
-                    )
-            except Exception as exc:
-                app_logger.error(
-                    "drive_poll_doc_failed",
-                    exc_info=True,
-                    extra={
-                        "document_id": doc.get("document_id"),
-                        "file_id": file_id,
-                        "error": str(exc),
-                    },
-                )
-                continue
-        await set_job_output(
-            db,
-            job_id,
-            {"documents_checked": len(documents), "changes": len(changed)},
-        )
+
+        async def _handle_change(document: Dict[str, Any], revision_id: str, drive_meta: Dict[str, Any]) -> None:
+            await _enqueue_drive_ingest_followup(
+                db,
+                user_id,
+                document.get("document_id"),
+                document.get("drive_file_id"),
+                revision_id,
+                queue_producer,
+            )
+
+        sync_service = DriveWorkspaceSyncService(db, user_id, job_id=job_id, event_type="drive_sync")
+        result = await sync_service.scan_for_changes(document_ids=document_ids, on_change=_handle_change)
+        await set_job_output(db, job_id, result)
         await update_job_status(db, job_id, "completed", progress=make_progress("completed"))
     except Exception as exc:
         await update_job_status(db, job_id, "failed", error=str(exc))

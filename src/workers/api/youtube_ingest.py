@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from .config import settings
-from .database import get_document, update_document, record_usage_event
+from .database import get_document, update_document, record_usage_event, record_pipeline_event
 from .google_oauth import build_youtube_service_for_user
 from ..core.youtube_captions import fetch_captions_text, YouTubeCaptionsError
 
@@ -50,6 +50,16 @@ async def ingest_youtube_document(
     document = await get_document(db, document_id, user_id=user_id)
     if not document:
         raise ValueError("Document not found")
+    await record_pipeline_event(
+        db,
+        user_id,
+        job_id,
+        event_type="ingest_youtube",
+        stage="document.load",
+        status="completed",
+        message="Document loaded",
+        data={"document_id": document_id},
+    )
 
     metadata = _parse_document_metadata(document)
     frontmatter = _json_dict_field(document.get("frontmatter"), {})
@@ -63,9 +73,29 @@ async def ingest_youtube_document(
         langs = langs_raw or ["en"]
 
     yt_service = await build_youtube_service_for_user(db, user_id)  # type: ignore
+    await record_pipeline_event(
+        db,
+        user_id,
+        job_id,
+        event_type="ingest_youtube",
+        stage="captions.fetch",
+        status="running",
+        message="Fetching captions",
+        data={"video_id": youtube_video_id, "langs": langs},
+    )
     cap = await asyncio.to_thread(fetch_captions_text, yt_service, youtube_video_id, langs)
     if not cap.get("success"):
         raise YouTubeCaptionsError(cap.get("error") or "Captions unavailable for this video.")
+    await record_pipeline_event(
+        db,
+        user_id,
+        job_id,
+        event_type="ingest_youtube",
+        stage="captions.fetch",
+        status="completed",
+        message="Captions fetched",
+        data={"video_id": youtube_video_id, "lang": cap.get("lang"), "chars": len(cap.get("text") or "")},
+    )
 
     text = (cap.get("text") or "").strip()
     source = cap.get("source") or "captions"
@@ -117,6 +147,16 @@ async def ingest_youtube_document(
     if "title" not in frontmatter and payload_metadata.get("title"):
         frontmatter["title"] = payload_metadata.get("title")
 
+    await record_pipeline_event(
+        db,
+        user_id,
+        job_id,
+        event_type="ingest_youtube",
+        stage="document.persist",
+        status="running",
+        message="Persisting transcript to document",
+        data={"document_id": document_id},
+    )
     await update_document(
         db,
         document_id,
@@ -126,6 +166,16 @@ async def ingest_youtube_document(
             "frontmatter": frontmatter,
             "content_format": "youtube",
         },
+    )
+    await record_pipeline_event(
+        db,
+        user_id,
+        job_id,
+        event_type="ingest_youtube",
+        stage="document.persist",
+        status="completed",
+        message="Document updated",
+        data={"document_id": document_id},
     )
 
     job_output = {
@@ -137,6 +187,17 @@ async def ingest_youtube_document(
             "youtube": video_meta,
         },
     }
+
+    await record_pipeline_event(
+        db,
+        user_id,
+        job_id,
+        event_type="ingest_youtube",
+        stage="job.output",
+        status="completed",
+        message="YouTube ingest completed",
+        data={"document_id": document_id},
+    )
 
     return {
         "text": text,
