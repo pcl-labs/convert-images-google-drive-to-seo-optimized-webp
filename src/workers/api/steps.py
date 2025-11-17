@@ -258,20 +258,11 @@ async def transcript_fetch(request: Request, payload: TranscriptFetchRequest, us
     return response_body
 
 
-@router.post("/outline.generate")
-async def outline_generate(request: Request, payload: OutlineGenerateRequest, user: dict = Depends(get_current_user)):
-    db = ensure_db()
-    key = _require_idempotency_key(request)
-    body = payload.model_dump()
-    hash_val = _payload_hash(body)
-    maybe_cached = await _check_idempotency(db, user["user_id"], key, hash_val)
-    if maybe_cached:
-        return maybe_cached
-
+async def run_outline_generate(db, user_id: str, payload: OutlineGenerateRequest) -> Dict[str, Any]:
     source_text = payload.text
     doc: Optional[Dict[str, Any]] = None
     if payload.document_id:
-        doc = await _load_document_text(db, user["user_id"], payload.document_id)
+        doc = await _load_document_text(db, user_id, payload.document_id)
         source_text = source_text or (doc.get("raw_text") or "")
     # Validate non-empty input
     if not source_text or not str(source_text).strip():
@@ -304,36 +295,36 @@ async def outline_generate(request: Request, payload: OutlineGenerateRequest, us
             "drive_text": outline_text,
         }
         await update_document(db, payload.document_id, updates)
-        updated_doc = await _load_document_text(db, user["user_id"], payload.document_id)
+        updated_doc = await _load_document_text(db, user_id, payload.document_id)
         try:
-            await _sync_drive_doc_after_persist(db, user["user_id"], updated_doc, updates)
+            await _sync_drive_doc_after_persist(db, user_id, updated_doc, updates)
         except DRIVE_SYNC_EXCEPTIONS as exc:
             logger.exception(
                 "drive_sync_outline_failed",
-                extra={"document_id": payload.document_id, "user_id": user["user_id"]},
+                extra={"document_id": payload.document_id, "user_id": user_id},
                 exc_info=True,
             )
             await _schedule_drive_reconcile_job(
                 db,
                 payload.document_id,
-                user["user_id"],
+                user_id,
                 updated_doc.get("drive_file_id"),
                 metadata_snapshot=_dict_from_field(updated_doc.get("metadata")),
             )
         except Exception:
             raise
-    response_body = {"outline": outline, "document_id": payload.document_id, "text": outline_text}
+    response_body: Dict[str, Any] = {"outline": outline, "document_id": payload.document_id, "text": outline_text}
     if payload.job_id:
         await record_usage_event(
             db,
-            user["user_id"],
+            user_id,
             payload.job_id,
             "outline",
             {"sections": len(outline), "chars": len(source_text or "")},
         )
         await _record_step_pipeline_event(
             db,
-            user["user_id"],
+            user_id,
             payload.job_id,
             event_type="outline.generate",
             stage="outline.generate",
@@ -341,6 +332,20 @@ async def outline_generate(request: Request, payload: OutlineGenerateRequest, us
             message="Outline generated",
             document_id=payload.document_id,
         )
+    return response_body
+
+
+@router.post("/outline.generate")
+async def outline_generate(request: Request, payload: OutlineGenerateRequest, user: dict = Depends(get_current_user)):
+    db = ensure_db()
+    key = _require_idempotency_key(request)
+    body = payload.model_dump()
+    hash_val = _payload_hash(body)
+    maybe_cached = await _check_idempotency(db, user["user_id"], key, hash_val)
+    if maybe_cached:
+        return maybe_cached
+
+    response_body = await run_outline_generate(db, user["user_id"], payload)
     await _finalize_idempotency(db, user["user_id"], key, "outline.generate", hash_val, response_body, status.HTTP_200_OK)
     return response_body
 

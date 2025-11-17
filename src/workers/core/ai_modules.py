@@ -441,14 +441,14 @@ async def compose_blog(
     model_name = (model or settings.openai_blog_model or "gpt-5.1").strip()
     temp_value = temperature if temperature is not None else settings.openai_blog_temperature
     try:
-        response = await client.responses.create(
+        response = await client.chat.completions.create(
             model=model_name,
-            temperature=temp_value,
-            max_output_tokens=settings.openai_blog_max_output_tokens,
-            input=[
-                {"role": "system", "content": [{"type": "text", "text": system_prompt}]},
-                {"role": "user", "content": [{"type": "text", "text": user_prompt}]},
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
             ],
+            temperature=temp_value,
+            max_tokens=settings.openai_blog_max_output_tokens,
         )
     except OpenAIError as exc:
         logger.error(
@@ -461,14 +461,48 @@ async def compose_blog(
         logger.error("openai_compose_blog_unexpected", exc_info=True, extra={"model": model_name})
         return _compose_blog_stub(chapters, tone=tone, model=model_name, temperature=temp_value)
 
+    # Safely extract markdown from standard OpenAI chat/completion response shapes
     output_text: str = ""
-    candidate = getattr(response, "output_text", None)
-    if isinstance(candidate, list):
-        output_text = "\n".join([str(item) for item in candidate if str(item).strip()])
-    elif isinstance(candidate, str):
-        output_text = candidate
 
-    if not output_text:
+    if response is not None:
+        choices = getattr(response, "choices", None)
+        if isinstance(choices, list) and choices:
+            first = choices[0]
+            content: Any = None
+
+            # Chat-style response: choice.message.content
+            message = getattr(first, "message", None)
+            if message is not None and hasattr(message, "content"):
+                content = getattr(message, "content")
+
+            # Legacy completion: choice.text
+            if content is None and hasattr(first, "text"):
+                content = getattr(first, "text")
+
+            # Normalize various content shapes into a single string
+            if isinstance(content, str):
+                output_text = content
+            elif isinstance(content, list):
+                parts: List[str] = []
+                for item in content:
+                    if isinstance(item, str):
+                        parts.append(item)
+                    else:
+                        parts.append(str(item))
+                output_text = "\n".join(p for p in parts if p.strip())
+            elif isinstance(content, (dict, int, float, bool)):
+                output_text = str(content)
+
+    # Fallback: if nothing extracted, try any remaining best-effort attributes
+    if not output_text and response is not None:
+        candidate = getattr(response, "output_text", None)
+        if isinstance(candidate, list):
+            output_text = "\n".join(str(item) for item in candidate if str(item).strip())
+        elif isinstance(candidate, str):
+            output_text = candidate
+
+    # Final fallback: mirror legacy block-iterating behavior if still empty
+    if not output_text and response is not None:
         output_chunks: List[str] = []
         for item in getattr(response, "output", []) or []:
             contents = getattr(item, "content", None)
@@ -480,9 +514,10 @@ async def compose_blog(
                     output_chunks.append(str(text_obj.value))
                 elif isinstance(text_obj, str):
                     output_chunks.append(text_obj)
-        output_text = "\n".join(output_chunks)
+        if output_chunks:
+            output_text = "\n".join(output_chunks)
 
-    markdown = output_text.strip()
+    markdown = (output_text or "").strip()
     if not markdown:
         return _compose_blog_stub(chapters, tone=tone, model=model_name, temperature=temp_value)
 
