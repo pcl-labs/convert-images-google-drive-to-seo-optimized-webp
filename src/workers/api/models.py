@@ -25,6 +25,7 @@ class JobType(str, Enum):
     INGEST_TEXT = "ingest_text"
     INGEST_DRIVE = "ingest_drive"
     DRIVE_CHANGE_POLL = "drive_change_poll"
+    DRIVE_WATCH_RENEWAL = "drive_watch_renewal"
     INGEST_DRIVE_FOLDER = "ingest_drive_folder"
     GENERATE_BLOG = "generate_blog"
 

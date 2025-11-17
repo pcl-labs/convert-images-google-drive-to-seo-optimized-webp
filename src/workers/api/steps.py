@@ -5,12 +5,12 @@ import json
 import uuid
 from typing import Any, Dict, List, Optional
 import asyncio
-import random
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, model_validator
+from googleapiclient.errors import HttpError
 
  
 
@@ -21,15 +21,23 @@ from .database import (
     record_usage_event,
     get_step_invocation,
     save_step_invocation,
+    record_pipeline_event,
 )
-from .google_oauth import build_youtube_service_for_user, build_docs_service_for_user, build_drive_service_for_user
+from .google_oauth import build_youtube_service_for_user
 from src.workers.core.youtube_api import fetch_video_metadata, YouTubeAPIError
 from src.workers.core.youtube_captions import fetch_captions_text
 from src.workers.core.ai_modules import generate_outline, organize_chapters, compose_blog, default_title_from_outline
-from src.workers.core.google_async import execute_google_request
 from .app_logging import get_logger
+from .drive_docs import (
+    dict_from_field as _dict_from_field,
+    merge_metadata_for_updates as _merge_metadata_for_updates,
+    retry_update_document as _retry_update_document,
+    schedule_drive_reconcile_job as _schedule_drive_reconcile_job,
+    sync_drive_doc_after_persist as _sync_drive_doc_after_persist,
+)
 logger = get_logger(__name__)
 
+DRIVE_SYNC_EXCEPTIONS = (HttpError, RuntimeError, OSError)
 
 router = APIRouter(prefix="/api/v1/steps", tags=["Steps"])
 
@@ -125,186 +133,50 @@ async def _load_document_text(db, user_id: str, document_id: str) -> Dict[str, A
     return doc
 
 
-def _dict_from_field(value) -> Dict[str, Any]:
-    if isinstance(value, str):
-        try:
-            parsed = json.loads(value)
-            if isinstance(parsed, dict):
-                return parsed
-        except Exception:
-            return {}
-    if isinstance(value, dict):
-        return value
-    return {}
-
-
-def _build_drive_update_requests(end_index: int, text: str) -> List[Dict[str, Any]]:
-    requests: List[Dict[str, Any]] = []
-    if end_index > 1:
-        requests.append({"deleteContentRange": {"range": {"startIndex": 1, "endIndex": end_index}}})
-    requests.append({"insertText": {"location": {"index": 1}, "text": text}})
-    return requests
-
-
-def _calculate_drive_stage(updates: Dict[str, Any], drive_block: Dict[str, Any], metadata: Dict[str, Any]) -> str:
-    incoming_meta = updates.get("metadata") if isinstance(updates.get("metadata"), dict) else {}
-    if isinstance(incoming_meta, dict):
-        stage = incoming_meta.get("drive_stage")
-        if stage:
-            return stage
-    if isinstance(drive_block, dict):
-        stage = drive_block.get("stage")
-        if stage:
-            return stage
-    return metadata.get("drive_stage") or "draft"
-
-
-async def _retry_update_document(
+async def _record_step_pipeline_event(
     db,
-    document_id: str,
-    payload: Dict[str, Any],
+    user_id: str,
+    job_id: Optional[str],
     *,
-    max_attempts: int = 3,
-    base_delay: float = 0.2,
+    event_type: str,
+    stage: str,
+    status: str,
+    message: str,
+    document_id: Optional[str],
 ) -> None:
-    delay = base_delay
-    for attempt in range(1, max_attempts + 1):
-        try:
-            await update_document(db, document_id, payload)
-            return
-        except Exception as exc:
-            if attempt == max_attempts:
-                logger.error(
-                    "drive_docs_update_document_failed",
-                    extra={"document_id": document_id},
-                )
-                raise
-            await asyncio.sleep(delay + random.uniform(0, 0.1))
-            delay *= 2
-
-
-async def _schedule_drive_reconcile_job(
-    db,
-    document_id: str,
-    user_id: str,
-    drive_file_id: Optional[str],
-    metadata_snapshot: Optional[Dict[str, Any]] = None,
-) -> None:
-    logger.warning(
-        "drive_docs_reconcile_scheduled",
-        extra={"document_id": document_id, "drive_file_id": drive_file_id},
+    if not job_id:
+        return
+    context: Dict[str, Any] = {}
+    if document_id:
+        context["document_id"] = document_id
+    await record_pipeline_event(
+        db,
+        user_id,
+        job_id,
+        event_type=event_type,
+        stage=stage,
+        status=status,
+        message=message,
+        data={"document_id": document_id} if document_id else {},
+        notify_level="success" if status == "completed" else None,
+        notify_text=message,
+        notify_context=context or None,
     )
-    try:
-        if metadata_snapshot is None:
-            doc = await get_document(db, document_id, user_id=user_id)
-            metadata_snapshot = _dict_from_field(doc.get("metadata") if doc else {})
-        metadata_copy = dict(metadata_snapshot or {})
-        metadata_copy["drive_sync_status"] = "failed"
-        metadata_copy["drive_reconcile_required"] = True
-        await update_document(
-            db,
-            document_id,
-            {"metadata": metadata_copy},
-        )
-    except Exception:
-        logger.exception(
-            "drive_docs_reconcile_flag_failed",
-            extra={"document_id": document_id},
-        )
 
 
-def _merge_metadata_for_updates(document_metadata: Dict[str, Any], incoming: Optional[Dict[str, Any]], status: Optional[str]) -> Dict[str, Any]:
-    merged = dict(document_metadata or {})
-    if isinstance(incoming, dict):
-        merged.update(incoming)
-    if status:
-        merged["drive_sync_status"] = status
-    return merged
-
-
-async def _sync_drive_doc_after_persist(
-    db,
-    user_id: str,
-    document: Dict[str, Any],
-    updates: Dict[str, Any],
-):
-    metadata = _dict_from_field(document.get("metadata"))
-    drive_block = metadata.get("drive") if isinstance(metadata, dict) else {}
-    if not isinstance(drive_block, dict):
-        drive_block = {}
-    drive_file_id = document.get("drive_file_id") or drive_block.get("file_id")
-    if not drive_file_id:
-        return
-    new_text = updates.get("raw_text")
-    if new_text is None:
-        new_text = document.get("raw_text")
-    if new_text is None:
-        return
-    try:
-        docs_service = await build_docs_service_for_user(db, user_id)
-        drive_service = await build_drive_service_for_user(db, user_id)
-    except ValueError as exc:
-        logger.warning("drive_docs_unlinked", extra={"document_id": document.get("document_id"), "error": str(exc)})
-        return
-    try:
-        current_doc = await execute_google_request(docs_service.documents().get(documentId=drive_file_id))
-        body_content = (current_doc.get("body", {}) or {}).get("content", []) or []
-        end_index = body_content[-1].get("endIndex", len(new_text) + 1) if body_content else len(new_text) + 1
-    except Exception:
-        logger.exception("drive_docs_get_failed", extra={"drive_file_id": drive_file_id, "document_id": document.get("document_id")})
-        end_index = len(new_text) + 1
-    requests = _build_drive_update_requests(end_index, new_text)
-    try:
-        await execute_google_request(
-            docs_service.documents().batchUpdate(documentId=drive_file_id, body={"requests": requests})
-        )
-        drive_meta = await execute_google_request(
-            drive_service.files().get(fileId=drive_file_id, fields='id, headRevisionId, parents')
-        )
-    except Exception:
-        logger.exception(
-            "drive_docs_sync_failed",
-            extra={"drive_file_id": drive_file_id, "document_id": document.get("document_id")},
-        )
-        return
-    desired_stage = _calculate_drive_stage(updates, drive_block, metadata)
-    metadata["drive_stage"] = desired_stage
-    metadata["drive_sync_status"] = "synced"
-    drive_block.update(
-        {
-            "revision_id": drive_meta.get("headRevisionId"),
-            "external_edit_detected": False,
-            "stage": desired_stage,
-        }
-    )
-    metadata["drive"] = drive_block
-    logger.info(
-        "drive_docs_pre_update",
-        extra={
-            "document_id": document.get("document_id"),
-            "drive_file_id": drive_file_id,
-            "revision_id": drive_meta.get("headRevisionId"),
-            "desired_stage": desired_stage,
-        },
-    )
-    try:
-        await _retry_update_document(
-            db,
-            document.get("document_id"),
-            {
-                "metadata": metadata,
-                "drive_revision_id": drive_meta.get("headRevisionId"),
-            },
-        )
-    except Exception:
-        await _schedule_drive_reconcile_job(
-            db,
-            document.get("document_id"),
-            user_id,
-            drive_file_id,
-            metadata_snapshot=metadata,
-        )
-        raise
+def _outline_to_text(outline: List[Dict[str, Any]]) -> str:
+    if not outline:
+        return ""
+    blocks: List[str] = []
+    for idx, section in enumerate(outline, start=1):
+        title = (section or {}).get("title") or f"Section {idx}"
+        summary = (section or {}).get("summary") or ""
+        summary = summary.strip()
+        if summary:
+            blocks.append(f"{idx}. {title}\n{summary}")
+        else:
+            blocks.append(f"{idx}. {title}")
+    return "\n\n".join(blocks)
 
 
 @router.post("/transcript.fetch")
@@ -397,6 +269,7 @@ async def outline_generate(request: Request, payload: OutlineGenerateRequest, us
         return maybe_cached
 
     source_text = payload.text
+    doc: Optional[Dict[str, Any]] = None
     if payload.document_id:
         doc = await _load_document_text(db, user["user_id"], payload.document_id)
         source_text = source_text or (doc.get("raw_text") or "")
@@ -411,7 +284,32 @@ async def outline_generate(request: Request, payload: OutlineGenerateRequest, us
         max_sections = 5
     # Run in a worker thread to avoid blocking event loop
     outline = await asyncio.to_thread(generate_outline, source_text, max_sections)
-    response_body = {"outline": outline, "document_id": payload.document_id}
+    outline_text = _outline_to_text(outline)
+    if payload.document_id and doc:
+        merged_meta = _dict_from_field(doc.get("metadata"))
+        merged_meta["latest_outline"] = outline
+        merged_meta["drive_stage"] = "outline"
+        updates = {"raw_text": outline_text, "metadata": merged_meta}
+        await update_document(db, payload.document_id, updates)
+        updated_doc = await _load_document_text(db, user["user_id"], payload.document_id)
+        try:
+            await _sync_drive_doc_after_persist(db, user["user_id"], updated_doc, updates)
+        except DRIVE_SYNC_EXCEPTIONS as exc:
+            logger.exception(
+                "drive_sync_outline_failed",
+                extra={"document_id": payload.document_id, "user_id": user["user_id"]},
+                exc_info=True,
+            )
+            await _schedule_drive_reconcile_job(
+                db,
+                payload.document_id,
+                user["user_id"],
+                updated_doc.get("drive_file_id"),
+                metadata_snapshot=_dict_from_field(updated_doc.get("metadata")),
+            )
+        except Exception:
+            raise
+    response_body = {"outline": outline, "document_id": payload.document_id, "text": outline_text}
     if payload.job_id:
         await record_usage_event(
             db,
@@ -419,6 +317,16 @@ async def outline_generate(request: Request, payload: OutlineGenerateRequest, us
             payload.job_id,
             "outline",
             {"sections": len(outline), "chars": len(source_text or "")},
+        )
+        await _record_step_pipeline_event(
+            db,
+            user["user_id"],
+            payload.job_id,
+            event_type="outline.generate",
+            stage="outline.generate",
+            status="completed",
+            message="Outline generated",
+            document_id=payload.document_id,
         )
     await _finalize_idempotency(db, user["user_id"], key, "outline.generate", hash_val, response_body, status.HTTP_200_OK)
     return response_body
@@ -449,6 +357,16 @@ async def chapters_organize(request: Request, payload: ChaptersOrganizeRequest, 
             payload.job_id,
             "chapters",
             {"chapters": len(chapters), "chars": len(source_text or "")},
+        )
+        await _record_step_pipeline_event(
+            db,
+            user["user_id"],
+            payload.job_id,
+            event_type="chapters.organize",
+            stage="chapters.organize",
+            status="completed",
+            message="Chapters organized",
+            document_id=payload.document_id,
         )
     await _finalize_idempotency(db, user["user_id"], key, "chapters.organize", hash_val, response_body, status.HTTP_200_OK)
     return response_body
@@ -509,6 +427,16 @@ async def blog_compose(request: Request, payload: BlogComposeRequest, user: dict
             "compose",
             {"sections": len(chapters or []), "word_count": composed["meta"].get("word_count", 0)},
         )
+        await _record_step_pipeline_event(
+            db,
+            user["user_id"],
+            payload.job_id,
+            event_type="blog.compose",
+            stage="blog.compose",
+            status="completed",
+            message="Blog composed",
+            document_id=payload.document_id,
+        )
     await _finalize_idempotency(db, user["user_id"], key, "blog.compose", hash_val, response_body, status.HTTP_200_OK)
     return response_body
 
@@ -541,7 +469,7 @@ async def document_persist(request: Request, payload: DocumentPersistRequest, us
         updated_doc = await _load_document_text(db, user["user_id"], payload.document_id)
         try:
             await _sync_drive_doc_after_persist(db, user["user_id"], updated_doc, updates)
-        except Exception as exc:
+        except DRIVE_SYNC_EXCEPTIONS as exc:
             logger.exception(
                 "drive_sync_after_persist_failed",
                 extra={
@@ -549,6 +477,7 @@ async def document_persist(request: Request, payload: DocumentPersistRequest, us
                     "user_id": user["user_id"],
                     "updates": list(updates.keys()),
                 },
+                exc_info=True,
             )
             await _schedule_drive_reconcile_job(
                 db,
@@ -557,6 +486,8 @@ async def document_persist(request: Request, payload: DocumentPersistRequest, us
                 updated_doc.get("drive_file_id"),
                 metadata_snapshot=_dict_from_field(updated_doc.get("metadata")),
             )
+        except Exception:
+            raise
         response_body = {"document_id": payload.document_id, "updated": requested_fields}
     else:
         response_body = {"document_id": payload.document_id, "updated": []}

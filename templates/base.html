@@ -78,7 +78,19 @@
 
         // Notifications via SSE (replace polling)
         try {
-          window.__notifiedIds = new Set();
+          window.__notifiedIds = window.__notifiedIds || new Set();
+          window.__notifyKeyOrder = window.__notifyKeyOrder || [];
+          const maxKeyCache = 500;
+          function rememberKey(key){
+            if (!window.__notifiedIds.has(key)){
+              window.__notifiedIds.add(key);
+              window.__notifyKeyOrder.push(key);
+              if (window.__notifyKeyOrder.length > maxKeyCache){
+                const oldest = window.__notifyKeyOrder.shift();
+                if (oldest){ window.__notifiedIds.delete(oldest); }
+              }
+            }
+          }
           // simple fixed-size hash (FNV-1a 32-bit) for dedupe key
           function hashKey(str){
             let h = 0x811c9dc5;
@@ -103,9 +115,42 @@
                   const n = msg.data;
                   const key = hashKey(`${n.id}:${n.level}:${n.text || ''}`);
                   if (window.__notifiedIds.has(key)) return;
-                  window.__notifiedIds.add(key);
+                  rememberKey(key);
+                  const ctx = (typeof n.context === 'object' && n.context !== null) ? n.context : {};
+                  n.context = ctx;
                   const type = n.level === 'error' ? 'error' : (n.level === 'success' ? 'success' : 'info');
-                  window.dispatchEvent(new CustomEvent('toast', { detail: { type, text: n.text } }));
+                  let href = ctx.href || null;
+                  if (!href){
+                    if (ctx.document_id){
+                      href = `/dashboard/documents/${ctx.document_id}`;
+                    } else if (ctx.job_id){
+                      href = `/dashboard/jobs/${ctx.job_id}`;
+                    }
+                  }
+                  window.dispatchEvent(new CustomEvent('toast', { detail: { type, text: n.text, href } }));
+                  window.dispatchEvent(new CustomEvent('notification:created', { detail: n }));
+                  if (ctx.document_id){
+                    window.dispatchEvent(new CustomEvent('document:activity', { detail: n }));
+                  }
+                  if (ctx.job_id){
+                    window.dispatchEvent(new CustomEvent('job:activity', { detail: n }));
+                  }
+                  const docEl = ctx.document_id ? document.querySelector(`[data-document-detail][data-document-id="${ctx.document_id}"]`) : null;
+                  if (docEl && window.htmx){
+                    htmx.trigger(docEl, 'refreshDocument');
+                  }
+                  const jobEl = ctx.job_id ? document.querySelector(`[data-job-detail][data-job-id="${ctx.job_id}"]`) : null;
+                  if (jobEl && window.htmx){
+                    htmx.trigger(jobEl, 'refreshJob');
+                  }
+                  const docPage = document.querySelector('[data-documents-page]');
+                  if (docPage && window.htmx){
+                    htmx.trigger(docPage, 'refreshDocuments');
+                  }
+                  const jobsPage = document.querySelector('[data-jobs-page]');
+                  if (jobsPage && window.htmx){
+                    htmx.trigger(jobsPage, 'refreshJobs');
+                  }
                 }
               } catch (e) {
                 if (console && console.error) console.error('SSE onmessage error', e);

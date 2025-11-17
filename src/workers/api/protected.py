@@ -73,6 +73,7 @@ from .deps import (
 from .utils import enqueue_job_with_guard
 from ..core.url_utils import parse_youtube_video_id
 from .drive_workspace import ensure_drive_workspace, ensure_document_drive_structure, link_document_drive_workspace
+from .drive_docs import sync_drive_doc_for_document
 from .youtube_ingest import ingest_youtube_document
 from .database import get_usage_summary, list_usage_events, count_usage_events
 from fastapi import Query
@@ -317,6 +318,47 @@ async def start_ingest_drive_job(db, queue, user_id: str, document_id: str) -> J
     )
 
 
+@router.post("/api/v1/drive/watch/renew", response_model=JobStatus)
+async def start_drive_watch_renewal_job(user: dict = Depends(get_current_user)):
+    db, queue = ensure_services()
+    job_id = str(uuid.uuid4())
+    job_row = await create_job_extended(
+        db,
+        job_id,
+        user["user_id"],
+        job_type=JobType.DRIVE_WATCH_RENEWAL.value,
+        payload={},
+    )
+    payload = {
+        "job_id": job_id,
+        "user_id": user["user_id"],
+        "job_type": JobType.DRIVE_WATCH_RENEWAL.value,
+    }
+    enqueued, enqueue_exception, should_fail = await enqueue_job_with_guard(
+        queue,
+        job_id,
+        user["user_id"],
+        payload,
+        allow_inline_fallback=False,
+    )
+    if should_fail:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Queue unavailable or enqueue failed")
+    if not enqueued:
+        logger.warning(
+            "drive_watch_renewal_not_enqueued",
+            extra={"job_id": job_id, "user_id": user["user_id"], "error": str(enqueue_exception) if enqueue_exception else None},
+        )
+    progress = _parse_job_progress_model(progress_str=job_row.get("progress", "{}"))
+    return JobStatus(
+        job_id=job_id,
+        user_id=user["user_id"],
+        status=JobStatusEnum.PENDING,
+        progress=progress,
+        created_at=_parse_db_datetime(job_row.get("created_at")),
+        job_type=JobType.DRIVE_WATCH_RENEWAL.value,
+    )
+
+
 async def start_ingest_youtube_job(db, queue, user_id: str, url: str) -> JobStatus:
     clean_url = (url or "").strip()
     video_id = parse_youtube_video_id(clean_url)
@@ -446,6 +488,19 @@ async def start_ingest_youtube_job(db, queue, user_id: str, url: str) -> JobStat
                     job_id=job_id,
                     event_type="ingest_youtube",
                 )
+                try:
+                    await sync_drive_doc_for_document(
+                        db,
+                        user_id,
+                        document_id,
+                        {"metadata": {"drive_stage": "transcript"}},
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "inline_drive_doc_seed_failed",
+                        exc_info=True,
+                        extra={"job_id": job_id, "document_id": document_id, "error": str(exc)},
+                    )
                 try:
                     await record_pipeline_event(
                         db,

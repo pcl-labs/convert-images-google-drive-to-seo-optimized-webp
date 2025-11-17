@@ -275,6 +275,35 @@ CREATE TABLE IF NOT EXISTS drive_workspaces (
     FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
 );
 
+-- Active Drive change notification watches per document
+CREATE TABLE IF NOT EXISTS drive_watches (
+    watch_id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    document_id TEXT NOT NULL,
+    drive_file_id TEXT NOT NULL,
+    channel_id TEXT NOT NULL,
+    resource_id TEXT NOT NULL,
+    resource_uri TEXT,
+    expires_at TEXT,
+    state TEXT NOT NULL DEFAULT 'active',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+    FOREIGN KEY (document_id) REFERENCES documents(document_id) ON DELETE CASCADE,
+    UNIQUE(document_id),
+    UNIQUE(channel_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_drive_watches_user ON drive_watches(user_id);
+CREATE INDEX IF NOT EXISTS idx_drive_watches_expires_at ON drive_watches(expires_at);
+
+CREATE TRIGGER IF NOT EXISTS drive_watches_set_updated_at
+AFTER UPDATE ON drive_watches
+WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+    UPDATE drive_watches SET updated_at = datetime('now') WHERE watch_id = OLD.watch_id;
+END;
+
 -- Enforce that documents.latest_version_id references an existing document_versions.version_id
 -- Rely on FOREIGN KEY (latest_version_id) REFERENCES document_versions(version_id) ON DELETE SET NULL
 -- No additional triggers needed here.

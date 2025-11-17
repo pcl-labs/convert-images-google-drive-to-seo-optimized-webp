@@ -96,6 +96,9 @@ class Settings:
     cors_origins: List[str] = field(default_factory=lambda: ["http://localhost:8000"])
     transcript_langs: List[str] = field(default_factory=lambda: ["en"])
     enable_drive_pipeline: bool = True
+    drive_webhook_url: Optional[str] = None
+    drive_webhook_secret: Optional[str] = None
+    drive_watch_renewal_window_minutes: int = 60
     static_files_dir: str = "./static"
 
     def __post_init__(self) -> None:
@@ -114,6 +117,7 @@ class Settings:
         self.jwt_expiration_hours = _int(self.jwt_expiration_hours, 24)
         self.cors_origins = _list(self.cors_origins, default=["http://localhost:8000"])
         self.transcript_langs = _list(self.transcript_langs, default=["en"])
+        self.drive_watch_renewal_window_minutes = _int(self.drive_watch_renewal_window_minutes, 60)
         if not self.jwt_secret_key:
             raise ValueError("JWT_SECRET_KEY is required")
         if self.environment == "production" and not self.encryption_key:

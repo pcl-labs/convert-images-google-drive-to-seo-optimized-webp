@@ -60,6 +60,8 @@ from src.workers.api.config import settings
 from src.workers.api.cloudflare_queue import QueueProducer
 from src.workers.api.google_oauth import build_youtube_service_for_user, build_docs_service_for_user, build_drive_service_for_user
 from src.workers.api.drive_workspace import DriveWorkspaceSyncService, link_document_drive_workspace
+from src.workers.api.drive_docs import sync_drive_doc_for_document
+from src.workers.api.drive_watch import ensure_drive_watch, watches_due_for_renewal
 from src.workers.core.ai_modules import (
     generate_outline,
     organize_chapters,
@@ -203,6 +205,9 @@ async def _safe_pipeline_event(
     status: str,
     message: str,
     data: Optional[Dict[str, Any]] = None,
+    notify_level: Optional[str] = None,
+    notify_text: Optional[str] = None,
+    notify_context: Optional[Dict[str, Any]] = None,
 ) -> None:
     if not job_id:
         return
@@ -216,6 +221,9 @@ async def _safe_pipeline_event(
             status=status,
             message=message,
             data=data or {},
+            notify_level=notify_level,
+            notify_text=notify_text,
+            notify_context=notify_context,
         )
     except Exception:
         app_logger.debug(
@@ -883,6 +891,19 @@ async def process_ingest_youtube_job(
                     job_id=job_id,
                     event_type="ingest_youtube",
                 )
+                try:
+                    await sync_drive_doc_for_document(
+                        db,
+                        user_id,
+                        document_id,
+                        {"metadata": {"drive_stage": "transcript"}},
+                    )
+                except Exception as exc:
+                    app_logger.warning(
+                        "drive_doc_seed_failed",
+                        exc_info=True,
+                        extra={"job_id": job_id, "document_id": document_id, "error": str(exc)},
+                    )
             except Exception as exc:
                 app_logger.warning(
                     "drive_workspace_link_failed",
@@ -911,7 +932,7 @@ async def process_ingest_youtube_job(
                 data={"document_id": document_id},
             )
 
-        await record_pipeline_event(
+        await _safe_pipeline_event(
             db,
             user_id,
             job_id,
@@ -920,6 +941,9 @@ async def process_ingest_youtube_job(
             status="completed",
             message="YouTube transcription persisted",
             data={"document_id": document_id},
+            notify_level="success",
+            notify_text=f"YouTube transcript saved",
+            notify_context={"document_id": document_id},
         )
         await update_job_status(db, job_id, "completed", progress=make_progress("completed"))
         try:
@@ -1068,6 +1092,12 @@ async def process_ingest_drive_job(
             status="completed",
             message="Drive document synced",
             data={"document_id": document_id, "drive_revision_id": revision_id},
+            notify_level="success",
+            notify_text=f"Drive document synced ({drive_file_id[:8]}…)",
+            notify_context={
+                "document_id": document_id,
+                "drive_file_id": drive_file_id,
+            },
         )
         await set_job_output(db, job_id, job_output)
         await update_job_status(db, job_id, "completed", progress=make_progress("completed"))
@@ -1174,6 +1204,46 @@ async def process_drive_change_poll_job(
             await notify_job(db, user_id=user_id, job_id=job_id, level="error", text="Drive change poll failed")
         except Exception:
             pass
+        raise
+
+
+async def process_drive_watch_renewal_job(
+    db: Database,
+    job_id: str,
+    user_id: str,
+) -> None:
+    try:
+        await update_job_status(db, job_id, "processing", progress=make_progress("drive_watch_renewal"))
+        window_minutes = max(int(getattr(settings, "drive_watch_renewal_window_minutes", 60) or 60), 1)
+        candidates = await watches_due_for_renewal(db, window_minutes, user_id=user_id)
+        renewed: List[str] = []
+        checked_count = 0
+        for watch in candidates:
+            checked_count += 1
+            document_id = watch.get("document_id")
+            drive_file_id = watch.get("drive_file_id")
+            if not document_id or not drive_file_id:
+                continue
+            result = await ensure_drive_watch(
+                db,
+                user_id=user_id,
+                document_id=document_id,
+                drive_file_id=drive_file_id,
+                force=True,
+            )
+            if result:
+                renewed.append(document_id)
+        await set_job_output(
+            db,
+            job_id,
+            {
+                "renewed_documents": renewed,
+                "checked": checked_count,
+            },
+        )
+        await update_job_status(db, job_id, "completed", progress=make_progress("completed"))
+    except Exception as exc:
+        await update_job_status(db, job_id, "failed", error=str(exc))
         raise
 
 
@@ -1330,6 +1400,19 @@ async def process_generate_blog_job(
             },
         )
         await record_usage_event(db, user_id, job_id, "persist", {"sections": len(sections)})
+        await _safe_pipeline_event(
+            db,
+            user_id,
+            job_id,
+            event_type="generate_blog",
+            stage="generate_blog.persist",
+            status="completed",
+            message="Blog draft generated",
+            data={"document_id": document_id, "version_id": version_id},
+            notify_level="success",
+            notify_text="Blog draft generated",
+            notify_context={"document_id": document_id},
+        )
 
         await update_job_status(db, job_id, "completed", progress=_progress("completed"))
         try:
@@ -1480,6 +1563,8 @@ async def handle_queue_message(message: Dict[str, Any], db: Database, queue_prod
         elif job_type == "drive_change_poll":
             doc_ids = message.get("document_ids") or payload_data.get("document_ids")
             await process_drive_change_poll_job(db, job_id, user_id, doc_ids, queue_producer)
+        elif job_type == "drive_watch_renewal":
+            await process_drive_watch_renewal_job(db, job_id, user_id)
         else:
             error_msg = f"Unknown job_type '{job_type}' for job {job_id}"
             app_logger.error(error_msg)

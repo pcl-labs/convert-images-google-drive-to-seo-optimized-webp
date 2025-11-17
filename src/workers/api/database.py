@@ -249,6 +249,29 @@ class Database:
                 )
                 """
             )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS drive_watches (
+                    watch_id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    document_id TEXT NOT NULL,
+                    drive_file_id TEXT NOT NULL,
+                    channel_id TEXT NOT NULL,
+                    resource_id TEXT NOT NULL,
+                    resource_uri TEXT,
+                    expires_at TEXT,
+                    state TEXT NOT NULL DEFAULT 'active',
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+                    FOREIGN KEY (document_id) REFERENCES documents(document_id) ON DELETE CASCADE,
+                    UNIQUE(document_id),
+                    UNIQUE(channel_id)
+                )
+                """
+            )
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_drive_watches_user ON drive_watches(user_id)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_drive_watches_expires_at ON drive_watches(expires_at)")
         except Exception as e:
             # Log full exception details and fail startup to alert operators
             logger.error("Phase 1 schema ensure failed", exc_info=True)
@@ -1101,6 +1124,155 @@ async def upsert_drive_workspace(
     row = await db.execute(query, (user_id, root_folder_id, drafts_folder_id, published_folder_id, meta_json))
     return dict(row) if row else {}
 
+
+async def upsert_drive_watch(
+    db: Database,
+    *,
+    watch_id: str,
+    user_id: str,
+    document_id: str,
+    drive_file_id: str,
+    channel_id: str,
+    resource_id: str,
+    resource_uri: Optional[str],
+    expires_at: Optional[str],
+    state: str = "active",
+) -> Dict[str, Any]:
+    query = """
+        INSERT INTO drive_watches (watch_id, user_id, document_id, drive_file_id, channel_id, resource_id, resource_uri, expires_at, state)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(document_id) DO UPDATE SET
+            watch_id=excluded.watch_id,
+            channel_id=excluded.channel_id,
+            resource_id=excluded.resource_id,
+            resource_uri=excluded.resource_uri,
+            drive_file_id=excluded.drive_file_id,
+            expires_at=excluded.expires_at,
+            state=excluded.state,
+            updated_at=datetime('now')
+        RETURNING *
+    """
+    row = await db.execute(
+        query,
+        (
+            watch_id,
+            user_id,
+            document_id,
+            drive_file_id,
+            channel_id,
+            resource_id,
+            resource_uri,
+            expires_at,
+            state,
+        ),
+    )
+    return dict(row) if row else {}
+
+
+async def delete_drive_watch(
+    db: Database,
+    *,
+    user_id: str,
+    document_id: Optional[str] = None,
+    channel_id: Optional[str] = None,
+) -> None:
+    if not user_id:
+        raise ValueError("user_id is required to delete drive_watches")
+    if not document_id and not channel_id:
+        return
+    clauses = []
+    params: list[Any] = []
+    if document_id:
+        clauses.append("document_id = ?")
+        params.append(document_id)
+    if channel_id:
+        clauses.append("channel_id = ?")
+        params.append(channel_id)
+    where = " OR ".join(clauses)
+    query = f"DELETE FROM drive_watches WHERE user_id = ? AND ({where})"
+    await db.execute(query, tuple([user_id, *params]))
+
+
+async def get_drive_watch_by_document(db: Database, document_id: str) -> Optional[Dict[str, Any]]:
+    row = await db.execute("SELECT * FROM drive_watches WHERE document_id = ?", (document_id,))
+    return dict(row) if row else None
+
+
+async def get_drive_watch_by_channel(db: Database, channel_id: str) -> Optional[Dict[str, Any]]:
+    row = await db.execute("SELECT * FROM drive_watches WHERE channel_id = ?", (channel_id,))
+    return dict(row) if row else None
+
+
+async def list_drive_watches_for_user(db: Database, user_id: str) -> List[Dict[str, Any]]:
+    rows = await db.execute_all(
+        """
+        SELECT * FROM drive_watches
+        WHERE user_id = ?
+        ORDER BY COALESCE(expires_at, '9999-12-31T23:59:59Z') ASC
+        """,
+        (user_id,),
+    )
+    return [dict(row) for row in rows or []]
+
+
+async def list_drive_watches_expiring(
+    db: Database,
+    *,
+    within_seconds: int,
+    user_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    cutoff = datetime.now(timezone.utc) + timedelta(seconds=max(within_seconds, 0))
+    cutoff_iso = cutoff.isoformat()
+    if user_id:
+        rows = await db.execute_all(
+            """
+            SELECT * FROM drive_watches
+            WHERE state = 'active'
+              AND expires_at IS NOT NULL
+              AND expires_at <= ?
+              AND user_id = ?
+            ORDER BY expires_at ASC
+            """,
+            (cutoff_iso, user_id),
+        )
+    else:
+        rows = await db.execute_all(
+            """
+            SELECT * FROM drive_watches
+            WHERE state = 'active'
+              AND expires_at IS NOT NULL
+              AND expires_at <= ?
+            ORDER BY expires_at ASC
+            """,
+            (cutoff_iso,),
+        )
+    return [dict(row) for row in rows or []]
+
+
+async def update_drive_watch_fields(
+    db: Database,
+    *,
+    user_id: str,
+    watch_id: str,
+    expires_at: Optional[str] = None,
+    state: Optional[str] = None,
+) -> None:
+    assignments = []
+    params: list[Any] = []
+    if expires_at is not None:
+        assignments.append("expires_at = ?")
+        params.append(expires_at)
+    if state is not None:
+        assignments.append("state = ?")
+        params.append(state)
+    if not assignments:
+        return
+    assignments.append("updated_at = datetime('now')")
+    params.append(watch_id)
+    params.append(user_id)
+    query = f"UPDATE drive_watches SET {', '.join(assignments)} WHERE watch_id = ? AND user_id = ?"
+    await db.execute(query, tuple(params))
+
 # Documents operations
 async def create_document(
     db: Database,
@@ -1651,21 +1823,50 @@ async def record_pipeline_event(
     status: Optional[str] = None,
     message: Optional[str] = None,
     data: Optional[Dict[str, Any]] = None,
+    *,
+    notify_level: Optional[str] = None,
+    notify_text: Optional[str] = None,
+    notify_context: Optional[Dict[str, Any]] = None,
 ) -> None:
+    event_id = str(uuid.uuid4())
+    payload = json.dumps(data or {})
     await db.execute(
         "INSERT INTO pipeline_events (event_id, user_id, job_id, event_type, stage, status, message, data, created_at) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))",
         (
-            str(uuid.uuid4()),
+            event_id,
             user_id,
             job_id,
             event_type,
             stage,
             status,
             message,
-            json.dumps(data or {}),
+            payload,
         ),
     )
+    if notify_level:
+        context = dict(notify_context or {})
+        context.setdefault("job_id", job_id)
+        if data and "data" not in context:
+            context["data"] = data
+        text = notify_text or message or f"{event_type}:{stage} {status}".strip()
+        try:
+            await create_notification(
+                db,
+                notif_id=str(uuid.uuid4()),
+                user_id=user_id,
+                level=notify_level,
+                text=text,
+                title=None,
+                context=context,
+                event_id=event_id,
+            )
+        except Exception as exc:  # pragma: no cover - best-effort notification
+            logger.warning(
+                "pipeline_event_notification_failed",
+                exc_info=True,
+                extra={"user_id": user_id, "job_id": job_id, "event_id": event_id, "error": str(exc)},
+            )
 
 
 async def list_pipeline_events(
