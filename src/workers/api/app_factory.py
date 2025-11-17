@@ -195,7 +195,7 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
     if static_dir.exists():
         app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
     else:
-        app_logger.warning("Static directory '%s' not found; skipping static mount", static_dir_setting)
+        app_logger.warning("Static directory '%s' not found; skipping static mount", static_dir)
 
     from .web import router as web_router
     from .public import router as public_router
