@@ -82,6 +82,8 @@ def request(
     data: DataType = None,
     json: Optional[Any] = None,
     timeout: float = 10.0,
+    stream_to=None,
+    chunk_size: int = 64 * 1024,
 ) -> SimpleResponse:
     """Perform a blocking HTTP request using urllib."""
 
@@ -91,10 +93,18 @@ def request(
     req = Request(full_url, data=body, headers=request_headers, method=method.upper())
     try:
         with urlopen(req, timeout=timeout) as resp:
-            content = resp.read()
             headers_dict = {k.lower(): v for k, v in resp.headers.items()}
             status = resp.getcode()
             final_url = resp.geturl()
+            if stream_to is not None:
+                while True:
+                    chunk = resp.read(chunk_size)
+                    if not chunk:
+                        break
+                    stream_to.write(chunk)
+                content = b""
+            else:
+                content = resp.read()
             return SimpleResponse(status, headers_dict, content, final_url)
     except HTTPError as exc:
         # Safely read content, fallback to empty bytes if reading fails

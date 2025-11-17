@@ -58,7 +58,6 @@ from src.workers.api.database import (
 from src.workers.api.config import settings
 from src.workers.api.cloudflare_queue import QueueProducer
 from src.workers.api.google_oauth import build_youtube_service_for_user, build_docs_service_for_user, build_drive_service_for_user
-from src.workers.core.youtube_captions import fetch_captions_text
 from src.workers.core.ai_modules import (
     generate_outline,
     organize_chapters,
@@ -75,6 +74,8 @@ from src.workers.core.constants import TEMP_DIR, FAIL_LOG_PATH
 from src.workers.core.extension_utils import normalize_extensions, detect_extensions_in_dir
 from src.workers.core.google_async import execute_google_request
 from src.workers.core.google_docs_text import google_doc_to_text, text_to_html
+from src.workers.api.youtube_ingest import ingest_youtube_document
+from src.workers.core.youtube_captions import YouTubeCaptionsError
 
 # Set up logging
 logger = setup_logging(level="INFO", use_json=True)
@@ -697,143 +698,41 @@ async def process_ingest_youtube_job(
 
         payload_metadata = job_payload.get("metadata") or {}
         payload_frontmatter = job_payload.get("frontmatter") or {}
-        # Prefer authoritative API duration if provided in job payload/metadata; transcript duration is a fallback.
         payload_duration = _normalize_duration(job_payload.get("duration_s") or payload_metadata.get("duration_seconds"))
 
-        document = await get_document(db, document_id, user_id=user_id)
-        if not document:
-            raise ValueError("Document not found")
-        doc_metadata = _parse_document_metadata(document)
-        frontmatter = document.get("frontmatter")
-        if isinstance(frontmatter, str):
-            try:
-                frontmatter = json.loads(frontmatter)
-            except Exception:
-                frontmatter = {}
-        if not isinstance(frontmatter, dict):
-            frontmatter = {}
-
-        # Prepare config and fetch captions via official YouTube API
-        langs_raw = settings.transcript_langs
-        if isinstance(langs_raw, str):
-            langs = [s.strip() for s in langs_raw.split(",") if s.strip()]
-        else:
-            langs = langs_raw or ["en"]
         try:
-            yt_service = await build_youtube_service_for_user(db, user_id)  # type: ignore
+            result = await ingest_youtube_document(
+                db,
+                job_id,
+                user_id,
+                document_id,
+                youtube_video_id,
+                payload_metadata,
+                payload_frontmatter,
+                payload_duration,
+            )
+        except YouTubeCaptionsError as exc:
+            await update_job_status(db, job_id, "failed", error=str(exc))
+            try:
+                await notify_job(db, user_id=user_id, job_id=job_id, level="error", text=f"YouTube ingestion failed: {exc}")
+            except Exception:
+                pass
+            return
         except ValueError as exc:
             await update_job_status(db, job_id, "failed", error=str(exc))
-            return
-        cap = await asyncio.to_thread(fetch_captions_text, yt_service, youtube_video_id, langs)
-        if not cap.get("success"):
-            await update_job_status(db, job_id, "failed", error=str(cap.get("error") or "captions_unavailable"))
             try:
-                await notify_job(db, user_id=user_id, job_id=job_id, level="error", text="YouTube ingestion failed: captions unavailable")
+                await notify_job(db, user_id=user_id, job_id=job_id, level="error", text=f"YouTube ingestion failed: {exc}")
             except Exception:
                 pass
             return
 
-        text = (cap.get("text") or "").strip()
-        source = cap.get("source") or "captions"
-        lang = cap.get("lang") or "en"
-        # Duration: authoritative API value provided in job payload/metadata
-        duration_s = payload_duration
-        
-        # Fallback to caption duration if payload duration is missing
-        if duration_s is None:
-            caption_duration_s = cap.get("duration_s")
-            caption_duration_raw = caption_duration_s if caption_duration_s is not None else cap.get("duration")
-            duration_s = _normalize_duration(caption_duration_raw)
-
-        # Validate required fields
-        if duration_s is None:
-            error_msg = "Transcript fetch succeeded but duration_s is missing"
-            await update_job_status(db, job_id, "failed", error=error_msg)
-            try:
-                await notify_job(db, user_id=user_id, job_id=job_id, level="error", text=f"YouTube ingestion failed: {error_msg}")
-            except Exception:
-                pass
-            return
-
-        # Record usage events (transcribe only; no external downloads here)
-        try:
-            await record_usage_event(
-                db,
-                user_id,
-                job_id,
-                "transcribe",
-                {
-                    "engine": "captions_api",
-                    "duration_s": duration_s,
-                },
-            )
-        except Exception:
-            pass
-
-        # Merge metadata/frontmatter
-        now_iso = datetime.now(timezone.utc).isoformat()
-        video_meta = {}
-        if isinstance(doc_metadata.get("youtube"), dict):
-            video_meta.update(doc_metadata["youtube"])
-        if isinstance(payload_metadata, dict):
-            video_meta.update(payload_metadata)
-        video_meta["duration_seconds"] = duration_s
-        video_meta.setdefault("video_id", youtube_video_id)
-        video_meta.setdefault("fetched_at", now_iso)
-
-        doc_metadata["source"] = "youtube"
-        doc_metadata["video_id"] = youtube_video_id
-        doc_metadata["lang"] = lang
-        doc_metadata["chars"] = len(text)
-        doc_metadata["updated_at"] = now_iso
-        doc_metadata["transcript_source"] = source
-        doc_metadata["youtube"] = video_meta
-        doc_metadata.setdefault("url", payload_metadata.get("url"))
-        doc_metadata.setdefault("title", payload_metadata.get("title") or frontmatter.get("title"))
-
-        transcript_meta = {
-            "source": source,
-            "lang": lang,
-            "chars": len(text),
-            "duration_s": duration_s,
-            "fetched_at": now_iso,
-        }
-        doc_metadata["transcript"] = transcript_meta
-        doc_metadata["latest_ingest_job_id"] = job_id
-
-        frontmatter = {**frontmatter, **(payload_frontmatter if isinstance(payload_frontmatter, dict) else {})}
-        if "title" not in frontmatter and payload_metadata.get("title"):
-            frontmatter["title"] = payload_metadata.get("title")
-
-        # Update document with transcript and metadata
-        await update_document(
-            db,
-            document_id,
-            {
-                "raw_text": text,
-                "metadata": doc_metadata,
-                "frontmatter": frontmatter,
-                "content_format": "youtube",
-            },
-        )
-
-        # Set job output summary
-        out = {
-            "document_id": document_id,
-            "youtube_video_id": youtube_video_id,
-            "transcript": transcript_meta,
-            "metadata": {
-                "frontmatter": frontmatter,
-                "youtube": video_meta,
-            },
-        }
-        await set_job_output(db, job_id, out)
-
+        await set_job_output(db, job_id, result["job_output"])
         await update_job_status(db, job_id, "completed", progress=make_progress("completed"))
         try:
             await notify_job(db, user_id=user_id, job_id=job_id, level="success", text=f"Ingested YouTube {youtube_video_id}")
         except Exception:
             pass
+        return
     except Exception as e:
         await update_job_status(db, job_id, "failed", error=str(e))
         try:

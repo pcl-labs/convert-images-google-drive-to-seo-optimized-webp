@@ -110,6 +110,9 @@ _project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(
 TEMPLATES_DIR = os.path.join(_project_root, "templates")
 templates = Jinja2Templates(directory=TEMPLATES_DIR)
 
+base_url_value = (settings.base_url or "").strip()
+templates.env.globals["base_url"] = base_url_value.rstrip("/") if base_url_value else ""
+
 # Register Jinja filter once (after templates is initialized)
 templates.env.filters["status_label"] = _status_label
 
@@ -516,6 +519,7 @@ def _document_to_view(doc: dict) -> dict:
         "latest_title": frontmatter.get("title") if isinstance(frontmatter, dict) else None,
         "latest_generation": latest_generation,
         "created_at": doc.get("created_at"),
+        "raw_text": doc.get("raw_text"),
     }
 
 
