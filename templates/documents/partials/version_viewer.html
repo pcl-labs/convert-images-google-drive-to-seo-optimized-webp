@@ -3,11 +3,23 @@
   {% if not version %}
     <p class="text-sm text-contentMuted">No versions generated yet. Run the pipeline to see the preview.</p>
   {% else %}
+    {% set generator = version.assets.generator if version.assets else {} %}
     <div class="space-y-4">
       <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between text-sm">
         <div>
           <p class="text-content font-semibold">v{{ version.version }} &middot; {{ version.title or 'Untitled Draft' }}</p>
           <p class="text-contentMuted text-xs">{{ version.created_at }}</p>
+          {% if generator %}
+            <p class="text-xs text-contentMuted">
+              {{ generator.engine|default('AI')|title }}
+              {% if generator.model %}
+                · {{ generator.model }}
+              {% endif %}
+              {% if generator.tone %}
+                · tone {{ generator.tone }}
+              {% endif %}
+            </p>
+          {% endif %}
         </div>
         <div class="flex flex-wrap gap-2 text-xs" role="tablist" aria-label="Version content tabs">
           <button id="outline-tab" type="button" role="tab" aria-controls="outline-panel" aria-selected="true" tabindex="0" class="px-3 py-1.5 rounded-md border border-border text-content" onclick="switchVersionTab('outline')" data-version-tab="outline" onkeydown="handleVersionTabKeydown(event, 'outline')">Outline</button>

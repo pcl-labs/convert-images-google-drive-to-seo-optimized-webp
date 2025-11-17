@@ -284,12 +284,25 @@ async def outline_generate(request: Request, payload: OutlineGenerateRequest, us
         max_sections = 5
     # Run in a worker thread to avoid blocking event loop
     outline = await asyncio.to_thread(generate_outline, source_text, max_sections)
-    outline_text = _outline_to_text(outline)
+    outline_text_blocks = []
+    for item in outline:
+        title = (item or {}).get("title")
+        summary = (item or {}).get("summary")
+        if not title and not summary:
+            continue
+        if title:
+            outline_text_blocks.append(f"{title}")
+        if summary:
+            outline_text_blocks.append(summary.strip())
+    outline_text = "\n\n".join(outline_text_blocks).strip()
     if payload.document_id and doc:
         merged_meta = _dict_from_field(doc.get("metadata"))
         merged_meta["latest_outline"] = outline
         merged_meta["drive_stage"] = "outline"
-        updates = {"raw_text": outline_text, "metadata": merged_meta}
+        updates = {
+            "metadata": merged_meta,
+            "drive_text": outline_text,
+        }
         await update_document(db, payload.document_id, updates)
         updated_doc = await _load_document_text(db, user["user_id"], payload.document_id)
         try:
@@ -395,7 +408,7 @@ async def blog_compose(request: Request, payload: BlogComposeRequest, user: dict
         chapters_task = asyncio.to_thread(organize_chapters, text)
         outline, chapters = await asyncio.gather(outline_task, chapters_task)
     chapters = chapters or [{"title": item.get("title"), "summary": item.get("summary")} for item in (outline or [])]
-    composed = await asyncio.to_thread(compose_blog, chapters, tone=payload.tone)
+    composed = await compose_blog(chapters, tone=payload.tone)
     if payload.document_id:
         # Merge metadata to avoid dropping existing fields
         if doc is None:

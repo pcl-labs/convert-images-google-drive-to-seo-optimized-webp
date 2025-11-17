@@ -11,7 +11,14 @@ import json
 import secrets
 import hmac
 
-from .models import OptimizeDocumentRequest, JobStatusEnum, JobType, GenerateBlogRequest, GenerateBlogOptions
+from .models import (
+    OptimizeDocumentRequest,
+    JobStatusEnum,
+    JobType,
+    GenerateBlogRequest,
+    GenerateBlogOptions,
+)
+from .steps import OutlineGenerateRequest, outline_generate
 from .deps import ensure_services, ensure_db, parse_job_progress, get_current_user
 from .auth import verify_jwt_token
 from .database import (
@@ -22,6 +29,8 @@ from .database import (
     update_job_status,
     delete_google_tokens,
     delete_user_account,
+    get_user_preferences,
+    update_user_preferences,
     create_notification,
     list_notifications,
     mark_notification_seen,
@@ -59,6 +68,12 @@ from src.workers.core.constants import GOOGLE_SCOPE_DRIVE, GOOGLE_SCOPE_YOUTUBE,
 from .google_oauth import parse_google_scope_list, build_docs_service_for_user, build_drive_service_for_user
 from src.workers.core.google_async import execute_google_request
 from .drive_workspace import ensure_drive_workspace
+from .drive_docs import sync_drive_doc_for_document
+from .ai_preferences import (
+    get_ai_model_choices,
+    normalize_ai_preferences,
+    set_ai_preferences,
+)
 
 
 def _status_label(value: str) -> str:
@@ -423,6 +438,8 @@ async def _render_account_page(
     status_code: int = status.HTTP_200_OK,
     delete_error: Optional[str] = None,
     delete_value: str = "",
+    ai_message: Optional[str] = None,
+    ai_error: Optional[str] = None,
 ) -> Response:
     """Render the Account page with optional deletion error context."""
 
@@ -441,6 +458,8 @@ async def _render_account_page(
         "email": user.get("email") or ((stored or {}).get("email")),
         "created_at": (stored or {}).get("created_at"),
     }
+    preferences_blob = _json_field((stored or {}).get("preferences"), {})
+    ai_preferences = normalize_ai_preferences(preferences_blob.get("ai"))
 
     context = {
         "request": request,
@@ -449,6 +468,11 @@ async def _render_account_page(
         "csrf_token": csrf,
         "delete_error": delete_error,
         "delete_value": delete_value or "",
+        "preferences": preferences_blob,
+        "ai_preferences": ai_preferences,
+        "ai_model_choices": get_ai_model_choices(),
+        "ai_message": ai_message,
+        "ai_error": ai_error,
     }
 
     resp = templates.TemplateResponse("account/index.html", context, status_code=status_code)
@@ -495,6 +519,7 @@ def _document_to_view(doc: dict) -> dict:
         metadata["drive"] = drive_meta
     frontmatter = _json_field(doc.get("frontmatter"), {})
     latest_generation = metadata.get("latest_generation") if isinstance(metadata, dict) else {}
+    latest_outline = metadata.get("latest_outline") if isinstance(metadata, dict) else []
     source_type = (doc.get("source_type") or "unknown").lower()
     source_label = {
         "drive": "Drive",
@@ -522,8 +547,10 @@ def _document_to_view(doc: dict) -> dict:
         "drive_revision_id": doc.get("drive_revision_id"),
         "latest_title": frontmatter.get("title") if isinstance(frontmatter, dict) else None,
         "latest_generation": latest_generation,
+        "latest_outline": latest_outline,
         "created_at": doc.get("created_at"),
         "raw_text": doc.get("raw_text"),
+        "drive_sync_status": metadata.get("drive_sync_status") if isinstance(metadata, dict) else None,
     }
 
 
@@ -1201,6 +1228,76 @@ async def dashboard_regenerate_section(
     return _render_flash(request, f"Regeneration queued for section {section_index + 1}", "success")
 
 
+@router.post("/dashboard/documents/{document_id}/drive/sync", response_class=HTMLResponse)
+async def dashboard_drive_sync(
+    document_id: str,
+    request: Request,
+    csrf_token: str = Form(...),
+    user: dict = Depends(get_current_user),
+):
+    _validate_csrf(request, csrf_token)
+    db = ensure_db()
+    document = await get_document(db, document_id, user_id=user["user_id"])
+    if not document:
+        return _render_flash(request, "Document not found", "error", status.HTTP_404_NOT_FOUND)
+    metadata = _json_field(document.get("metadata"), {})
+    drive_stage = metadata.get("drive_stage")
+    try:
+        await sync_drive_doc_for_document(
+            db,
+            user["user_id"],
+            document_id,
+            {"metadata": {"drive_stage": drive_stage} if drive_stage else {}},
+        )
+    except Exception as exc:
+        logger.exception(
+            "drive_manual_sync_failed",
+            extra={"document_id": document_id, "user_id": user["user_id"]},
+        )
+        return _render_flash(request, f"Drive sync failed: {exc}", "error", status.HTTP_502_BAD_GATEWAY)
+    return _render_flash(request, "Drive sync started", "success")
+
+
+@router.post("/dashboard/documents/{document_id}/outline/regenerate", response_class=HTMLResponse)
+async def dashboard_outline_regenerate(
+    document_id: str,
+    request: Request,
+    csrf_token: str = Form(...),
+    user: dict = Depends(get_current_user),
+):
+    _validate_csrf(request, csrf_token)
+    step_request = OutlineGenerateRequest(document_id=document_id)
+    async def _empty_receive() -> Any:
+        return {"type": "http.request", "body": b"", "more_body": False}
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": request.scope.get("scheme", "http"),
+        "path": "/dashboard/internal/outline",
+        "raw_path": b"/dashboard/internal/outline",
+        "root_path": request.scope.get("root_path", ""),
+        "query_string": b"",
+        "headers": [
+            (b"idempotency-key", uuid.uuid4().hex.encode("ascii")),
+        ],
+        "client": request.scope.get("client"),
+        "server": request.scope.get("server"),
+        "app": request.app,
+    }
+    step_req = Request(scope, _empty_receive)
+    try:
+        await outline_generate(step_req, step_request, user)
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, str) else "Failed to regenerate outline"
+        return _render_flash(request, detail, "error", exc.status_code)
+    except Exception as exc:
+        logger.exception("outline_regenerate_failed", extra={"document_id": document_id})
+        return _render_flash(request, f"Outline failed: {exc}", "error", status.HTTP_500_INTERNAL_SERVER_ERROR)
+    return _render_flash(request, "Outline regenerated", "success")
+
+
 @router.post("/dashboard/documents/{document_id}/exports/{target}", response_class=HTMLResponse)
 async def dashboard_document_export(
     document_id: str,
@@ -1726,6 +1823,58 @@ async def settings_api_key(request: Request, csrf_token: str = Form(...), user: 
 async def account_page(request: Request, user: dict = Depends(get_current_user)):
     return await _render_account_page(request, user)
 
+
+@router.post("/dashboard/account/ai", response_class=HTMLResponse)
+async def update_account_ai_preferences(
+    request: Request,
+    tone: str = Form("informative"),
+    model: str = Form("gpt-5.1"),
+    max_sections: int = Form(5),
+    target_chapters: int = Form(4),
+    temperature: float = Form(0.6),
+    include_images: Optional[str] = Form("on"),
+    csrf_token: str = Form(...),
+    user: dict = Depends(get_current_user),
+):
+    _validate_csrf(request, csrf_token)
+    tone = (tone or "").strip()
+    if tone and len(tone) < 3:
+        return await _render_account_page(
+            request,
+            user,
+            ai_error="Tone must be at least 3 characters.",
+        )
+    if tone and len(tone) > 60:
+        tone = tone[:60]
+    configured_model = settings.openai_blog_model or "gpt-5.1"
+    selected_model = (model or "").strip() or configured_model
+    available_models = {choice["value"] for choice in get_ai_model_choices()}
+    if selected_model not in available_models:
+        selected_model = configured_model
+    include_images_flag = _form_bool(include_images)
+    db = ensure_db()
+    current = await get_user_preferences(db, user["user_id"])
+    merged = set_ai_preferences(
+        current,
+        {
+            "tone": tone or None,
+            "model": selected_model,
+            "max_sections": max(1, min(int(max_sections), 12)),
+            "target_chapters": max(1, min(int(target_chapters), 12)),
+            "temperature": float(temperature),
+            "include_images": include_images_flag,
+        },
+    )
+    await update_user_preferences(db, user["user_id"], merged)
+    # Update request.state.user preferences best-effort so subsequent renders include latest data
+    stored_user = dict(user)
+    stored_user["preferences"] = merged
+    request.state.user = stored_user
+    return await _render_account_page(
+        request,
+        stored_user,
+        ai_message="AI defaults updated.",
+    )
 
 @router.post("/dashboard/account/delete")
 async def delete_account(

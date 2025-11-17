@@ -5,6 +5,13 @@ Sets up required environment variables for testing.
 import os
 import pytest
 
+# Ensure tests never read the developer's local .env (which can include real API keys)
+os.environ.setdefault("PYTEST_DISABLE_DOTENV", "1")
+# Disable OpenAI usage during tests to avoid live network calls/costs
+os.environ.setdefault("OPENAI_API_KEY", "")
+# Provide a deterministic JWT secret before the settings module loads
+os.environ.setdefault("JWT_SECRET_KEY", "test-jwt-secret-key-for-testing-only-not-for-production")
+
 
 @pytest.fixture(scope="session", autouse=True)
 def setup_test_env():
@@ -23,4 +30,3 @@ def setup_test_env():
         os.environ.pop("JWT_SECRET_KEY", None)
     else:
         os.environ["JWT_SECRET_KEY"] = original
-

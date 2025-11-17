@@ -37,10 +37,8 @@ You’re working in the repo `convert-image-webp-optimizer-google-drive`. Comple
 - **✅ Drive workspace provisioning parity (new)**: YouTube ingest now creates a Drive workspace (folder + media folder) locally and in Workers. `metadata.drive` is stamped with folder/file IDs, last-ingested timestamps, and external-edit flags so the dashboard UI can mirror Drive. Drive overview still only counts `source_type=drive*` docs, so we’ll extend it once Docs ingestion lands.
 - **Document ↔ Google Doc mapping** *(next)*:
   - API: add a `drive.docs` helper that either reuses `drive_file_id` if it exists or creates a Docs file inside the document workspace folder, returns file + revision metadata, and persists the IDs on the document row.
-  - When a YouTube ingest finishes, call this helper (if enabled) and stream a `drive.workspace.doc` pipeline event so the timeline shows when the Doc was created.
-  - Seed the Docs body with the raw transcript so Drive instantly holds the “raw text” artifact; persist the doc + revision IDs so Quill treats that file as canonical (no extra “doc export” step later).
-- **Outline generation API before UI polish**: expose `/api/v1/pipelines/generate_outline` that runs just the outline step against `raw_text`, stores the outline in `metadata.latest_outline`, and emits `outline.generate` pipeline events so the editor can request outlines later. UI can follow once this endpoint is stable.
-  - The outline step should also call Docs batchUpdate to strip the transcript block from the Drive file and replace it with the generated outline so the Doc stays accurate even before the UI refreshes.
+- ✅ YouTube ingest now creates the Drive workspace/doc structure, persists Drive IDs on the document row, and seeds the Doc so exports/update flows reuse the same file.
+- ✅ Outline generation step lives at `/api/v1/steps/outline.generate`, writes the latest outline back to metadata + Drive, and the document detail view exposes a Generate/Regenerate button so the flow can start entirely from the UI.
 - **Docs push-sync (webhook)**:
   - Register Google Drive push notifications (channel/watch) per Drive workspace using a Cloudflare Worker endpoint as the webhook target and persist `channelId`, `resourceId`, and expiration per user/document.
   - Worker webhook handler (Workers `POST /drive/webhook`) validates the channel secret, checks channel/resource IDs, and enqueues a `drive_change_poll` job with the change IDs so edits in Docs arrive within seconds.
@@ -58,10 +56,15 @@ You’re working in the repo `convert-image-webp-optimizer-google-drive`. Comple
 
 
 ## 2. Editor & Pipeline Polish
-- **Milestone: Drive-linked document UI** *(in progress)*:
-  - ✅ Card/grid redesign + detail header now surface Drive metadata (folder/doc links, last ingest timestamp, external-edit warnings).
-  - 🚧 Next: surface Drive status in the dashboard overview, add manual “Sync Drive” controls, and auto-refresh metadata when new pipeline events arrive so the editor always mirrors the workspace.
-  - Once the outline API exists, render the latest outline in a simple card (same style as current cards) and add a “Regenerate outline” button wired to the new endpoint; no UI overhaul required yet.
+- **Milestone: Drive-linked document UI** *(done)*:
+  - ✅ Card/grid redesign + detail header surface Drive metadata (folder/doc links, last ingest timestamp, external-edit warnings).
+  - ✅ Drive status badges now appear in the documents overview, and the document detail view exposes a one-click “Sync Drive” control that hits `/dashboard/documents/{doc_id}/drive/sync` (HTMX) to push the latest Quill content into Drive on demand.
+  - ✅ Manual sync actions reuse the existing flash/HTMX plumbing so the UI updates without reloads. Outline render/regenerate work remains tracked separately once `/api/v1/steps/outline.generate` ships.
+  - ✅ Outline card now renders even before the first outline exists and includes a Generate/Regenerate button wired to the outline step so users can kick off the flow entirely from the document detail view.
+- **Next focus: YouTube → blog autopilot**
+  1. Upgrade the outline generator so it produces a real heading/summary hierarchy instead of chopped transcript text. Pull chapter markers from the YouTube API when available, merge them with transcript segments, keep full-sentence summaries, and reserve CTA/keyword slots so the AI writer receives rich structure. Store both the structured JSON and a Drive-friendly rendering.
+  2. Chain the steps automatically when a YouTube URL is submitted: ingest → outline → chapter shaping → AI compose → Drive write-back, emitting pipeline events/SSE so the dashboard shows progress without manual clicks. This should feel like an “agent” running a todo list on the user’s behalf.
+  3. Finish the single-step UX: when the AI draft lands, send a “Blog ready” notification with the Google Doc link and surface a status chip in the documents grid (“Ready”, “Needs review”, etc.). The user journey should be “paste URL, wait for tasks to flip green, click ‘Open Google Doc’.”
 - **Bidirectional Drive edits** *(functional priority)*:
   - When webhook-driven sync detects a new revision, immediately pull the Doc body, update `raw_text`, and create a `document_versions` snapshot so Quill stays aligned with Google Docs.
   - When Quill pushes edits (generate outline, convert raw transcript to chapters, regenerate sections), update the Google Doc via Docs batchUpdate—replace the transcript with the outline when the user presses “Generate outline,” then push subsequent edits section-by-section. Record the revision ID on each save so both sides stay in lockstep.
@@ -74,6 +77,8 @@ You’re working in the repo `convert-image-webp-optimizer-google-drive`. Comple
 - **Inline diffing**: show how a regenerated section differs from the previous version (simple Markdown diff) before committing it as a new version row.
 - **Image workflow**: allow users to choose which generated image prompt to keep, upload their own replacements, or re-run image generation per section.
 - **AI configuration**: add per-user provider preferences (OpenAI, Cloudflare Workers AI, Anthropic) and surface token costs per section in the editor.
+- **AI compose stage** *(new)*: outline + chapter metadata now feeds GPT-5.1 via the OpenAI Responses API. Configure `OPENAI_API_KEY`, `OPENAI_BLOG_MODEL`, `OPENAI_BLOG_TEMPERATURE`, and `OPENAI_BLOG_MAX_OUTPUT_TOKENS` to drive generation; when unset or during tests we fall back to the deterministic stub so pipelines remain deterministic. Users can override tone/section/model defaults in **Account → AI defaults** and the resolved settings automatically flow into `/api/v1/pipelines/generate_blog`. Jobs, document metadata, and the version viewer now display the engine/model responsible for every draft so QA can audit which LLM produced which copy.
+- **Drive write-back**: when a blog generation job finishes we immediately push the markdown (converted to Drive-friendly text) into the linked Google Doc and set `drive_stage = ai_draft`. Drive revisions now capture the AI prose automatically, so authors opening the Doc after a generation step see the full blog post without exporting from Quill.
 
 ## 3. Export Connectors
 - **Google Docs**: worker that consumes `document_exports` rows with `target = google_docs`, updates the ingest-created Drive doc (same file ID) instead of spawning a new file, and persists export status.

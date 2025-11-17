@@ -4,6 +4,19 @@ from typing import Dict, Any, List, Optional
 import textwrap
 import re
 import html
+import logging
+import os
+import json
+
+try:
+    from openai import AsyncOpenAI, OpenAIError  # type: ignore
+except Exception:  # pragma: no cover - OpenAI optional during tests
+    AsyncOpenAI = None  # type: ignore
+    OpenAIError = Exception  # type: ignore
+
+from src.workers.api.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 def _coerce_text(text: Optional[str]) -> str:
@@ -216,10 +229,25 @@ def organize_chapters(text: str, target_chapters: int = 4) -> List[Dict[str, str
     return chapters
 
 
-def compose_blog(chapters: List[Dict[str, str]], tone: str = "informative") -> Dict[str, Any]:
-    """Create a simple markdown blog post from chapter summaries."""
+def _compose_blog_stub(
+    chapters: List[Dict[str, str]],
+    tone: str = "informative",
+    *,
+    model: Optional[str] = None,
+    temperature: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Fallback blog composer that mirrors old behavior (deterministic + offline)."""
     if not chapters:
-        return {"markdown": "", "meta": {"tone": tone, "word_count": 0}}
+        return {
+            "markdown": "",
+            "meta": {
+                "tone": tone,
+                "word_count": 0,
+                "engine": "stub",
+                "model": model or "stub",
+                "temperature": temperature,
+            },
+        }
     parts = []
     for chap in chapters:
         title = chap.get("title") or "Section"
@@ -229,7 +257,14 @@ def compose_blog(chapters: List[Dict[str, str]], tone: str = "informative") -> D
     word_count = len(markdown.split())
     return {
         "markdown": markdown,
-        "meta": {"tone": tone, "sections": len(chapters), "word_count": word_count},
+        "meta": {
+            "tone": tone,
+            "sections": len(chapters),
+            "word_count": word_count,
+            "engine": "stub",
+            "model": model or "stub",
+            "temperature": temperature,
+        },
     }
 
 
@@ -308,3 +343,158 @@ def markdown_to_html(markdown_text: str) -> str:
         else:
             lines.append(f"<p>{html.escape(line)}</p>")
     return "\n".join(lines)
+
+
+_openai_client: Optional[AsyncOpenAI] = None
+
+
+def _should_use_openai() -> bool:
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        return False
+    if not settings.openai_api_key:
+        return False
+    if AsyncOpenAI is None:
+        logger.debug("OpenAI client unavailable; falling back to stub composer")
+        return False
+    return True
+
+
+def _format_chapters_for_prompt(chapters: List[Dict[str, Any]]) -> str:
+    lines: List[str] = []
+    for idx, chap in enumerate(chapters, start=1):
+        title = (chap or {}).get("title") or f"Section {idx}"
+        summary = (chap or {}).get("summary") or ""
+        lines.append(f"{idx}. {title.strip()}\n   Summary: {summary.strip()}")
+    return "\n".join(lines)
+
+
+def _get_openai_client() -> AsyncOpenAI:
+    global _openai_client
+    if not settings.openai_api_key:
+        raise ValueError("OPENAI_API_KEY is required for AI blog generation")
+    if AsyncOpenAI is None:
+        raise RuntimeError("openai package is not installed")
+    if _openai_client is None:
+        client_kwargs: Dict[str, Any] = {"api_key": settings.openai_api_key}
+        if settings.openai_api_base:
+            client_kwargs["base_url"] = settings.openai_api_base
+        _openai_client = AsyncOpenAI(**client_kwargs)
+    return _openai_client
+
+
+async def compose_blog(
+    chapters: List[Dict[str, str]],
+    tone: str = "informative",
+    seo_metadata: Optional[Dict[str, Any]] = None,
+    extra_context: Optional[Dict[str, Any]] = None,
+    model: Optional[str] = None,
+    temperature: Optional[float] = None,
+) -> Dict[str, Any]:
+    """
+    Compose a long-form markdown blog post from structured chapters using OpenAI.
+    Falls back to the deterministic stub when OpenAI is unavailable (e.g., tests/offline).
+    """
+    seo_metadata = seo_metadata or {}
+    extra_context = extra_context or {}
+    if not chapters:
+        return _compose_blog_stub(chapters, tone=tone, model=model, temperature=temperature)
+
+    if not _should_use_openai():
+        return _compose_blog_stub(chapters, tone=tone, model=model, temperature=temperature)
+
+    prompt_outline = _format_chapters_for_prompt(chapters)
+    keywords = ", ".join(seo_metadata.get("keywords", []))
+    system_prompt = (
+        "You are Quill's senior marketing copywriter. "
+        "Given a structured outline plus SEO metadata, craft a comprehensive, engaging, "
+        "and factually consistent blog article. Always write in Markdown with a single H1 title "
+        "followed by well-structured H2/H3 sections, short paragraphs, scannable bullet lists, "
+        "and a concluding call-to-action."
+    )
+    requirements = [
+        f"Tone: {tone}",
+        f"Primary title hint: {seo_metadata.get('title') or ''}",
+        f"Meta description guidance: {seo_metadata.get('description') or ''}",
+        f"Target keywords: {keywords or 'use best-fit based on outline'}",
+        "Length: 900-1200 words unless outline implies otherwise.",
+        "Add SEO-friendly subheadings, numbered/bullet lists where useful, and contextual transitions between sections.",
+        "Do not include markdown frontmatter or HTML—return pure Markdown body.",
+        "Keep factual claims grounded in provided outline; do not invent statistics.",
+        "Close with a concise CTA tailored to the topic.",
+    ]
+    if extra_context:
+        requirements.append(f"Additional context: {json.dumps(extra_context, default=str)[:800]}")
+
+    user_prompt = (
+        "Generate a publication-ready blog article.\n\n"
+        "Outline:\n"
+        f"{prompt_outline}\n\n"
+        "Requirements:\n- " + "\n- ".join(req for req in requirements if req.strip())
+    )
+
+    try:
+        client = _get_openai_client()
+    except Exception:
+        logger.warning("openai_client_unavailable", exc_info=True)
+        return _compose_blog_stub(chapters, tone=tone, model=model, temperature=temperature)
+
+    model_name = (model or settings.openai_blog_model or "gpt-5.1").strip()
+    temp_value = temperature if temperature is not None else settings.openai_blog_temperature
+    try:
+        response = await client.responses.create(
+            model=model_name,
+            temperature=temp_value,
+            max_output_tokens=settings.openai_blog_max_output_tokens,
+            input=[
+                {"role": "system", "content": [{"type": "text", "text": system_prompt}]},
+                {"role": "user", "content": [{"type": "text", "text": user_prompt}]},
+            ],
+        )
+    except OpenAIError as exc:
+        logger.error(
+            "openai_compose_blog_failed",
+            exc_info=True,
+            extra={"model": model_name, "reason": getattr(exc, "message", str(exc))},
+        )
+        return _compose_blog_stub(chapters, tone=tone, model=model_name, temperature=temp_value)
+    except Exception as exc:  # pragma: no cover - network/runtime edge cases
+        logger.error("openai_compose_blog_unexpected", exc_info=True, extra={"model": model_name})
+        return _compose_blog_stub(chapters, tone=tone, model=model_name, temperature=temp_value)
+
+    output_text: str = ""
+    candidate = getattr(response, "output_text", None)
+    if isinstance(candidate, list):
+        output_text = "\n".join([str(item) for item in candidate if str(item).strip()])
+    elif isinstance(candidate, str):
+        output_text = candidate
+
+    if not output_text:
+        output_chunks: List[str] = []
+        for item in getattr(response, "output", []) or []:
+            contents = getattr(item, "content", None)
+            if not contents:
+                continue
+            for block in contents:
+                text_obj = getattr(block, "text", None)
+                if hasattr(text_obj, "value"):
+                    output_chunks.append(str(text_obj.value))
+                elif isinstance(text_obj, str):
+                    output_chunks.append(text_obj)
+        output_text = "\n".join(output_chunks)
+
+    markdown = output_text.strip()
+    if not markdown:
+        return _compose_blog_stub(chapters, tone=tone, model=model_name, temperature=temp_value)
+
+    word_count = len(markdown.split())
+    return {
+        "markdown": markdown,
+        "meta": {
+            "tone": tone,
+            "sections": len(chapters),
+            "word_count": word_count,
+            "engine": "openai",
+            "model": model_name,
+            "temperature": temp_value,
+        },
+    }
