@@ -1322,6 +1322,8 @@ async def process_generate_blog_job(
         include_images = bool(options.get("include_images")) if "include_images" in options else True
         section_index = options.get("section_index")
         provider = (options.get("provider") or "openai").lower()
+        # Resolve OpenAI model; GPT-5.1 is our current target default.
+        # See https://platform.openai.com/docs/models/gpt-5.1
         model_name = (options.get("model") or settings.openai_blog_model or "gpt-5.1").strip()
         temperature_override = options.get("temperature")
 
@@ -1483,14 +1485,20 @@ async def process_generate_blog_job(
         drive_text_payload = _markdown_to_drive_text(markdown_body)
         if drive_text_payload:
             try:
+                # Merge drive_stage_meta into existing document metadata and persist before Drive sync
+                doc_row = await get_document(db, document_id, user_id=user_id)
+                existing_meta = _parse_document_metadata(doc_row or {}) if doc_row else {}
+                merged_meta = {**existing_meta, **drive_stage_meta}
+                updates = {
+                    "drive_text": drive_text_payload,
+                    "metadata": merged_meta,
+                }
+                await update_document(db, document_id, updates)
                 await sync_drive_doc_for_document(
                     db,
                     user_id,
                     document_id,
-                    {
-                        "drive_text": drive_text_payload,
-                        "metadata": drive_stage_meta,
-                    },
+                    updates,
                 )
             except Exception:
                 app_logger.exception(

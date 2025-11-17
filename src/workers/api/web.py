@@ -1276,7 +1276,7 @@ async def dashboard_outline_regenerate(
     except HTTPException as exc:
         detail = exc.detail if isinstance(exc.detail, str) else "Failed to regenerate outline"
         return _render_flash(request, detail, "error", exc.status_code)
-    except Exception as exc:
+    except Exception:
         logger.exception("outline_regenerate_failed", extra={"document_id": document_id})
         return _render_flash(
             request,
@@ -1835,6 +1835,8 @@ async def update_account_ai_preferences(
         )
     if tone and len(tone) > 60:
         tone = tone[:60]
+    # Resolve the configured OpenAI blog model; GPT-5.1 is the current target default.
+    # See https://platform.openai.com/docs/models/gpt-5.1
     configured_model = settings.openai_blog_model or "gpt-5.1"
     selected_model = (model or "").strip() or configured_model
     available_models = {choice["value"] for choice in get_ai_model_choices()}

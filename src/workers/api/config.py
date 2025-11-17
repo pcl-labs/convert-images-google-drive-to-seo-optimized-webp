@@ -109,6 +109,8 @@ class Settings:
     static_files_dir: str = "./static"
     openai_api_key: Optional[str] = None
     openai_api_base: Optional[str] = None
+    # Default OpenAI blog model (GPT-5.1 is the current target model).
+    # See https://platform.openai.com/docs/models/gpt-5.1
     openai_blog_model: str = "gpt-5.1"
     openai_blog_temperature: float = 0.6
     openai_blog_max_output_tokens: int = 2200

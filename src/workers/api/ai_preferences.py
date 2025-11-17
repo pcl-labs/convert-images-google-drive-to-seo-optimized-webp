@@ -15,6 +15,8 @@ DEFAULT_MODEL_CHOICES: List[Dict[str, str]] = [
 
 
 def _default_model() -> str:
+    # Use the configured blog model or fall back to GPT-5.1, our current target model.
+    # See https://platform.openai.com/docs/models/gpt-5.1
     return settings.openai_blog_model or "gpt-5.1"
 
 
