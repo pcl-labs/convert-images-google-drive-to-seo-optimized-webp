@@ -1897,8 +1897,15 @@ async def create_user_session(
     now = datetime.now(timezone.utc)
     await db.execute(
         """
-        INSERT OR REPLACE INTO user_sessions (session_id, user_id, created_at, last_seen_at, expires_at, ip_address, user_agent, extra)
+        INSERT INTO user_sessions (session_id, user_id, created_at, last_seen_at, expires_at, ip_address, user_agent, extra)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(session_id) DO UPDATE SET
+            user_id = excluded.user_id,
+            last_seen_at = excluded.last_seen_at,
+            expires_at = excluded.expires_at,
+            ip_address = excluded.ip_address,
+            user_agent = excluded.user_agent,
+            extra = excluded.extra
         """,
         (
             session_id,
@@ -1957,7 +1964,21 @@ async def touch_user_session(
     await db.execute(query, tuple(params))
 
 
-async def delete_user_session(db: Database, session_id: str) -> None:
+async def delete_user_session(db: Database, session_id: str, *, user_id: Optional[str] = None) -> None:
+    """Delete a user session by session_id.
+    
+    If user_id is provided, validates that the session belongs to that user
+    before deletion to prevent unauthorized session revocation.
+    """
+    if user_id:
+        # Verify session ownership before deletion
+        session = await get_user_session(db, session_id)
+        if session and session.get("user_id") != user_id:
+            logger.warning(
+                "Attempted to delete session belonging to different user",
+                extra={"session_id": session_id, "expected_user_id": user_id, "actual_user_id": session.get("user_id")},
+            )
+            return
     await db.execute("DELETE FROM user_sessions WHERE session_id = ?", (session_id,))
 
 
