@@ -8,11 +8,18 @@ import os
 import sys
 from pathlib import Path
 
-# Add project root to Python path for imports (similar to consumer.py)
+# Add project root and src/workers to Python path for imports (similar to consumer.py)
 # This ensures modules can be imported correctly when main.py is executed as entry point
 project_root = Path(__file__).parent.parent.parent
+workers_path = Path(__file__).parent
+
+# Add project root first (for src.workers.* imports)
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
+
+# Add src/workers to path (for api.* imports used by runtime.py and other modules)
+if str(workers_path) not in sys.path:
+    sys.path.insert(0, str(workers_path))
 
 import asyncio
 import logging
