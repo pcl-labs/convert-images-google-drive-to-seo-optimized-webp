@@ -139,6 +139,42 @@ The planned `/v1/content` endpoints are thin orchestration on top of existing pi
 
 No new core data models are strictly required; this plan mostly introduces **new public endpoints** and **schemas that wrap existing models** into a nicer contract.
 
+### 3.4 Migration and deprecation of legacy `/api/v1/...` routes
+
+Historically, a number of endpoints were exposed under `/api/v1/...` (e.g. `/api/v1/documents/...`, `/api/v1/jobs/...`, `/api/v1/pipelines/generate_blog`). For the Content API, we are standardizing on the versioned `/v1/...` surface:
+
+- **Canonical public API**
+  - All new SDKs, docs, and integrations must use:
+    - `/v1/content/...`
+    - `/v1/documents/...`
+    - `/v1/jobs/...`
+
+- **Legacy `/api/v1/...` status**
+  - This project is effectively greenfield for external consumers.
+  - Legacy `/api/v1/...` endpoints that overlap with `/v1/...` will be **removed as part of the same rollout** (no long-term compatibility window is required).
+  - The remaining `/api/...` routes are explicitly **internal**, e.g. the SSE stream at `/api/pipelines/stream`.
+
+- **Behavioral differences**
+  - **Auth**: both old and new endpoints rely on the same underlying auth (session cookies or API keys). `/v1/...` simply codifies API-key usage for headless consumers.
+  - **Response shapes**: `/v1/...` responses are explicitly modeled and stable (see §4–§5). Legacy `/api/v1/...` responses may have been shaped primarily for the dashboard and are not considered stable.
+  - **Headers & rate limits**: no intentional behavior change; existing middleware (CORS, rate limiting, security headers) continues to apply uniformly.
+
+- **Migration strategy**
+  - Recommended path: **use `/v1/...` exclusively** for any new integration (SDKs, headless sites, CLIs).
+  - Because there are no known external consumers of `/api/v1/...`, we do not maintain a backwards-compatibility period; overlapping routes under `/api/v1/...` can be deleted once `/v1/...` is wired.
+  - Internal UI has already been updated (or will be updated in the same PR) to call `/v1/...` for content/document/job operations.
+
+- **SDKs & docs**
+  - All public docs and code samples should reference `/v1/...` only.
+  - SDK generators (OpenAPI-based) should target the `/v1/...` schema.
+  - Any mention of `/api/v1/...` in docs should be either removed or explicitly labeled as **internal/legacy** and not for external use.
+
+- **Migration checklist (internal)**
+  - [ ] Replace dashboard calls to `/api/v1/documents/...` and `/api/v1/jobs/...` with the new `/v1/documents/...` and `/v1/jobs/...` wrappers.
+  - [ ] Remove unused public references to `/api/v1/...` from docs and code comments.
+  - [ ] Delete redundant `/api/v1/...` routes once tests for `/v1/...` pass.
+  - [ ] Publish a short “Content API v1” migration note pointing here for details.
+
 ---
 
 ## 4. Proposed Public Endpoints
@@ -172,7 +208,124 @@ Generate a blog article from a YouTube URL. The server automatically ingests the
 
 #### Responses
 
-- **Structured JSON (`mode=structured`, `format=json`)** – status `200 OK`. Body includes `document_id`, `version_id`, and the full ContentPlan (`plan.sections`, `plan.cta`, `plan.seo`, etc.) alongside outlines/chapters/assets for downstream use.
+- **Structured JSON (`mode=structured`, `format=json`)** – status `200 OK`.
+
+  Response schema (conceptual; see suggested Pydantic models below):
+
+  ```jsonc
+  {
+    "document_id": "doc_123",            // string
+    "version_id": "ver_004",             // string
+    "created_at": "2025-11-18T01:02:03Z",// ISO8601
+    "updated_at": "2025-11-18T02:03:04Z",// ISO8601
+    "document_version": {
+      "title": "How Bull City Legal Services Keeps Justice Affordable",
+      "status": "published",             // draft | published | archived
+      "author_id": "user_abc",           // optional
+      "locale": "en-US",                 // optional
+      "published_at": "2025-11-18T01:02:03Z", // optional
+      "metadata": {                        // arbitrary JSON blob
+        "site": "nc_legal",
+        "source": "youtube"
+      },
+      "content_format": "blog",          // mirrors DocumentVersionDetail.content_format
+      "frontmatter": {
+        "slug": "how-bull-city-legal-works",
+        "tags": ["legal", "durham"]
+      }
+    },
+    "plan": {
+      "schema": "blog.post",            // e.g. blog.post, faq.page
+      "schema_version": 1,
+      "content_type": "https://schema.org/BlogPosting",
+      "intent": "educate",
+      "audience": "founders and operators",
+      "sections": [                      // array of Section
+        {
+          "id": "intro",               // stable identifier
+          "heading": "Hook readers with a mission",
+          "body": "## Hook readers...",// MDX fragment
+          "order": 0,
+          "purpose": "intro",          // intro | body | cta | etc.
+          "key_points": [
+            "Two-sentence mission statement",
+            "Region served"
+          ],
+          "cta": false,
+          "call_to_action": null
+        }
+      ],
+      "cta": {                           // overall CTA block
+        "text": "Ready to help?",       // human-readable CTA text
+        "url": "https://nclegal.org/contact", // optional link
+        "type": "primary"              // e.g. primary | secondary
+      },
+      "seo": {
+        "title": "How Bull City Legal Services Keeps Justice Affordable",
+        "description": "Inside the sliding-scale law firm helping the Triangle.",
+        "keywords": ["legal aid", "durham", "nonprofit law firm"]
+      },
+      "outline": [                       // minimal outline entries
+        { "id": "intro", "title": "Introduction" }
+      ],
+      "chapters": [                      // optional chapter-level groupings
+        { "id": "ch1", "title": "Background" }
+      ],
+      "assets": [                        // media or external refs
+        { "id": "thumb1", "type": "image", "ref": "gs://bucket/thumb.jpg" }
+      ]
+    }
+  }
+  ```
+
+  Suggested Pydantic models for OpenAPI/SDK generation (names only):
+
+  - `DocumentPlanResponse`
+    - `document_id: str`
+    - `version_id: str`
+    - `created_at: datetime`
+    - `updated_at: datetime`
+    - `document_version: DocumentVersionDetailSubset`
+    - `plan: Plan`
+  - `DocumentVersionDetailSubset`
+    - Subset of `DocumentVersionDetail` (title, status, author_id, locale, published_at, metadata, content_format, frontmatter).
+  - `Plan`
+    - `schema: str`
+    - `schema_version: int`
+    - `content_type: str`
+    - `intent: Optional[str]`
+    - `audience: Optional[str]`
+    - `sections: list[Section]`
+    - `cta: Optional[CTA]`
+    - `seo: Optional[SEO]`
+    - `outline: list[OutlineItem]`
+    - `chapters: list[OutlineItem]`
+    - `assets: list[Asset]`
+  - `Section`
+    - `id: str`
+    - `heading: str`
+    - `body: str`
+    - `order: int`
+    - `purpose: Optional[str]`
+    - `key_points: list[str]`
+    - `cta: bool`
+    - `call_to_action: Optional[str]`
+  - `CTA`
+    - `text: str`
+    - `url: Optional[str]`
+    - `type: Optional[str]`
+  - `SEO`
+    - `title: str`
+    - `description: str`
+    - `keywords: list[str]`
+  - `OutlineItem`
+    - `id: str`
+    - `title: str`
+  - `Asset`
+    - `id: str`
+    - `type: str`
+    - `ref: str`
+
 - **Markdown (`mode=markdown`, `format=mdx|html`)** – status `200 OK`. Body is the rendered MDX/HTML fragment containing the article.
 - **Async (`async=true` or non-inline queue)** – status `202 ACCEPTED` with:
 
@@ -184,11 +337,11 @@ Generate a blog article from a YouTube URL. The server automatically ingests the
   "document_id": "doc_123",
   "mode": "structured",
   "format": "json",
-  "detail": "Ingest + autopilot pipeline enqueued. Monitor /api/pipelines/stream for updates."
+  "detail": "Ingest + autopilot pipeline enqueued. Monitor /api/pipelines/stream for live updates (internal SSE endpoint)."
 }
 ```
 
-Clients can then poll `/v1/jobs/{job_id}` or subscribe to `/api/pipelines/stream?job_id=job_abc123`.
+Clients can then poll `/v1/jobs/{job_id}` or subscribe to the internal SSE endpoint at `/api/pipelines/stream?job_id=job_abc123`.
 
 ### 4.2 `POST /v1/content/blog_from_text`
 
@@ -283,7 +436,9 @@ If inline execution is available and `async=false`, the response mirrors the str
   - `POST /v1/documents/{document_id}/unpublish`
     - Marks the document as `status=draft`, clears `published_at` / `published_version_id`, and optionally moves files back to drafts.
 
-These endpoints wrap the existing `documents` + `document_versions` tables and provide a WordPress-like surface for external sites: list by status/site, fetch by slug, and publish/unpublish with explicit flags.
+These endpoints wrap the existing `documents` + `document_versions` tables and provide a WordPress-like surface for external sites: list by status/site and fetch by slug or ID.
+
+> **Note:** Publish/unpublish operations are **future work** and are not part of the current `/v1/documents` surface. See §7 for planned follow-ups.
 
 ### 4.5 Jobs API
 
@@ -311,7 +466,7 @@ Use this endpoint in combination with `/api/pipelines/stream?job_id=...` to prov
 
 ### 4.6 Streaming / Live Updates
 
-`GET /api/pipelines/stream?job_id=...` continues to emit Server-Sent Events for ingest + generation pipelines. UI surfaces (dashboard, document detail) link directly to this stream so users can watch the entire “Paste URL → Ready Doc” flow without manual outline steps.
+`GET /api/pipelines/stream?job_id=...` continues to emit Server-Sent Events for ingest + generation pipelines. This endpoint is intentionally **unversioned** and lives under `/api/...` as an internal streaming channel, while the public REST surface remains under `/v1/...`. UI surfaces (dashboard, document detail) link directly to this stream so users can watch the entire “Paste URL → Ready Doc” flow without manual outline steps.
 
 ### 4.7 Dashboard + UI integration
 
@@ -337,14 +492,28 @@ These fields are available on every `/v1/content/*` request and stored in `docum
 
 - **Name**: `instructions`
 - **Type**: `Optional[str]`
-- **Semantics**: Additional natural-language instructions steering the generation.
+- **Max length**: up to 4,000 characters (requests exceeding this should be rejected with a 400 or truncated server-side with a warning).
+- **Semantics**: Additional natural-language instructions steering the generation (constraints, emphasis, exclusions).
 - **Examples**:
   - "Don’t mention the homeless people shown in the video."
   - "Keep it under 800 words and focus on practical steps."
 
-Integration options (already implemented conceptually in the app):
+Conflict resolution with other knobs:
 
-- Extend `GenerateBlogOptions` and the planning pipeline to accept `content_type` + `instructions` and pass them through to AI prompts.
+- `tone`, `content_type`, and other structured options remain the primary source of truth.
+- `instructions` may refine or narrow these settings but should *not* silently override them.
+  - If `instructions` clearly contradicts `content_type` or `tone`, the planner should favor the structured options and log the conflict (and optionally return a 400 if the conflict is severe).
+
+Persistence & filtering:
+
+- `instructions` should be persisted in `documents.metadata.latest_generation.instructions` so that recent runs can be inspected.
+- It is not intended as a primary filter dimension (e.g., no full-text search guarantees), but can be inspected for debugging and analytics.
+
+Prompt pipeline integration:
+
+- `instructions` is injected into **both** the planning and composition prompts:
+  - Planning: to shape the ContentPlan (sections, CTA, SEO).
+  - Composition: to steer phrasing, emphasis, and exclusions in the final MDX/HTML.
 
 ### 5.2 Document status and publishing
 
@@ -433,6 +602,17 @@ Every generation run now produces a structured plan stored at `document.metadata
 - `provider` lets us tell whether the structured planner ran (`openai`) or we fell back to heuristics (`fallback`), which is useful for debugging and analytics.
 - `planner_model`, `planner_attempts`, and `planner_error` track the planner’s OpenAI call. Log `planner_error` whenever the model returned empty/invalid JSON so we can tune prompts/models downstream while the fallback keeps the pipeline moving.
 
+CTA validation rules:
+
+- If `cta` is **true**, then `call_to_action` **must** be a non-null, non-empty string.
+- If `cta` is **false**, then `call_to_action` **must** be `null` or omitted; consumers must ignore any non-null value in this case.
+- Payloads with `cta=true` and `call_to_action=null` (or empty string) should be treated as invalid and either rejected with a 400 or corrected by the planner before persistence.
+
+Consumers should:
+
+- Treat `cta=true` + non-empty `call_to_action` as a strong signal to render a prominent CTA block for that section.
+- Safely ignore `call_to_action` whenever `cta=false`.
+
 Future schema types (FAQPage, HowTo) will reuse this envelope but swap the `sections` payload to match their schema.
 
 ---
@@ -502,7 +682,7 @@ Content-Type: application/json
 
 ## 7. Implementation Notes for Future PR
 
-This plan is meant for a separate implementation PR. High-level steps for that PR (not executed now):
+This plan is meant for a separate implementation PR and a follow-up that adds publish/unpublish semantics. High-level steps for that work (not executed now):
 
 1. **Routing & versioning**
    - Add a new router module (e.g. `content_api.py`) with prefix `/v1/content`.
@@ -521,4 +701,10 @@ This plan is meant for a separate implementation PR. High-level steps for that P
 4. **Documentation & examples**
    - Publish this schema in public API docs / OpenAPI with clear examples.
 
-This file serves as the reference design for that work.
+5. **Publish/unpublish (future)**
+   - Add `POST /v1/documents/{id}/publish` and `/unpublish` once:
+     - Document `status`/`published_at`/`published_version_id` columns are in place.
+     - Drive sync semantics for drafts vs published folders are finalized.
+   - Update SDKs and docs to surface these endpoints as the recommended way to manage live content.
+
+This file serves as the reference design for that work and future iterations.

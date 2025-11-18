@@ -8,8 +8,6 @@ import asyncio
 import logging
 
 from workers import WorkerEntrypoint
-from api.config import settings
-from src.workers.api.cloudflare_queue import QueueProducer
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +64,8 @@ class Default(WorkerEntrypoint):
         from workers.runtime import apply_worker_env
         from api.database import Database
         from workers.consumer import handle_queue_message
+        from api.config import settings
+        from src.workers.api.cloudflare_queue import QueueProducer
         
         apply_worker_env(env)
         db = Database(db=env.DB)

@@ -138,12 +138,17 @@ if(!window.__youtubeIngestInit){
         }
         this.loading = true;
         this.flash = null;
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => {
+          controller.abort();
+        }, 30000);
         try {
           const response = await fetch('/v1/content/blog_from_youtube', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             credentials: 'same-origin',
             body: JSON.stringify(payload),
+            signal: controller.signal,
           });
           let data = {};
           try {
@@ -164,8 +169,13 @@ if(!window.__youtubeIngestInit){
             form.reset();
           }
         } catch (err) {
-          this.flash = { status: 'error', message: err && err.message ? err.message : 'Failed to start ingest' };
+          if(err && err.name === 'AbortError'){
+            this.flash = { status: 'error', message: 'Request timed out. Please try again.' };
+          } else {
+            this.flash = { status: 'error', message: err && err.message ? err.message : 'Failed to start ingest' };
+          }
         } finally {
+          clearTimeout(timeoutId);
           this.loading = false;
         }
       },

@@ -376,6 +376,7 @@ async def _maybe_trigger_generate_blog_pipeline(
     """Kick off the compose pipeline automatically once ingest finishes."""
     if not settings.auto_generate_after_ingest:
         return
+    new_job_id = None
     try:
         prefs = await get_user_preferences(db, user_id)
         options = resolve_generate_blog_options(None, prefs)
@@ -435,7 +436,10 @@ async def _maybe_trigger_generate_blog_pipeline(
             stage="generate_blog.enqueue",
             status="error",
             message=f"Auto compose failed: {exc}",
-            data={"document_id": document_id, "next_job_id": new_job_id},
+            data={
+                "document_id": document_id,
+                **({"next_job_id": new_job_id} if new_job_id else {}),
+            },
         )
 
 
