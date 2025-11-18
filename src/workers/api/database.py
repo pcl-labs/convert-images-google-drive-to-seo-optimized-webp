@@ -1969,17 +1969,23 @@ async def delete_user_session(db: Database, session_id: str, *, user_id: Optiona
     
     If user_id is provided, validates that the session belongs to that user
     before deletion to prevent unauthorized session revocation.
+    
+    Uses atomic DELETE with WHERE clause to eliminate TOCTOU race conditions.
     """
     if user_id:
-        # Verify session ownership before deletion
-        session = await get_user_session(db, session_id)
-        if session and session.get("user_id") != user_id:
+        # Atomic delete with ownership check - eliminates race condition by combining
+        # the ownership verification and deletion into a single database operation
+        result = await db.execute(
+            "DELETE FROM user_sessions WHERE session_id = ? AND user_id = ?",
+            (session_id, user_id),
+        )
+        if not result:
             logger.warning(
-                "Attempted to delete session belonging to different user",
-                extra={"session_id": session_id, "expected_user_id": user_id, "actual_user_id": session.get("user_id")},
+                "Session not found or belongs to different user",
+                extra={"session_id": session_id, "user_id": user_id},
             )
-            return
-    await db.execute("DELETE FROM user_sessions WHERE session_id = ?", (session_id,))
+    else:
+        await db.execute("DELETE FROM user_sessions WHERE session_id = ?", (session_id,))
 
 
 async def dismiss_notification(db: Database, user_id: str, notification_id: str) -> None:
