@@ -89,6 +89,8 @@ class Database:
             if 'google_id' not in user_cols:
                 cur.execute("ALTER TABLE users ADD COLUMN google_id TEXT")
             cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_id ON users(google_id)")
+            if 'preferences' not in user_cols:
+                cur.execute("ALTER TABLE users ADD COLUMN preferences TEXT")
             # Ensure documents table
             cur.execute(
                 """
@@ -604,6 +606,40 @@ async def update_user_identity(
     if result:
         return dict(result)
     return await get_user_by_id(db, user_id)
+
+
+def _parse_preferences(raw: Optional[str]) -> Dict[str, Any]:
+    if not raw:
+        return {}
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8", errors="ignore")
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+async def get_user_preferences(db: Database, user_id: str) -> Dict[str, Any]:
+    """Return stored user preference blob (defaults to empty dict)."""
+    row = await db.execute("SELECT preferences FROM users WHERE user_id = ?", (user_id,))
+    if not row:
+        return {}
+    return _parse_preferences(row.get("preferences"))
+
+
+async def update_user_preferences(db: Database, user_id: str, preferences: Dict[str, Any]) -> Dict[str, Any]:
+    """Persist user preferences JSON blob and return the updated record."""
+    payload = json.dumps(preferences or {})
+    result = await db.execute(
+        "UPDATE users SET preferences = ?, updated_at = datetime('now') WHERE user_id = ? RETURNING *",
+        (payload, user_id),
+    )
+    if result:
+        row = dict(result)
+        row["preferences"] = _parse_preferences(row.get("preferences"))
+        return row
+    raise DatabaseError("User not found for preferences update")
 
 
 # API Key operations

@@ -46,6 +46,7 @@ from .database import (
     create_document_export,
     set_job_output,
     record_pipeline_event,
+    get_user_preferences,
 )
 from .notifications import notify_job
 from .auth import create_user_api_key
@@ -77,6 +78,7 @@ from .drive_docs import sync_drive_doc_for_document
 from .youtube_ingest import ingest_youtube_document
 from .database import get_usage_summary, list_usage_events, count_usage_events
 from fastapi import Query
+from .ai_preferences import resolve_generate_blog_options
 
 logger = get_logger(__name__)
 
@@ -982,6 +984,8 @@ async def start_generate_blog_job(
     text = (doc.get("raw_text") or "").strip()
     if not text:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Document is missing raw text to generate from")
+    user_prefs = await get_user_preferences(db, user_id)
+    resolved_options = resolve_generate_blog_options(req.options, user_prefs)
     job_id = str(uuid.uuid4())
     job_row = await create_job_extended(
         db,
@@ -989,14 +993,14 @@ async def start_generate_blog_job(
         user_id,
         job_type=JobType.GENERATE_BLOG.value,
         document_id=document_id,
-        payload={"options": req.options.model_dump()},
+        payload={"options": resolved_options},
     )
     payload = {
         "job_id": job_id,
         "user_id": user_id,
         "job_type": JobType.GENERATE_BLOG.value,
         "document_id": document_id,
-        "options": req.options.model_dump(),
+        "options": resolved_options,
     }
     enqueued, enqueue_exception, should_fail = await enqueue_job_with_guard(queue, job_id, user_id, payload, allow_inline_fallback=False)
     if should_fail:

@@ -86,6 +86,37 @@ logger = setup_logging(level="INFO", use_json=True)
 app_logger = get_logger(__name__)
 
 
+def _markdown_to_drive_text(markdown_text: str) -> str:
+    """Convert markdown into simple paragraphs for Drive."""
+    if not markdown_text:
+        return ""
+    formatted: List[str] = []
+    for raw_line in markdown_text.splitlines():
+        stripped = raw_line.strip()
+        if not stripped:
+            formatted.append("")
+            continue
+        if stripped.startswith("#"):
+            stripped = stripped.lstrip("#").strip()
+            if stripped:
+                stripped = stripped.upper()
+        elif stripped.startswith("- "):
+            stripped = f"• {stripped[2:].strip()}"
+        formatted.append(stripped)
+    paragraphs: List[str] = []
+    current: List[str] = []
+    for line in formatted:
+        if not line:
+            if current:
+                paragraphs.append(" ".join(current).strip())
+                current = []
+            continue
+        current.append(line)
+    if current:
+        paragraphs.append(" ".join(current).strip())
+    return "\n\n".join(paragraphs).strip()
+
+
 def _retry_delay_seconds(attempt_count: int) -> int:
     """Simple exponential backoff with cap to avoid hot-looping."""
     attempt = max(attempt_count, 1)
@@ -1288,8 +1319,13 @@ async def process_generate_blog_job(
         except Exception:
             target_chapters = max_sections
         tone = str(options.get("tone") or "informative")
-        include_images = bool(options.get("include_images", True))
+        include_images = bool(options.get("include_images")) if "include_images" in options else True
         section_index = options.get("section_index")
+        provider = (options.get("provider") or "openai").lower()
+        # Resolve OpenAI model; GPT-5.1 is our current target default.
+        # See https://platform.openai.com/docs/models/gpt-5.1
+        model_name = (options.get("model") or settings.openai_blog_model or "gpt-5.1").strip()
+        temperature_override = options.get("temperature")
 
         _log("Generating outline")
         outline = generate_outline(text, max_sections)
@@ -1309,10 +1345,30 @@ async def process_generate_blog_job(
         seo_meta = generate_seo_metadata(text, outline)
 
         _log("Composing markdown body")
-        composed = compose_blog(chapters, tone=tone)
+        composed = await compose_blog(
+            chapters,
+            tone=tone,
+            seo_metadata=seo_meta,
+            model=model_name,
+            temperature=temperature_override,
+        )
         markdown_body = composed.get("markdown", "")
         word_count = composed.get("meta", {}).get("word_count", len(markdown_body.split()))
-        await record_usage_event(db, user_id, job_id, "compose", {"tone": tone, "word_count": word_count})
+        generator_meta = composed.get("meta", {})
+        generator_info = {
+            "engine": generator_meta.get("engine") or ("openai" if provider == "openai" else provider),
+            "model": generator_meta.get("model") or model_name,
+            "tone": tone,
+            "temperature": generator_meta.get("temperature") if generator_meta.get("temperature") is not None else temperature_override,
+            "provider": provider,
+        }
+        await record_usage_event(
+            db,
+            user_id,
+            job_id,
+            "compose",
+            {"tone": tone, "word_count": word_count, "model": generator_info["model"]},
+        )
 
         html_body = markdown_to_html(markdown_body)
         image_prompts = generate_image_prompts(chapters) if include_images else []
@@ -1336,6 +1392,12 @@ async def process_generate_blog_job(
                 section["image_prompt"] = image_prompts[idx]
             sections.append(section)
 
+        assets = {
+            "images": image_prompts,
+            "media": [],
+            "generator": generator_info,
+        }
+
         pipeline_output = {
             "document_id": document_id,
             "content_format": "mdx",
@@ -1348,17 +1410,18 @@ async def process_generate_blog_job(
             "chapters": chapters,
             "sections": sections,
             "seo": seo_meta,
-            "assets": {
-                "images": image_prompts,
-                "media": [],
-            },
+            "assets": assets,
             "options": {
                 "tone": tone,
                 "max_sections": max_sections,
                 "target_chapters": target_chapters,
                 "include_images": include_images,
+                "model": generator_info["model"],
+                "temperature": generator_info.get("temperature"),
+                "provider": provider,
             },
             "generated_at": datetime.now(timezone.utc).isoformat(),
+            "generator": generator_info,
         }
 
         _log("Persisting pipeline output")
@@ -1374,7 +1437,7 @@ async def process_generate_blog_job(
             outline=outline,
             chapters=chapters,
             sections=sections,
-            assets=pipeline_output["assets"],
+            assets=assets,
         )
         version_id = version_row.get("version_id")
 
@@ -1385,6 +1448,11 @@ async def process_generate_blog_job(
             "generated_at": pipeline_output["generated_at"],
             "version_id": version_id,
             "section_index": section_index,
+            "engine": generator_info.get("engine"),
+            "model": generator_info.get("model"),
+            "temperature": generator_info.get("temperature"),
+            "provider": provider,
+            "tone": tone,
         }
         metadata["latest_outline"] = outline
         metadata["latest_chapters"] = chapters
@@ -1413,6 +1481,30 @@ async def process_generate_blog_job(
             notify_text="Blog draft generated",
             notify_context={"document_id": document_id},
         )
+        drive_stage_meta = {"drive_stage": "ai_draft", "drive_last_synced_job_id": job_id}
+        drive_text_payload = _markdown_to_drive_text(markdown_body)
+        if drive_text_payload:
+            try:
+                # Merge drive_stage_meta into existing document metadata and persist before Drive sync
+                doc_row = await get_document(db, document_id, user_id=user_id)
+                existing_meta = _parse_document_metadata(doc_row or {}) if doc_row else {}
+                merged_meta = {**existing_meta, **drive_stage_meta}
+                updates = {
+                    "drive_text": drive_text_payload,
+                    "metadata": merged_meta,
+                }
+                await update_document(db, document_id, updates)
+                await sync_drive_doc_for_document(
+                    db,
+                    user_id,
+                    document_id,
+                    updates,
+                )
+            except Exception:
+                app_logger.exception(
+                    "drive_doc_ai_sync_failed",
+                    extra={"document_id": document_id, "job_id": job_id},
+                )
 
         await update_job_status(db, job_id, "completed", progress=_progress("completed"))
         try:
