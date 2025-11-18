@@ -11,12 +11,8 @@ from .constants import COOKIE_OAUTH_STATE, COOKIE_GOOGLE_OAUTH_STATE
 from .auth import authenticate_github
 from .auth import authenticate_google
 from .exceptions import AuthenticationError
-<<<<<<< HEAD
 from .deps import ensure_db, get_queue_producer
-=======
-from .deps import ensure_db
 from .database import create_user_session, delete_user_session
->>>>>>> c16b9d8 (Add tests covering session persistence and notifications)
 from .app_logging import get_logger
 from .database import create_job_extended, get_drive_watch_by_channel
 from .models import JobType
