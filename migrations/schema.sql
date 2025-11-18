@@ -41,6 +41,22 @@ COMMIT;
 -- This provides an additional enforcement layer and improves query performance
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email);
 
+-- Browser session tracking
+CREATE TABLE IF NOT EXISTS user_sessions (
+    session_id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+    expires_at TEXT NOT NULL,
+    last_notification_id TEXT,
+    ip_address TEXT,
+    user_agent TEXT,
+    revoked_at TEXT,
+    extra TEXT,
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_user_sessions_user ON user_sessions(user_id, created_at DESC);
+
 -- API Keys table
 CREATE TABLE IF NOT EXISTS api_keys (
     key_hash TEXT PRIMARY KEY,

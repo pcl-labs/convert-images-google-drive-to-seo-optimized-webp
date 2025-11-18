@@ -36,6 +36,7 @@ from .database import (
     update_document,
     get_drive_workspace,
     upsert_drive_workspace,
+    delete_user_session,
 )
 from .auth import create_user_api_key
 from .protected import (
@@ -835,7 +836,8 @@ async def api_dismiss(notification_id: str, request: Request, user: dict = Depen
 @router.get("/api/stream")
 async def api_stream(request: Request, user: dict = Depends(get_current_user)):
     db = ensure_db()
-    return notifications_stream_response(request, db, user)
+    session = getattr(request.state, "session", None)
+    return notifications_stream_response(request, db, user, session=session)
 
 
 @router.get("/dashboard/activity", response_class=HTMLResponse)
@@ -854,10 +856,25 @@ async def logout(request: Request, csrf_token: str = Form(...)) -> RedirectRespo
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
     
     response = RedirectResponse(url="/", status_code=status.HTTP_302_FOUND)
-    
+
     # Determine secure flag consistently with how cookies were set
     is_secure = _is_secure_request(request, settings)
-    
+
+    session_cookie = request.cookies.get(settings.session_cookie_name)
+    if session_cookie:
+        try:
+            db = ensure_db()
+            await delete_user_session(db, session_cookie)
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.debug("Failed to delete session on logout: %s", exc)
+        response.delete_cookie(
+            settings.session_cookie_name,
+            path="/",
+            samesite="lax",
+            httponly=True,
+            secure=is_secure,
+        )
+
     # Clear all authentication-related cookies with matching attributes
     response.delete_cookie("access_token", path="/", samesite="lax", httponly=True, secure=is_secure)
     response.delete_cookie(COOKIE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
@@ -1682,6 +1699,19 @@ async def delete_account(
 
     response = RedirectResponse(url="/", status_code=status.HTTP_302_FOUND)
     is_secure = _is_secure_request(request, settings)
+    session_cookie = request.cookies.get(settings.session_cookie_name)
+    if session_cookie:
+        try:
+            await delete_user_session(db, session_cookie)
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.debug("Failed to delete session after account removal: %s", exc)
+        response.delete_cookie(
+            settings.session_cookie_name,
+            path="/",
+            samesite="lax",
+            httponly=True,
+            secure=is_secure,
+        )
     response.delete_cookie("access_token", path="/", samesite="lax", httponly=True, secure=is_secure)
     response.delete_cookie(COOKIE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
     response.delete_cookie(COOKIE_GOOGLE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)

@@ -79,6 +79,10 @@ class Settings:
     rate_limit_per_minute: int = 60
     rate_limit_per_hour: int = 1000
 
+    session_cookie_name: str = "session_id"
+    session_ttl_hours: int = 72
+    session_touch_interval_seconds: int = 300
+
     d1_database: Optional[Any] = None
     queue: Optional[Any] = None
     dlq: Optional[Any] = None
@@ -108,8 +112,12 @@ class Settings:
         self.max_job_retries = _int(self.max_job_retries, 3)
         self.job_timeout_seconds = _int(self.job_timeout_seconds, 3600)
         self.jwt_expiration_hours = _int(self.jwt_expiration_hours, 24)
+        self.session_ttl_hours = max(1, _int(self.session_ttl_hours, 72))
+        self.session_touch_interval_seconds = max(30, _int(self.session_touch_interval_seconds, 300))
         self.cors_origins = _list(self.cors_origins, default=["http://localhost:8000"])
         self.transcript_langs = _list(self.transcript_langs, default=["en"])
+        cookie_name = (self.session_cookie_name or "session_id").strip()
+        self.session_cookie_name = cookie_name or "session_id"
         if not self.jwt_secret_key:
             raise ValueError("JWT_SECRET_KEY is required")
         if self.environment == "production" and not self.encryption_key:
