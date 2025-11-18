@@ -50,13 +50,6 @@ class Default(WorkerEntrypoint):
 
         return await handle_worker_request(fastapi_app, request, self.env, self.ctx)
     
-    # Compatibility alias for Cloudflare Workers runtime that may look for on_fetch
-    async def on_fetch(self, request, env=None):
-        """Compatibility method - delegates to fetch()"""
-        if env is not None:
-            self.env = env
-        return await self.fetch(request)
-    
     async def queue(self, batch, env):
         """Handle queue messages from Cloudflare Queues."""
         # Import inside the handler to avoid startup CPU limit

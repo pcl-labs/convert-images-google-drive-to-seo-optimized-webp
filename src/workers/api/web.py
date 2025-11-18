@@ -935,7 +935,12 @@ async def logout(request: Request, csrf_token: str = Form(...)) -> RedirectRespo
     if session_cookie:
         try:
             db = ensure_db()
-            await delete_user_session(db, session_cookie)
+            # Get user_id from session if available for ownership validation
+            user_id = None
+            session = getattr(request.state, "session", None)
+            if session:
+                user_id = session.get("user_id")
+            await delete_user_session(db, session_cookie, user_id=user_id)
         except Exception as exc:  # pragma: no cover - defensive logging
             logger.debug("Failed to delete session on logout: %s", exc)
         response.delete_cookie(
@@ -1920,7 +1925,8 @@ async def delete_account(
     session_cookie = request.cookies.get(settings.session_cookie_name)
     if session_cookie:
         try:
-            await delete_user_session(db, session_cookie)
+            # Pass user_id for ownership validation (user is authenticated at this point)
+            await delete_user_session(db, session_cookie, user_id=user["user_id"])
         except Exception as exc:  # pragma: no cover - defensive logging
             logger.debug("Failed to delete session after account removal: %s", exc)
         response.delete_cookie(

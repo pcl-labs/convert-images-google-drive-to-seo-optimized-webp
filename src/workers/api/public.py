@@ -97,6 +97,15 @@ async def _issue_session_cookie(
     is_secure: bool,
     provider: str,
 ) -> None:
+    # Validate session_ttl_hours type and range
+    if not isinstance(settings.session_ttl_hours, (int, float)) or settings.session_ttl_hours <= 0:
+        logger.warning("Invalid session_ttl_hours: %s", settings.session_ttl_hours)
+        return
+    # Guard against extremely large values that could cause integer overflow
+    # Max safe value: ~596,523 hours (2147483647 seconds / 3600) for 32-bit systems
+    if settings.session_ttl_hours > 500000:
+        logger.warning("session_ttl_hours exceeds safe maximum: %s", settings.session_ttl_hours)
+        return
     ttl_seconds = int(settings.session_ttl_hours * 3600)
     if ttl_seconds <= 0:
         return
@@ -140,7 +149,12 @@ async def _build_logout_response(request: Request, *, redirect: str = "/") -> Re
     if session_cookie:
         try:
             db = ensure_db()
-            await delete_user_session(db, session_cookie)
+            # Get user_id from session if available for ownership validation
+            user_id = None
+            session = getattr(request.state, "session", None)
+            if session:
+                user_id = session.get("user_id")
+            await delete_user_session(db, session_cookie, user_id=user_id)
         except Exception as exc:  # pragma: no cover - defensive logging
             logger.debug("Failed to revoke browser session during logout: %s", exc)
         response.delete_cookie(

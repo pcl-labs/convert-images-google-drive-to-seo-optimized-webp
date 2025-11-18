@@ -79,21 +79,28 @@ def notifications_stream_response(
                                 },
                             )
                             context_payload = {}
-                        # Persist session cursor before sending notification to ensure atomicity.
-                        # If persistence fails, we still send the notification (prioritizing delivery
-                        # over perfect cursor tracking). On reconnect, the client may receive
-                        # duplicate notifications, but this is preferable to missing notifications.
-                        # Note: In-memory session update happens only after successful DB persistence
-                        # to avoid race conditions with concurrent SSE streams.
+                        # Persist session cursor before sending notification.
+                        # 
+                        # Trade-offs and limitations:
+                        # 1. Missed notifications: If DB write succeeds but connection drops before yield,
+                        #    the notification is marked as delivered but never received. On reconnect,
+                        #    the stream resumes from the next notification, causing a gap.
+                        # 2. Race conditions: Multiple concurrent SSE streams (e.g., multiple browser tabs)
+                        #    can persist notification IDs out of order, potentially causing the cursor to
+                        #    point to an earlier notification than what was actually delivered.
+                        # 3. Performance: Per-notification DB writes add latency and load. For high-volume
+                        #    streams, consider batching persistence (e.g., every 10 notifications or 5 seconds).
+                        # 
+                        # Current approach prioritizes at-least-once delivery semantics: we persist before
+                        # sending, accepting that duplicates on reconnect are preferable to missing notifications.
+                        # Clients should handle duplicate notifications idempotently (e.g., using notification IDs).
                         if session_id:
                             try:
                                 await touch_user_session(db, session_id, last_notification_id=notification_id)
-                                # Only update in-memory session after successful DB persistence
-                                # to maintain consistency. Each SSE stream has its own task, so
-                                # concurrent updates to the shared session dict are unlikely but
-                                # this ordering ensures we don't update memory if DB update fails.
-                                if session is not None:
-                                    session["last_notification_id"] = notification_id
+                                # Update in-memory session only after successful DB persistence to maintain consistency.
+                                # Note: session_id is only set if session exists (lines 39-41), so session is guaranteed
+                                # to be non-None here.
+                                session["last_notification_id"] = notification_id
                             except Exception as exc:
                                 # Use warning level for production visibility of persistence failures
                                 logger.warning(
