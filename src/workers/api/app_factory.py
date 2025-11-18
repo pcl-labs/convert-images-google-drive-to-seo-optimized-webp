@@ -203,12 +203,18 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
     from .web import router as web_router
     from .public import router as public_router
     from .protected import router as protected_router
-    from .steps import router as steps_router
+    from .content import (
+        router as content_router,
+        documents_router as documents_v1_router,
+        jobs_router as jobs_v1_router,
+    )
 
     app.include_router(web_router)
     app.include_router(public_router)
     app.include_router(protected_router)
-    app.include_router(steps_router)
+    app.include_router(documents_v1_router)
+    app.include_router(jobs_v1_router)
+    app.include_router(content_router)
 
     @app.exception_handler(APIException)
     async def api_exception_handler(request, exc):  # pragma: no cover - FastAPI wiring

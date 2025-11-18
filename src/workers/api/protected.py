@@ -1,7 +1,7 @@
 MAX_TEXT_LENGTH = 20000  # configurable upper bound for text ingestion
 from fastapi import APIRouter, Request, Depends, HTTPException, status
 from fastapi.responses import RedirectResponse, PlainTextResponse
-from typing import Optional
+from typing import Optional, Dict, Any
 import uuid
 import secrets
 import json
@@ -24,6 +24,7 @@ from .models import (
     DriveDocumentRequest,
     OptimizeDocumentRequest,
     GenerateBlogRequest,
+    GenerateBlogOptions,
     Document,
     DocumentVersionSummary,
     DocumentVersionList,
@@ -75,7 +76,7 @@ from .utils import enqueue_job_with_guard
 from ..core.url_utils import parse_youtube_video_id
 from .drive_workspace import ensure_drive_workspace, ensure_document_drive_structure, link_document_drive_workspace
 from .drive_docs import sync_drive_doc_for_document
-from .youtube_ingest import ingest_youtube_document
+from .youtube_ingest import ingest_youtube_document, build_outline_from_chapters
 from .database import get_usage_summary, list_usage_events, count_usage_events
 from fastapi import Query
 from .ai_preferences import resolve_generate_blog_options
@@ -361,7 +362,15 @@ async def start_drive_watch_renewal_job(user: dict = Depends(get_current_user)):
     )
 
 
-async def start_ingest_youtube_job(db, queue, user_id: str, url: str) -> JobStatus:
+async def start_ingest_youtube_job(
+    db,
+    queue,
+    user_id: str,
+    url: str,
+    *,
+    autopilot_options: Optional[Dict[str, Any]] = None,
+    autopilot_enabled: bool = True,
+) -> JobStatus:
     clean_url = (url or "").strip()
     video_id = parse_youtube_video_id(clean_url)
     if not video_id:
@@ -388,6 +397,12 @@ async def start_ingest_youtube_job(db, queue, user_id: str, url: str) -> JobStat
         "title": frontmatter.get("title"),
         "duration_seconds": youtube_meta.get("duration_seconds"),
     }
+    raw_chapters = youtube_meta.get("chapters")
+    if isinstance(raw_chapters, list):
+        seeded_outline = build_outline_from_chapters(raw_chapters)
+        if seeded_outline:
+            doc_meta["latest_outline"] = seeded_outline
+            doc_meta["outline_source"] = "youtube_chapters"
 
     job_id = str(uuid.uuid4())
     document_id = str(uuid.uuid4())
@@ -402,18 +417,23 @@ async def start_ingest_youtube_job(db, queue, user_id: str, url: str) -> JobStat
         frontmatter=frontmatter,
         content_format="youtube",
     )
+    payload = {
+        "youtube_video_id": video_id,
+        "metadata": youtube_meta,
+        "frontmatter": frontmatter,
+        "duration_s": youtube_meta.get("duration_seconds"),
+    }
+    if autopilot_options:
+        payload["autopilot_options"] = autopilot_options
+    if not autopilot_enabled:
+        payload["autopilot_disabled"] = True
     job_row = await create_job_extended(
         db,
         job_id,
         user_id,
         job_type=JobType.INGEST_YOUTUBE.value,
         document_id=document_id,
-        payload={
-            "youtube_video_id": video_id,
-            "metadata": youtube_meta,
-            "frontmatter": frontmatter,
-            "duration_s": youtube_meta.get("duration_seconds"),
-        },
+        payload=payload,
     )
     if settings.use_inline_queue:
         inline_progress = {"stage": "ingesting_youtube"}
@@ -565,6 +585,34 @@ async def start_ingest_youtube_job(db, queue, user_id: str, url: str) -> JobStat
             except Exception:
                 output = None
         completed_at = final_row.get("completed_at")
+
+        autopilot_job: Optional[JobStatus] = None
+        if settings.auto_generate_after_ingest and autopilot_enabled:
+            try:
+                overrides = {k: v for k, v in (autopilot_options or {}).items() if v is not None}
+                override_model = GenerateBlogOptions(**overrides) if overrides else GenerateBlogOptions()
+                request = GenerateBlogRequest(document_id=document_id, options=override_model)
+                autopilot_job = await start_generate_blog_job(db, queue, user_id, request)
+                try:
+                    await record_pipeline_event(
+                        db,
+                        user_id,
+                        job_id,
+                        event_type="generate_blog",
+                        stage="enqueue",
+                        status="running",
+                        message="Starting AI draft pipeline",
+                        data={"document_id": document_id, "next_job_id": autopilot_job.job_id},
+                    )
+                except Exception:
+                    pass
+            except Exception as exc:
+                logger.warning(
+                    "inline_autopilot_generate_failed",
+                    exc_info=True,
+                    extra={"document_id": document_id, "job_id": job_id, "error": str(exc)},
+                )
+
         return JobStatus(
             job_id=job_id,
             user_id=user_id,
@@ -603,7 +651,16 @@ async def start_ingest_youtube_job(db, queue, user_id: str, url: str) -> JobStat
     )
 
 
-async def start_ingest_text_job(db, queue, user_id: str, text: str, title: Optional[str] = None) -> JobStatus:
+async def start_ingest_text_job(
+    db,
+    queue,
+    user_id: str,
+    text: str,
+    title: Optional[str] = None,
+    *,
+    autopilot_options: Optional[Dict[str, Any]] = None,
+    autopilot_enabled: bool = True,
+) -> JobStatus:
     clean_text = (text or "").strip()
     if not clean_text:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Text is required")
@@ -621,13 +678,18 @@ async def start_ingest_text_job(db, queue, user_id: str, text: str, title: Optio
         raw_text=clean_text,
         metadata=metadata,
     )
+    payload = {"title": title}
+    if autopilot_options:
+        payload["autopilot_options"] = autopilot_options
+    if not autopilot_enabled:
+        payload["autopilot_disabled"] = True
     job_row = await create_job_extended(
         db,
         job_id,
         user_id,
         job_type=JobType.INGEST_TEXT.value,
         document_id=document_id,
-        payload={"title": title},
+        payload=payload,
     )
     payload = {"job_id": job_id, "user_id": user_id, "job_type": JobType.INGEST_TEXT.value, "document_id": document_id}
     enqueued, enqueue_exception, should_fail = await enqueue_job_with_guard(queue, job_id, user_id, payload, allow_inline_fallback=False)

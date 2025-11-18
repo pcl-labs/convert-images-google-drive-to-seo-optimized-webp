@@ -49,6 +49,14 @@ class Default(WorkerEntrypoint):
             raise _app_init_error.with_traceback(_app_init_error.__traceback__)
 
         return await handle_worker_request(fastapi_app, request, self.env, self.ctx)
+
+    async def on_fetch(self, request, env, ctx):
+        """Cloudflare Python Worker entrypoint for fetch events.
+
+        This method is discovered by the Workers runtime; delegate to the
+        existing fetch() implementation which uses self.env/self.ctx.
+        """
+        return await self.fetch(request)
     
     async def queue(self, batch, env):
         """Handle queue messages from Cloudflare Queues."""
@@ -56,14 +64,17 @@ class Default(WorkerEntrypoint):
         from workers.runtime import apply_worker_env
         from api.database import Database
         from workers.consumer import handle_queue_message
+        from api.config import settings
+        from workers.api.cloudflare_queue import QueueProducer
         
         apply_worker_env(env)
         db = Database(db=env.DB)
+        queue_producer = QueueProducer(queue=settings.queue, dlq=settings.dlq)
         
         # Process each message in the batch
         for message in batch.messages:
             try:
-                await handle_queue_message(message.body, db)
+                await handle_queue_message(message.body, db, queue_producer)
             except Exception:
                 logger.exception(
                     "Error processing queue message",
@@ -80,3 +91,10 @@ class Default(WorkerEntrypoint):
                     "Error acknowledging queue message",
                     extra={"queue_message_id": getattr(message, "id", None)},
                 )
+
+    async def on_queue(self, batch, env, ctx):
+        """Cloudflare Python Worker entrypoint for queue events.
+
+        Delegate to the existing queue() implementation.
+        """
+        return await self.queue(batch, env)

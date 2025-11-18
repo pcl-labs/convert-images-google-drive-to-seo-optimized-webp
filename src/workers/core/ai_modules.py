@@ -18,6 +18,34 @@ from src.workers.api.config import settings
 
 logger = logging.getLogger(__name__)
 
+_OUTLINE_STOPWORDS = {
+    "the",
+    "and",
+    "that",
+    "with",
+    "from",
+    "your",
+    "this",
+    "about",
+    "what",
+    "will",
+    "into",
+    "have",
+    "when",
+    "they",
+    "them",
+    "for",
+    "you",
+    "are",
+    "was",
+    "were",
+    "their",
+    "then",
+    "than",
+    "over",
+}
+_KEYWORD_WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9']+")
+
 
 def _coerce_text(text: Optional[str]) -> str:
     if not text:
@@ -25,31 +53,126 @@ def _coerce_text(text: Optional[str]) -> str:
     return str(text).strip()
 
 
-def generate_outline(text: str, max_sections: int = 5) -> List[Dict[str, str]]:
-    """Naive outline generator that splits text into paragraph chunks."""
+def _extract_keywords(text: str, limit: int = 5) -> List[str]:
+    """Return deterministic keyword list for a block of text."""
+    counts: Dict[str, int] = {}
+    for word in _KEYWORD_WORD_RE.findall(str(text or "").lower()):
+        if len(word) < 4 or word in _OUTLINE_STOPWORDS:
+            continue
+        counts[word] = counts.get(word, 0) + 1
+    if not counts:
+        return []
+    sorted_words = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    keywords: List[str] = []
+    for word, _ in sorted_words:
+        if word in keywords:
+            continue
+        keywords.append(word)
+        if len(keywords) >= limit:
+            break
+    return keywords
+
+
+def _first_sentence(text: str) -> str:
+    sentences = _split_sentences(text)
+    if sentences:
+        return sentences[0]
+    stripped = text.strip()
+    if not stripped:
+        return ""
+    return stripped.splitlines()[0]
+
+
+def _outline_section(
+    title: str,
+    summary: str,
+    slot: str,
+    *,
+    keywords: Optional[List[str]] = None,
+    source: str = "transcript",
+    extra: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    section = {
+        "title": title.strip()[:160] or "Section",
+        "summary": summary.strip(),
+        "slot": slot,
+        "keywords": (keywords or [])[:8],
+        "source": source,
+    }
+    if extra:
+        section.update(extra)
+    return section
+
+
+def generate_outline(text: str, max_sections: int = 5) -> List[Dict[str, Any]]:
+    """Generate a structured outline with intro/body/cta slots."""
     clean = _coerce_text(text)
     if not clean:
         return []
-    # Ensure positive section count
     try:
         max_sections = int(max_sections)
     except (ValueError, TypeError):
         max_sections = 5
     if max_sections < 1:
         max_sections = 1
-    paragraphs = [p.strip() for p in clean.split("\n") if p.strip()]
+    max_sections = min(max_sections, 12)
+    paragraphs = [p.strip() for p in clean.split("\n\n") if p.strip()]
     if not paragraphs:
         paragraphs = [clean]
-    chunk_size = max(1, len(paragraphs) // max_sections)
-    outline = []
-    for idx in range(0, len(paragraphs), chunk_size):
-        chunk = paragraphs[idx : idx + chunk_size]
-        title = chunk[0][:80]
-        summary = textwrap.shorten(" ".join(chunk), width=280, placeholder="…")
-        outline.append({"title": title or f"Section {len(outline)+1}", "summary": summary})
-        if len(outline) >= max_sections:
-            break
-    return outline
+
+    outline: List[Dict[str, Any]] = []
+    intro_text = paragraphs[0]
+    intro_title = _first_sentence(intro_text) or "Introduction"
+    intro_summary = textwrap.shorten(intro_text, width=280, placeholder="…")
+    outline.append(
+        _outline_section(
+            intro_title,
+            intro_summary,
+            "intro",
+            keywords=_extract_keywords(intro_text, limit=4),
+        )
+    )
+    if max_sections == 1:
+        return outline
+
+    body_slots = max(0, max_sections - 2)
+    body_text = "\n\n".join(paragraphs[1:]) if len(paragraphs) > 1 else clean
+    body_sentences = _split_sentences(body_text)
+    if body_slots and body_sentences:
+        chunk_size = max(1, len(body_sentences) // body_slots)
+        start = 0
+        slot_index = 0
+        while start < len(body_sentences) and slot_index < body_slots:
+            chunk = body_sentences[start : start + chunk_size]
+            if not chunk:
+                break
+            section_text = " ".join(chunk)
+            section_title = _first_sentence(section_text) or f"Section {slot_index + 1}"
+            summary = textwrap.shorten(section_text, width=300, placeholder="…")
+            outline.append(
+                _outline_section(
+                    section_title,
+                    summary,
+                    "body",
+                    keywords=_extract_keywords(section_text, limit=4),
+                )
+            )
+            slot_index += 1
+            start += chunk_size
+            if len(outline) >= max_sections - 1:
+                break
+
+    if len(outline) < max_sections:
+        cta_summary = "Summarize the key takeaways and invite the reader to take the next action."
+        outline.append(
+            _outline_section(
+                "Call to action",
+                cta_summary,
+                "cta",
+                keywords=["cta", "next steps"],
+            )
+        )
+    return outline[:max_sections]
 
 
 def _split_sentences(text: str) -> List[str]:
@@ -202,30 +325,48 @@ def _split_sentences(text: str) -> List[str]:
     return result
 
 
-def organize_chapters(text: str, target_chapters: int = 4) -> List[Dict[str, str]]:
-    """Split text into pseudo chapters."""
+def organize_chapters(text: str, target_chapters: int = 4) -> List[Dict[str, Any]]:
+    """Split text into pseudo chapters with intro/body/cta hints."""
     clean = _coerce_text(text)
     if not clean:
         return []
-    # Ensure positive chapters target
     try:
         target_chapters = int(target_chapters)
     except (ValueError, TypeError):
         target_chapters = 4
     if target_chapters <= 0:
         target_chapters = 1
+    target_chapters = min(target_chapters, 12)
     sentences = _split_sentences(clean)
+    if not sentences:
+        sentences = [clean]
     per_chapter = max(1, len(sentences) // target_chapters)
-    chapters: List[Dict[str, str]] = []
-    for idx in range(0, len(sentences), per_chapter):
-        chunk = sentences[idx : idx + per_chapter]
+    chapters: List[Dict[str, Any]] = []
+    start = 0
+    index = 0
+    while start < len(sentences) and index < target_chapters:
+        chunk = sentences[start : start + per_chapter]
         if not chunk:
-            continue
-        title = chunk[0][:70]
-        summary = textwrap.shorten(" ".join(chunk), width=360, placeholder="…")
-        chapters.append({"title": title or f"Chapter {len(chapters)+1}", "summary": summary})
-        if len(chapters) >= target_chapters:
             break
+        chunk_text = " ".join(chunk)
+        title = _first_sentence(chunk_text) or f"Chapter {index + 1}"
+        summary = textwrap.shorten(chunk_text, width=360, placeholder="…")
+        slot = "body"
+        if index == 0:
+            slot = "intro"
+        elif index == target_chapters - 1:
+            slot = "cta"
+        chapters.append(
+            {
+                "title": title.strip()[:160],
+                "summary": summary,
+                "slot": slot,
+                "keywords": _extract_keywords(chunk_text, limit=4),
+                "chapter_index": index,
+            }
+        )
+        start += per_chapter
+        index += 1
     return chapters
 
 
@@ -443,7 +584,7 @@ async def compose_blog(
                     {"role": "user", "content": user_prompt},
                 ],
                 temperature=temp_value,
-                max_tokens=settings.openai_blog_max_output_tokens,
+                max_completion_tokens=settings.openai_blog_max_output_tokens,
             )
     except OpenAIError as exc:
         logger.error(
@@ -528,3 +669,27 @@ async def compose_blog(
             "temperature": temp_value,
         },
     }
+
+
+async def compose_from_plan(
+    plan: Dict[str, Any],
+    tone: str = "informative",
+    *,
+    model: Optional[str] = None,
+    temperature: Optional[float] = None,
+    extra_context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Compose markdown output from a previously generated content plan."""
+    chapters = plan.get("chapters") or []
+    seo_meta = plan.get("seo") or {}
+    merged_context: Dict[str, Any] = dict(extra_context or {})
+    if plan.get("instructions"):
+        merged_context.setdefault("instructions", plan.get("instructions"))
+    return await compose_blog(
+        chapters,
+        tone=tone,
+        seo_metadata=seo_meta,
+        extra_context=merged_context or None,
+        model=model,
+        temperature=temperature,
+    )

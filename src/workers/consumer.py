@@ -55,6 +55,7 @@ from src.workers.api.database import (
     update_job_retry_state,
     create_job_extended,
     record_pipeline_event,
+    get_user_preferences,
 )
 from src.workers.api.config import settings
 from src.workers.api.cloudflare_queue import QueueProducer
@@ -63,14 +64,12 @@ from src.workers.api.drive_workspace import DriveWorkspaceSyncService, link_docu
 from src.workers.api.drive_docs import sync_drive_doc_for_document
 from src.workers.api.drive_watch import ensure_drive_watch, watches_due_for_renewal
 from src.workers.core.ai_modules import (
-    generate_outline,
-    organize_chapters,
-    compose_blog,
+    compose_from_plan,
     default_title_from_outline,
-    generate_seo_metadata,
     generate_image_prompts,
     markdown_to_html,
 )
+from src.workers.core.content_planner import plan_content
 from src.workers.api.notifications import notify_job
 from src.workers.api.app_logging import setup_logging, get_logger
 from src.workers.core.filename_utils import FILENAME_ID_SEPARATOR, sanitize_folder_name, parse_download_name, make_output_dir_name
@@ -80,6 +79,7 @@ from src.workers.core.google_async import execute_google_request
 from src.workers.core.google_docs_text import google_doc_to_text, text_to_html
 from src.workers.api.youtube_ingest import ingest_youtube_document
 from src.workers.core.youtube_captions import YouTubeCaptionsError
+from src.workers.api.ai_preferences import resolve_generate_blog_options
 
 # Set up logging
 logger = setup_logging(level="INFO", use_json=True)
@@ -263,6 +263,48 @@ async def _safe_pipeline_event(
             extra={"job_id": job_id, "stage": stage, "event_type": event_type},
         )
 
+
+async def _pipeline_progress_event(
+    db: Database,
+    user_id: str,
+    job_id: Optional[str],
+    *,
+    stage: str,
+    status: str,
+    message: str,
+    pipeline_job_id: Optional[str] = None,
+    data: Optional[Dict[str, Any]] = None,
+    notify_level: Optional[str] = None,
+    notify_text: Optional[str] = None,
+    notify_context: Optional[Dict[str, Any]] = None,
+) -> None:
+    await _safe_pipeline_event(
+        db,
+        user_id,
+        job_id,
+        event_type="generate_blog",
+        stage=stage,
+        status=status,
+        message=message,
+        data=data,
+        notify_level=notify_level,
+        notify_text=notify_text,
+        notify_context=notify_context,
+    )
+    if pipeline_job_id and pipeline_job_id != job_id:
+        mirrored = dict(data or {})
+        mirrored.setdefault("source_job_id", job_id)
+        await _safe_pipeline_event(
+            db,
+            user_id,
+            pipeline_job_id,
+            event_type="generate_blog",
+            stage=stage,
+            status=status,
+            message=message,
+            data=mirrored,
+        )
+
 def extract_file_id_from_filename(
     filename: str,
     separator: str = FILENAME_ID_SEPARATOR
@@ -321,6 +363,85 @@ def _parse_document_metadata(raw: Dict[str, Any]) -> Dict[str, Any]:
     if metadata is None:
         metadata = {}
     return metadata
+
+
+async def _maybe_trigger_generate_blog_pipeline(
+    db: Database,
+    user_id: str,
+    document_id: str,
+    pipeline_job_id: str,
+    queue_producer: Optional[QueueProducer],
+    autopilot_options: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Kick off the compose pipeline automatically once ingest finishes."""
+    if not settings.auto_generate_after_ingest:
+        return
+    new_job_id = None
+    try:
+        prefs = await get_user_preferences(db, user_id)
+        options = resolve_generate_blog_options(None, prefs)
+        if isinstance(autopilot_options, dict):
+            for key, value in autopilot_options.items():
+                if value is not None:
+                    options[key] = value
+        new_job_id = str(uuid.uuid4())
+        await create_job_extended(
+            db,
+            new_job_id,
+            user_id,
+            job_type="generate_blog",
+            document_id=document_id,
+            payload={"options": options, "pipeline_job_id": pipeline_job_id, "trigger": "autopilot_ingest"},
+        )
+        await _pipeline_progress_event(
+            db,
+            user_id,
+            pipeline_job_id,
+            stage="generate_blog.enqueue",
+            status="running",
+            message="Starting AI draft pipeline",
+            data={"document_id": document_id, "next_job_id": new_job_id},
+            pipeline_job_id=None,
+        )
+        message = {
+            "job_id": new_job_id,
+            "user_id": user_id,
+            "job_type": "generate_blog",
+            "document_id": document_id,
+            "options": options,
+            "pipeline_job_id": pipeline_job_id,
+        }
+        inline_mode = settings.use_inline_queue or queue_producer is None
+        if inline_mode:
+            await process_generate_blog_job(
+                db,
+                new_job_id,
+                user_id,
+                document_id,
+                options,
+                pipeline_job_id=pipeline_job_id,
+            )
+        else:
+            await queue_producer.send_generic(message)
+    except Exception as exc:
+        app_logger.warning(
+            "autopilot_generate_blog_failed",
+            exc_info=True,
+            extra={"pipeline_job_id": pipeline_job_id, "document_id": document_id},
+        )
+        await _pipeline_progress_event(
+            db,
+            user_id,
+            pipeline_job_id,
+            stage="generate_blog.enqueue",
+            status="error",
+            message=f"Auto compose failed: {exc}",
+            data={
+                "document_id": document_id,
+                **({"next_job_id": new_job_id} if new_job_id else {}),
+            },
+        )
+
 
 
 def _json_dict_field(value: Any, default: Dict[str, Any]) -> Dict[str, Any]:
@@ -838,6 +959,7 @@ async def process_ingest_youtube_job(
     document_id: str,
     youtube_video_id: str,
     job_payload: Optional[Dict[str, Any]] = None,
+    queue_producer: Optional[QueueProducer] = None,
 ):
     """Fetch transcript, merge stored metadata, persist document contents, and record usage."""
     try:
@@ -981,6 +1103,16 @@ async def process_ingest_youtube_job(
             await notify_job(db, user_id=user_id, job_id=job_id, level="success", text=f"Ingested YouTube {youtube_video_id}")
         except Exception:
             pass
+        autopilot_disabled = bool(job_payload.get("autopilot_disabled"))
+        if not autopilot_disabled:
+            await _maybe_trigger_generate_blog_pipeline(
+                db,
+                user_id,
+                document_id,
+                job_id,
+                queue_producer,
+                autopilot_options=job_payload.get("autopilot_options"),
+            )
         return
     except Exception as e:
         await update_job_status(db, job_id, "failed", error=str(e))
@@ -1156,6 +1288,8 @@ async def process_ingest_text_job(
     job_id: str,
     user_id: str,
     document_id: str,
+    job_payload: Optional[Dict[str, Any]] = None,
+    queue_producer: Optional[QueueProducer] = None,
 ):
     """Phase 1 stub: text is already stored in document; mark job completed."""
     try:
@@ -1165,6 +1299,16 @@ async def process_ingest_text_job(
             await notify_job(db, user_id=user_id, job_id=job_id, level="success", text=f"Text ingested")
         except Exception:
             pass
+        autopilot_disabled = bool((job_payload or {}).get("autopilot_disabled"))
+        if not autopilot_disabled:
+            await _maybe_trigger_generate_blog_pipeline(
+                db,
+                user_id,
+                document_id,
+                job_id,
+                queue_producer,
+                autopilot_options=(job_payload or {}).get("autopilot_options"),
+            )
     except Exception as e:
         await update_job_status(db, job_id, "failed", error=str(e))
         try:
@@ -1284,6 +1428,7 @@ async def process_generate_blog_job(
     user_id: str,
     document_id: str,
     options: Optional[Dict[str, Any]] = None,
+    pipeline_job_id: Optional[str] = None,
 ):
     """Orchestrate outline -> chapters -> SEO -> compose pipeline."""
     options = options or {}
@@ -1298,6 +1443,30 @@ async def process_generate_blog_job(
 
     def _progress(stage: str) -> Dict[str, Any]:
         return make_progress(stage, recent_logs=list(recent_logs))
+
+    async def _stage_event(
+        stage_name: str,
+        status: str,
+        message: str,
+        *,
+        data: Optional[Dict[str, Any]] = None,
+        notify_level: Optional[str] = None,
+        notify_text: Optional[str] = None,
+        notify_context: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        await _pipeline_progress_event(
+            db,
+            user_id,
+            job_id,
+            stage=stage_name,
+            status=status,
+            message=message,
+            pipeline_job_id=pipeline_job_id,
+            data=data,
+            notify_level=notify_level,
+            notify_text=notify_text,
+            notify_context=notify_context,
+        )
 
     try:
         _log("Loading document payload")
@@ -1326,29 +1495,60 @@ async def process_generate_blog_job(
         # See https://platform.openai.com/docs/models/gpt-5.1
         model_name = (options.get("model") or settings.openai_blog_model or "gpt-5.1").strip()
         temperature_override = options.get("temperature")
+        content_type = str(options.get("content_type") or "generic_blog").strip() or "generic_blog"
+        instructions = (options.get("instructions") or "").strip() or None
 
-        _log("Generating outline")
-        outline = generate_outline(text, max_sections)
+        _log("Planning content")
+        await _stage_event(
+            "generate_blog.plan",
+            "running",
+            "Planning content",
+            data={"document_id": document_id, "content_type": content_type},
+        )
+        plan = await plan_content(
+            text,
+            content_type=content_type,
+            max_sections=max_sections,
+            target_chapters=target_chapters,
+            instructions=instructions,
+        )
+        outline = plan.get("outline") or []
+        chapters = plan.get("chapters") or []
+        sections_from_plan = plan.get("sections") or []
+        seo_meta = plan.get("seo") or {}
         await record_usage_event(db, user_id, job_id, "outline", {"sections": len(outline)})
-        await update_job_status(db, job_id, "processing", progress=_progress("outline"))
-
-        _log("Organizing chapters")
-        chapters = organize_chapters(text, target_chapters)
-        if not chapters and outline:
-            chapters = [{"title": item.get("title"), "summary": item.get("summary")} for item in outline if item]
-        if not chapters:
-            chapters = [{"title": default_title_from_outline([]), "summary": textwrap.shorten(text, width=360, placeholder="…")}]
         await record_usage_event(db, user_id, job_id, "chapters", {"chapters": len(chapters)})
-        await update_job_status(db, job_id, "processing", progress=_progress("chapters"))
-
-        _log("Generating SEO metadata")
-        seo_meta = generate_seo_metadata(text, outline)
+        await update_job_status(db, job_id, "processing", progress=_progress("plan"))
+        await _stage_event(
+            "generate_blog.plan",
+            "completed",
+            "Content plan ready",
+            data={"document_id": document_id, "sections": len(chapters), "content_type": content_type},
+        )
+        planner_error = plan.get("planner_error")
+        if planner_error:
+            await _stage_event(
+                "generate_blog.plan",
+                "warning",
+                "Planner returned an error, using fallback structure",
+                data={
+                    "document_id": document_id,
+                    "planner_error": planner_error,
+                    "planner_attempts": plan.get("planner_attempts"),
+                    "planner_model": plan.get("planner_model"),
+                },
+            )
 
         _log("Composing markdown body")
-        composed = await compose_blog(
-            chapters,
+        await _stage_event(
+            "generate_blog.compose",
+            "running",
+            "Composing draft",
+            data={"document_id": document_id},
+        )
+        composed = await compose_from_plan(
+            plan,
             tone=tone,
-            seo_metadata=seo_meta,
             model=model_name,
             temperature=temperature_override,
         )
@@ -1369,6 +1569,12 @@ async def process_generate_blog_job(
             "compose",
             {"tone": tone, "word_count": word_count, "model": generator_info["model"]},
         )
+        await _stage_event(
+            "generate_blog.compose",
+            "completed",
+            "Draft composed",
+            data={"document_id": document_id, "word_count": word_count},
+        )
 
         html_body = markdown_to_html(markdown_body)
         image_prompts = generate_image_prompts(chapters) if include_images else []
@@ -1381,12 +1587,17 @@ async def process_generate_blog_job(
             "hero_image": seo_meta.get("hero_image"),
         }
 
-        sections = []
+        sections: List[Dict[str, Any]] = []
         for idx, chapter in enumerate(chapters):
+            base_section = {}
+            if sections_from_plan and idx < len(sections_from_plan):
+                candidate = sections_from_plan[idx] or {}
+                if isinstance(candidate, dict):
+                    base_section = dict(candidate)
             section = {
-                "order": idx,
-                "title": chapter.get("title"),
-                "summary": chapter.get("summary"),
+                "order": base_section.get("order", idx),
+                "title": base_section.get("title") or chapter.get("title"),
+                "summary": base_section.get("summary") or chapter.get("summary"),
             }
             if include_images and idx < len(image_prompts):
                 section["image_prompt"] = image_prompts[idx]
@@ -1411,6 +1622,7 @@ async def process_generate_blog_job(
             "sections": sections,
             "seo": seo_meta,
             "assets": assets,
+            "plan": plan,
             "options": {
                 "tone": tone,
                 "max_sections": max_sections,
@@ -1419,13 +1631,14 @@ async def process_generate_blog_job(
                 "model": generator_info["model"],
                 "temperature": generator_info.get("temperature"),
                 "provider": provider,
+                "content_type": content_type,
+                "instructions": instructions,
             },
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "generator": generator_info,
         }
 
         _log("Persisting pipeline output")
-        await set_job_output(db, job_id, pipeline_output)
         version_row = await create_document_version(
             db,
             document_id=document_id,
@@ -1440,6 +1653,8 @@ async def process_generate_blog_job(
             assets=assets,
         )
         version_id = version_row.get("version_id")
+        pipeline_output["version_id"] = version_id
+        await set_job_output(db, job_id, pipeline_output)
 
         metadata["latest_generation"] = {
             "job_id": job_id,
@@ -1453,10 +1668,16 @@ async def process_generate_blog_job(
             "temperature": generator_info.get("temperature"),
             "provider": provider,
             "tone": tone,
+            "content_type": content_type,
+            "instructions": instructions,
         }
         metadata["latest_outline"] = outline
         metadata["latest_chapters"] = chapters
         metadata["latest_sections"] = sections
+        metadata["content_plan"] = {
+            **plan,
+            "generated_at": pipeline_output["generated_at"],
+        }
         await update_document(
             db,
             document_id,
@@ -1468,14 +1689,10 @@ async def process_generate_blog_job(
             },
         )
         await record_usage_event(db, user_id, job_id, "persist", {"sections": len(sections)})
-        await _safe_pipeline_event(
-            db,
-            user_id,
-            job_id,
-            event_type="generate_blog",
-            stage="generate_blog.persist",
-            status="completed",
-            message="Blog draft generated",
+        await _stage_event(
+            "generate_blog.persist",
+            "completed",
+            "Blog draft generated",
             data={"document_id": document_id, "version_id": version_id},
             notify_level="success",
             notify_text="Blog draft generated",
@@ -1517,6 +1734,12 @@ async def process_generate_blog_job(
             await notify_job(db, user_id=user_id, job_id=job_id, level="error", text="Blog generation failed")
         except Exception:
             pass
+        await _stage_event(
+            "generate_blog.job",
+            "error",
+            f"Blog generation failed: {exc}",
+            data={"document_id": document_id},
+        )
         raise
 
 async def handle_queue_message(message: Dict[str, Any], db: Database, queue_producer: Optional[QueueProducer] = None):
@@ -1558,7 +1781,7 @@ async def handle_queue_message(message: Dict[str, Any], db: Database, queue_prod
                 except Exception:
                     pass
                 return
-            await process_ingest_youtube_job(db, job_id, user_id, document_id, video_id, payload_data)
+            await process_ingest_youtube_job(db, job_id, user_id, document_id, video_id, payload_data, queue_producer)
         elif job_type == "ingest_drive":
             document_id = message.get("document_id") or (job_row.get("document_id") if job_row else None)
             drive_file_id = message.get("drive_file_id") or payload_data.get("drive_file_id")
@@ -1594,7 +1817,14 @@ async def handle_queue_message(message: Dict[str, Any], db: Database, queue_prod
                 except Exception:
                     pass
                 return
-            await process_ingest_text_job(db, job_id, user_id, document_id)
+            await process_ingest_text_job(
+                db,
+                job_id,
+                user_id,
+                document_id,
+                job_payload=payload_data,
+                queue_producer=queue_producer,
+            )
         elif job_type == "optimize_drive":
             document_id = message.get("document_id") or (job_row.get("document_id") if job_row else None)
             if not document_id:
@@ -1651,6 +1881,7 @@ async def handle_queue_message(message: Dict[str, Any], db: Database, queue_prod
                 user_id,
                 document_id,
                 message.get("options") or payload_data.get("options") or {},
+                pipeline_job_id=message.get("pipeline_job_id") or payload_data.get("pipeline_job_id"),
             )
         elif job_type == "drive_change_poll":
             doc_ids = message.get("document_ids") or payload_data.get("document_ids")
