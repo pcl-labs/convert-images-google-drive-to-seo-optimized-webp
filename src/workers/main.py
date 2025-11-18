@@ -4,6 +4,16 @@ Cloudflare Worker entrypoint that forwards requests into the shared FastAPI app.
 
 from __future__ import annotations
 
+import os
+import sys
+from pathlib import Path
+
+# Add project root to Python path for imports (similar to consumer.py)
+# This ensures modules can be imported correctly when main.py is executed as entry point
+project_root = Path(__file__).parent.parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
 import asyncio
 import logging
 
@@ -22,9 +32,9 @@ class Default(WorkerEntrypoint):
         global fastapi_app, _app_init_error, _app_lock
         
         # Import inside the handler to avoid startup CPU limit
-        from .runtime import apply_worker_env
-        from api.app_factory import create_app
-        from .asgi_adapter import handle_worker_request
+        from src.workers.runtime import apply_worker_env
+        from src.workers.api.app_factory import create_app
+        from src.workers.asgi_adapter import handle_worker_request
         
         apply_worker_env(self.env)
 
@@ -53,9 +63,9 @@ class Default(WorkerEntrypoint):
     async def queue(self, batch, env):
         """Handle queue messages from Cloudflare Queues."""
         # Import inside the handler to avoid startup CPU limit
-        from .runtime import apply_worker_env
-        from api.database import Database
-        from workers.consumer import handle_queue_message
+        from src.workers.runtime import apply_worker_env
+        from src.workers.api.database import Database
+        from src.workers.consumer import handle_queue_message
         
         apply_worker_env(env)
         db = Database(db=env.DB)
