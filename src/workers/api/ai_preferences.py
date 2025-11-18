@@ -47,7 +47,7 @@ def _boolish(value: Any, fallback: bool) -> bool:
 def _clamp_temperature(value: Optional[float]) -> float:
     base = settings.openai_blog_temperature or 0.6
     temp = value if isinstance(value, (float, int)) else base
-    return max(0.0, min(float(temp), 1.5))
+    return max(0.0, min(float(temp), 2.0))
 
 
 def default_ai_preferences() -> Dict[str, Any]:
