@@ -139,6 +139,12 @@ class Settings:
         self.transcript_langs = _list(self.transcript_langs, default=["en"])
         cookie_name = (self.session_cookie_name or "session_id").strip()
         self.session_cookie_name = cookie_name or "session_id"
+        if self.session_touch_interval_seconds >= self.session_ttl_hours * 3600:
+            raise ValueError(
+                f"session_touch_interval_seconds ({self.session_touch_interval_seconds}) "
+                f"must be less than session_ttl_hours ({self.session_ttl_hours} hours = "
+                f"{self.session_ttl_hours * 3600} seconds)"
+            )
         self.drive_watch_renewal_window_minutes = _int(self.drive_watch_renewal_window_minutes, 60)
         self.openai_blog_temperature = _float(self.openai_blog_temperature, 0.6)
         self.openai_blog_max_output_tokens = _int(self.openai_blog_max_output_tokens, 2200)

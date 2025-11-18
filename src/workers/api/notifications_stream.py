@@ -79,13 +79,28 @@ def notifications_stream_response(
                                 },
                             )
                             context_payload = {}
+                        # Persist session cursor before sending notification to ensure atomicity.
+                        # If persistence fails, we still send the notification (prioritizing delivery
+                        # over perfect cursor tracking). On reconnect, the client may receive
+                        # duplicate notifications, but this is preferable to missing notifications.
+                        # Note: In-memory session update happens only after successful DB persistence
+                        # to avoid race conditions with concurrent SSE streams.
                         if session_id:
                             try:
                                 await touch_user_session(db, session_id, last_notification_id=notification_id)
+                                # Only update in-memory session after successful DB persistence
+                                # to maintain consistency. Each SSE stream has its own task, so
+                                # concurrent updates to the shared session dict are unlikely but
+                                # this ordering ensures we don't update memory if DB update fails.
                                 if session is not None:
                                     session["last_notification_id"] = notification_id
                             except Exception as exc:
-                                logger.debug("Failed to persist session notification cursor: %s", exc)
+                                # Use warning level for production visibility of persistence failures
+                                logger.warning(
+                                    "Failed to persist session notification cursor",
+                                    extra={"session_id": session_id, "notification_id": notification_id},
+                                    exc_info=True,
+                                )
                         payload = json.dumps({
                             "type": "notification.created",
                             "data": {

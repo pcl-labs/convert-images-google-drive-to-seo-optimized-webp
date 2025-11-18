@@ -227,9 +227,12 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
         )
 
     # Shared middleware stack for local + Worker runtimes.
+    # Note: Middleware executes in REVERSE order of registration.
+    # Register AuthCookieMiddleware before SessionMiddleware so SessionMiddleware executes first
+    # (SessionMiddleware sets request.state.session_user_id, AuthCookieMiddleware reads it)
     app.add_middleware(SecurityHeadersMiddleware)
-    app.add_middleware(SessionMiddleware)
     app.add_middleware(AuthCookieMiddleware)
+    app.add_middleware(SessionMiddleware)
     app.add_middleware(
         RateLimitMiddleware,
         max_per_minute=active_settings.rate_limit_per_minute,
