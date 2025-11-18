@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import uuid
+from typing import Any, Dict
 from unittest.mock import AsyncMock
 
 import pytest
@@ -21,7 +22,18 @@ from src.workers.api.database import (
 from src.workers.api.google_oauth import build_youtube_service_for_user
 from src.workers.api.protected import start_ingest_youtube_job
 from src.workers.core.youtube_api import fetch_video_metadata
-from src.workers.consumer import process_ingest_youtube_job, handle_queue_message
+from src.workers.consumer import (
+    process_ingest_youtube_job,
+    handle_queue_message,
+    _maybe_trigger_generate_blog_pipeline,
+)
+
+
+@pytest.fixture(autouse=True)
+def configure_autopilot(monkeypatch, request):
+    enable = request.node.get_closest_marker("autopilot_enabled") is not None
+    monkeypatch.setattr("src.workers.consumer.settings.auto_generate_after_ingest", enable)
+    monkeypatch.setattr("src.workers.api.config.settings.auto_generate_after_ingest", enable)
 
 
 class StubQueue:
@@ -82,6 +94,11 @@ def test_start_ingest_youtube_job_stores_metadata(monkeypatch):
                     "thumbnails": {},
                     "category_id": "24",
                     "tags": ["demo"],
+                    "chapters": [
+                        {"title": "Intro", "timestamp": "00:00", "start_seconds": 0},
+                        {"title": "Deep dive", "timestamp": "01:15", "start_seconds": 75},
+                        {"title": "Next steps", "timestamp": "02:40", "start_seconds": 160},
+                    ],
                 },
             }
             metadata_bundle["metadata"]["url"] = "https://youtu.be/abc12345678"
@@ -107,6 +124,11 @@ def test_start_ingest_youtube_job_stores_metadata(monkeypatch):
             metadata = _parse_metadata(doc.get("metadata"))
             assert metadata["youtube"]["duration_seconds"] == 150
             assert metadata["url"] == "https://youtu.be/abc12345678"
+            latest_outline = metadata.get("latest_outline")
+            assert isinstance(latest_outline, list)
+            assert latest_outline
+            assert latest_outline[0].get("source") == "youtube_chapter"
+            assert metadata.get("outline_source") == "youtube_chapters"
         finally:
             # cleanup (best-effort)
             try:
@@ -431,6 +453,90 @@ def test_ingest_youtube_queue_flow(monkeypatch):
             if 'job_status' in locals() and job_status:
                 await db.execute("DELETE FROM documents WHERE document_id = ?", (job_status.document_id,))
             await db.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
+
+    asyncio.run(_run())
+
+
+@pytest.mark.autopilot_enabled
+def test_autopilot_helper_creates_generate_job(monkeypatch):
+    async def _run():
+        db = Database()
+        user_id = f"user-{uuid.uuid4()}"
+        document_id = str(uuid.uuid4())
+        pipeline_job_id = str(uuid.uuid4())
+        await create_user(db, user_id=user_id, github_id=None, email=f"{user_id}@example.com")
+        await create_document(
+            db,
+            document_id=document_id,
+            user_id=user_id,
+            source_type="youtube",
+            source_ref="video123",
+            raw_text="seed",
+            metadata={"source": "youtube", "youtube": {"video_id": "video123"}},
+            frontmatter={"title": "Demo"},
+            content_format="youtube",
+        )
+        await create_job_extended(
+            db,
+            pipeline_job_id,
+            user_id,
+            job_type="ingest_youtube",
+            document_id=document_id,
+        )
+
+        async def _fake_generate(
+            db,
+            job_id,
+            user_id,
+            document_id,
+            options=None,
+            pipeline_job_id=None,
+        ):
+            await update_job_status(db, job_id, "completed")
+
+        monkeypatch.setattr("src.workers.consumer.process_generate_blog_job", _fake_generate)
+        recorded_events: list[str] = []
+
+        async def _fake_pipeline_event(
+            db_arg,
+            user_arg,
+            job_arg,
+            *,
+            stage,
+            status,
+            message,
+            pipeline_job_id=None,
+            data=None,
+            notify_level=None,
+            notify_text=None,
+            notify_context=None,
+        ):
+            recorded_events.append(stage)
+
+        monkeypatch.setattr("src.workers.consumer._pipeline_progress_event", _fake_pipeline_event)
+
+        autopilot_options = {"tone": "serious", "content_type": "faq"}
+        await _maybe_trigger_generate_blog_pipeline(
+            db,
+            user_id,
+            document_id,
+            pipeline_job_id,
+            None,
+            autopilot_options=autopilot_options,
+        )
+
+        rows = await db.execute_all(
+            "SELECT * FROM jobs WHERE job_type = 'generate_blog' AND document_id = ? ORDER BY created_at DESC",
+            (document_id,),
+        )
+        assert rows
+        job = dict(rows[0])
+        payload_data = _parse_metadata(job.get("payload"))
+        assert payload_data.get("pipeline_job_id") == pipeline_job_id
+        options_payload = payload_data.get("options") or {}
+        assert options_payload.get("tone") == "serious"
+        assert options_payload.get("content_type") == "faq"
+        assert "generate_blog.enqueue" in recorded_events
 
     asyncio.run(_run())
 

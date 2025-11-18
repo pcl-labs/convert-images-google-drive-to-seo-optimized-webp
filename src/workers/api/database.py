@@ -637,7 +637,11 @@ async def get_user_preferences(db: Database, user_id: str) -> Dict[str, Any]:
     row = await db.execute("SELECT preferences FROM users WHERE user_id = ?", (user_id,))
     if not row:
         return {}
-    return _parse_preferences(row.get("preferences"))
+    if isinstance(row, dict):
+        raw = row.get("preferences")
+    else:
+        raw = row["preferences"]
+    return _parse_preferences(raw)
 
 
 async def update_user_preferences(db: Database, user_id: str, preferences: Dict[str, Any]) -> Dict[str, Any]:

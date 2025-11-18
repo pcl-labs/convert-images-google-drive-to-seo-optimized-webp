@@ -60,6 +60,7 @@ def default_ai_preferences() -> Dict[str, Any]:
         "max_sections": 5,
         "target_chapters": 4,
         "include_images": True,
+        "content_type": "generic_blog",
     }
 
 
@@ -83,6 +84,10 @@ def normalize_ai_preferences(raw: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         merged["target_chapters"] = max(1, min(int(raw["target_chapters"]), 12))
     if "include_images" in raw:
         merged["include_images"] = _boolish(raw["include_images"], defaults["include_images"])
+    if raw.get("content_type"):
+        merged["content_type"] = str(raw["content_type"]).strip() or defaults.get("content_type")
+    if raw.get("instructions"):
+        merged["instructions"] = str(raw["instructions"]).strip()
     return merged
 
 
@@ -118,4 +123,6 @@ def resolve_generate_blog_options(options: Optional[GenerateBlogOptions], prefer
         _clamp_temperature(options.temperature) if options.temperature is not None else prefs["temperature"]
     )
     resolved["provider"] = prefs.get("provider", "openai")
+    resolved["content_type"] = (options.content_type or prefs.get("content_type") or "generic_blog").strip()
+    resolved["instructions"] = (options.instructions or prefs.get("instructions") or "").strip() or None
     return resolved

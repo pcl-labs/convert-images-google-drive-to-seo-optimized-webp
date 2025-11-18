@@ -1,16 +1,13 @@
 {% from 'components/elements/input.html' import input %}
 {% from 'components/elements/button.html' import button %}
 {% from 'components/elements/badge.html' import badge %}
-<div id="youtube-ingest-panel" x-data="youtubeIngestPanel({
+<div id="youtube-ingest-panel" x-data='youtubeIngestPanel({
     jobId: {{ (ingest_job.job_id if ingest_job else None)|tojson }},
+    documentId: {{ (ingest_job.document_id if ingest_job else None)|tojson }},
     initialEvents: {{ (ingest_events or [])|tojson }},
-    connected: {{ (youtube_connected)|tojson }}
-  })" x-init="init()" class="space-y-4">
-  {% if flash %}
-    {% set flash_kind = 'success' if flash.status == 'success' else 'error' %}
-    {% set flash_message = flash.message %}
-    {% include 'documents/partials/flash.html' %}
-  {% endif %}
+    connected: {{ (youtube_connected)|tojson }},
+    flash: {{ (flash or None)|tojson }}
+  })' x-init="init()" class="space-y-4">
   <div class="space-y-3">
     <p class="text-xs text-contentMuted">Paste any YouTube link to kick off transcript + metadata ingestion.</p>
     <div class="flex items-center justify-between text-xs text-contentMuted">
@@ -21,16 +18,54 @@
         <a href="/auth/google/start?integration=youtube&redirect=/dashboard" class="text-primary hover:text-primary/80">Connect Google</a>
       {% endif %}
     </div>
-    <form class="space-y-3" hx-post="/dashboard/documents/youtube" hx-target="#youtube-ingest-panel" hx-swap="outerHTML">
+    <template x-if="flash">
+      <div class="rounded-lg border px-3 py-2 text-sm" :class="flash.status === 'success' ? 'border-accent/40 bg-accent/5 text-accent' : 'border-destructive/40 bg-destructive/5 text-destructive'">
+        <p class="font-medium" x-text="flash.message || 'Request completed.'"></p>
+        <div class="mt-2 flex flex-wrap gap-3 text-xs text-contentMuted" x-show="flash.links">
+          <template x-if="flash.links && flash.links.document">
+            <a :href="flash.links.document" class="text-primary hover:text-primary/80" target="_blank" rel="noopener">Document API &rarr;</a>
+          </template>
+          <template x-if="flash.links && flash.links.version">
+            <a :href="flash.links.version" class="text-primary hover:text-primary/80" target="_blank" rel="noopener">Version API &rarr;</a>
+          </template>
+          <template x-if="flash.links && flash.links.job">
+            <a :href="flash.links.job" class="text-primary hover:text-primary/80" target="_blank" rel="noopener">Job API &rarr;</a>
+          </template>
+          <template x-if="flash.links && flash.links.stream">
+            <a :href="flash.links.stream" class="text-primary hover:text-primary/80" target="_blank" rel="noopener">Live stream &rarr;</a>
+          </template>
+        </div>
+      </div>
+    </template>
+    <form class="space-y-3" @submit.prevent="submitYoutube($event)">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
       {{ input('youtube_url', label='YouTube URL', type='url', placeholder='https://www.youtube.com/watch?v=...', attrs='required' + (' disabled' if not youtube_connected else '')) }}
-      {{ button('Start Ingest', variant='primary', attrs='type="submit" class="w-full"' + (' disabled' if not youtube_connected else '')) }}
+      <label class="block text-xs font-semibold uppercase tracking-wide text-contentMuted">Content type</label>
+      <select name="content_type" class="w-full rounded-lg border border-border bg-card/80 px-3 py-2 text-sm text-content focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary" {{ 'disabled' if not youtube_connected else '' }}>
+        {% for value, label in content_schema_choices %}
+          <option value="{{ value }}" {% if loop.first %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+      <label class="block text-xs font-semibold uppercase tracking-wide text-contentMuted">Instructions (optional)</label>
+      <textarea name="instructions" rows="3" class="w-full rounded-lg border border-border bg-card/80 px-3 py-2 text-sm text-content focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary" placeholder="Add any extra guidance for the draft..." {{ 'disabled' if not youtube_connected else '' }}></textarea>
+      {{ button('Start Ingest', variant='primary', attrs='type="submit" :disabled="loading || !connected"' + (' disabled' if not youtube_connected else ''), extra_classes='w-full') }}
     </form>
   </div>
-  <div class="surface-muted rounded-lg p-4" x-show="jobId" x-transition>
-    <div class="flex items-center justify-between text-xs text-contentMuted">
+  <div class="surface-muted rounded-lg p-4 space-y-2" x-show="jobId" x-transition>
+    <div class="flex flex-wrap items-center justify-between text-xs text-contentMuted gap-2">
       <span>Live status</span>
-      <span x-text="jobId ? ('Job ' + jobId) : ''"></span>
+      <div class="flex flex-wrap items-center gap-3">
+        <span class="font-mono text-[11px] text-content">Job <span x-text="jobId"></span></span>
+        <template x-if="jobLinks.job">
+          <a :href="jobLinks.job" class="text-primary hover:text-primary/80" target="_blank" rel="noopener">Job API</a>
+        </template>
+        <template x-if="jobLinks.stream">
+          <a :href="jobLinks.stream" class="text-primary hover:text-primary/80" target="_blank" rel="noopener">Stream</a>
+        </template>
+        <template x-if="jobLinks.document">
+          <a :href="jobLinks.document" class="text-primary hover:text-primary/80" target="_blank" rel="noopener">Document API</a>
+        </template>
+      </div>
     </div>
     <div class="mt-3 space-y-3" x-cloak>
       <template x-if="events.length === 0">
@@ -72,11 +107,132 @@ if(!window.__youtubeIngestInit){
   document.addEventListener('alpine:init', () => {
     Alpine.data('youtubeIngestPanel', (config) => ({
       jobId: config.jobId || null,
+      documentId: config.documentId || null,
       events: config.initialEvents || [],
       connected: !!config.connected,
+      flash: config.flash || null,
       es: null,
       connecting: false,
+      loading: false,
+      jobLinks: config.jobLinks || {},
       init(){
+        if(this.jobId){
+          this.jobLinks = this.buildLinks({ jobId: this.jobId, documentId: this.documentId });
+          this.startStream();
+        }
+      },
+      async submitYoutube(event){
+        if(this.loading){
+          return;
+        }
+        if(!this.connected){
+          this.flash = { status: 'error', message: 'Connect your YouTube account to ingest videos.' };
+          return;
+        }
+        const form = event.target;
+        const formData = new FormData(form);
+        const payload = this.buildPayload(formData);
+        if(!payload.youtube_url){
+          this.flash = { status: 'error', message: 'YouTube URL is required.' };
+          return;
+        }
+        this.loading = true;
+        this.flash = null;
+        try {
+          const response = await fetch('/v1/content/blog_from_youtube', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify(payload),
+          });
+          let data = {};
+          try {
+            data = await response.json();
+          } catch (_) {
+            data = {};
+          }
+          if(!response.ok){
+            const message = (data && data.detail) || 'Failed to start ingest';
+            throw new Error(message);
+          }
+          const meta = this.extractMeta(data);
+          this.documentId = meta.documentId || this.documentId;
+          this.jobLinks = this.buildLinks(meta);
+          this.flash = { status: 'success', message: meta.message, links: this.jobLinks };
+          this.setJob(meta.jobId);
+          if(form && typeof form.reset === 'function'){
+            form.reset();
+          }
+        } catch (err) {
+          this.flash = { status: 'error', message: err && err.message ? err.message : 'Failed to start ingest' };
+        } finally {
+          this.loading = false;
+        }
+      },
+      buildPayload(formData){
+        return {
+          youtube_url: (formData.get('youtube_url') || '').trim(),
+          mode: 'structured',
+          async: true,
+          options: this.buildOptions(formData),
+        };
+      },
+      buildOptions(formData){
+        const options = {};
+        const contentType = (formData.get('content_type') || '').trim();
+        options.content_type = contentType || 'https://schema.org/BlogPosting';
+        const instructions = (formData.get('instructions') || '').trim();
+        if(instructions){
+          options.instructions = instructions;
+        }
+        return options;
+      },
+      extractMeta(payload){
+        if(!payload || typeof payload !== 'object'){
+          return { jobId: null, documentId: null, versionId: null, message: 'Request completed.' };
+        }
+        if(payload.job_id){
+          return {
+            jobId: payload.job_id,
+            documentId: payload.document_id || null,
+            versionId: payload.version_id || null,
+            message: `Job ${payload.job_id} queued`,
+          };
+        }
+        const documentId = payload.document_id || null;
+        const versionId = payload.version_id || (payload.content && payload.content.version_id) || null;
+        let message = 'Request completed.';
+        if(versionId){
+          message = `Version ${versionId} ready`;
+        } else if(documentId){
+          message = `Document ${documentId} updated`;
+        }
+        return { jobId: null, documentId, versionId, message };
+      },
+      buildLinks(meta){
+        const links = {};
+        if(!meta || typeof meta !== 'object'){
+          return links;
+        }
+        if(meta.documentId){
+          links.document = `/v1/documents/${meta.documentId}`;
+          if(meta.versionId){
+            links.version = `/v1/documents/${meta.documentId}/versions/${meta.versionId}`;
+          }
+        }
+        if(meta.jobId){
+          links.job = `/v1/jobs/${meta.jobId}`;
+          links.stream = `/api/pipelines/stream?job_id=${meta.jobId}`;
+        }
+        return links;
+      },
+      setJob(jobId){
+        if(this.es){
+          this.es.close();
+          this.es = null;
+        }
+        this.events = [];
+        this.jobId = jobId || null;
         if(this.jobId){
           this.startStream();
         }
