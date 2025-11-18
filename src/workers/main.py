@@ -22,9 +22,9 @@ class Default(WorkerEntrypoint):
         global fastapi_app, _app_init_error, _app_lock
         
         # Import inside the handler to avoid startup CPU limit
-        from workers.runtime import apply_worker_env
+        from .runtime import apply_worker_env
         from api.app_factory import create_app
-        from workers.asgi_adapter import handle_worker_request
+        from .asgi_adapter import handle_worker_request
         
         apply_worker_env(self.env)
 
@@ -53,7 +53,7 @@ class Default(WorkerEntrypoint):
     async def queue(self, batch, env):
         """Handle queue messages from Cloudflare Queues."""
         # Import inside the handler to avoid startup CPU limit
-        from workers.runtime import apply_worker_env
+        from .runtime import apply_worker_env
         from api.database import Database
         from workers.consumer import handle_queue_message
         

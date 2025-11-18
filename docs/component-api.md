@@ -380,7 +380,7 @@ All components consume the Material Design 3 token set defined in `assets/css/in
 | Tertiary | `--md-sys-color-tertiary` | `bg-tertiary`, `text-tertiary` | Expressive tone (maps to former “accent”). |
 | Error | `--md-sys-color-error` | `bg-error`, `text-error` | Destructive emphasis; includes `error-container` utilities. |
 | Surface | `--md-sys-color-surface` | `bg-surface` | Primary background. |
-| Surface Containers | `--md-sys-color-surface-container[-low|high|highest]` | `bg-surface-container*` | Density-aware layers for cards, sheets, nav. |
+| Surface Containers | `--md-sys-color-surface-container[-low\|high\|highest]` | `bg-surface-container*` | Density-aware layers for cards, sheets, nav. |
 | Surface Variant | `--md-sys-color-surface-variant` | `bg-surface-variant`, `text-on-surface-variant` | Used for dividers, outlines, subdued containers. |
 | Outline | `--md-sys-color-outline` | `border-outline` | Border + hairline accents. |
 | Inverse Surface | `--md-sys-color-inverse-surface` | `bg-inverse-surface` | Snackbars, banners, dark-on-light flips. |
