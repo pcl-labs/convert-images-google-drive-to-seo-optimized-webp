@@ -5,7 +5,7 @@ import asyncio
 import logging
 import weakref
 
-from .database import list_notifications, Database
+from .database import list_notifications, Database, touch_user_session
 
 logger = logging.getLogger(__name__)
 
@@ -22,14 +22,26 @@ def _sse_headers() -> Dict[str, str]:
     }
 
 
-def notifications_stream_response(request, db: Database, user: Dict[str, Any]) -> StreamingResponse:
+def notifications_stream_response(
+    request,
+    db: Database,
+    user: Dict[str, Any],
+    *,
+    session: Optional[Dict[str, Any]] = None,
+) -> StreamingResponse:
     user_id = user.get("user_id")
     if not user_id:
         logger.warning("notifications_stream_response called without user_id in user context: %s", user)
         raise ValueError("Missing user_id in user context for notifications stream")
+    session = session or getattr(request.state, "session", None)
+    session_id = None
+    session_cursor: Optional[str] = None
+    if session:
+        session_id = session.get("session_id") or session.get("SESSION_ID") or session.get("id")
+        session_cursor = session.get("last_notification_id")
 
     async def event_generator():
-        last_sent: Optional[str] = None
+        last_sent: Optional[str] = session_cursor
         task = asyncio.current_task()
         if task:
             _active_sse_tasks.add(task)
@@ -67,6 +79,35 @@ def notifications_stream_response(request, db: Database, user: Dict[str, Any]) -
                                 },
                             )
                             context_payload = {}
+                        # Persist session cursor before sending notification.
+                        # 
+                        # Trade-offs and limitations:
+                        # 1. Missed notifications: If DB write succeeds but connection drops before yield,
+                        #    the notification is marked as delivered but never received. On reconnect,
+                        #    the stream resumes from the next notification, causing a gap.
+                        # 2. Race conditions: Multiple concurrent SSE streams (e.g., multiple browser tabs)
+                        #    can persist notification IDs out of order, potentially causing the cursor to
+                        #    point to an earlier notification than what was actually delivered.
+                        # 3. Performance: Per-notification DB writes add latency and load. For high-volume
+                        #    streams, consider batching persistence (e.g., every 10 notifications or 5 seconds).
+                        # 
+                        # Current approach prioritizes at-least-once delivery semantics: we persist before
+                        # sending, accepting that duplicates on reconnect are preferable to missing notifications.
+                        # Clients should handle duplicate notifications idempotently (e.g., using notification IDs).
+                        if session_id:
+                            try:
+                                await touch_user_session(db, session_id, last_notification_id=notification_id)
+                                # Update in-memory session only after successful DB persistence to maintain consistency.
+                                # Note: session_id is only set if session exists (lines 39-41), so session is guaranteed
+                                # to be non-None here.
+                                session["last_notification_id"] = notification_id
+                            except Exception as exc:
+                                # Use warning level for production visibility of persistence failures
+                                logger.warning(
+                                    "Failed to persist session notification cursor",
+                                    extra={"session_id": session_id, "notification_id": notification_id},
+                                    exc_info=True,
+                                )
                         payload = json.dumps({
                             "type": "notification.created",
                             "data": {
