@@ -3,7 +3,8 @@
 import asyncio
 import time
 import uuid
-from typing import Callable
+from datetime import datetime, timezone
+from typing import Callable, Any
 from fastapi import HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -15,19 +16,109 @@ from .auth import verify_jwt_token
 from .exceptions import RateLimitError
 from .app_logging import set_request_id
 from .deps import ensure_db
-from .database import get_user_by_id
+from .database import get_user_by_id, get_user_session, touch_user_session, delete_user_session
 
 logger = logging.getLogger(__name__)
 
 
 class RequestIDMiddleware(BaseHTTPMiddleware):
     """Add request ID to each request."""
-    
+
     async def dispatch(self, request: Request, call_next: Callable):
         request_id = str(uuid.uuid4())
         set_request_id(request_id)
         response = await call_next(request)
         response.headers["X-Request-ID"] = request_id
+        return response
+
+
+class SessionMiddleware(BaseHTTPMiddleware):
+    """Load, refresh, and clear user sessions tied to session cookies."""
+
+    def __init__(self, app: ASGIApp):
+        super().__init__(app)
+        self.cookie_name = settings.session_cookie_name
+        self.touch_interval = max(0, int(settings.session_touch_interval_seconds))
+
+    def _parse_timestamp(self, value):  # type: ignore[override]
+        if not value:
+            return None
+        if isinstance(value, datetime):
+            return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        raw = str(value).strip()
+        if not raw:
+            return None
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        try:
+            dt = datetime.fromisoformat(raw)
+            return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+        except ValueError:
+            try:
+                return datetime.strptime(raw, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+            except ValueError:
+                return None
+
+    @staticmethod
+    def _is_secure_request(request: Request) -> bool:
+        xf_proto = request.headers.get("x-forwarded-proto", "").lower()
+        return (xf_proto == "https") if xf_proto else (request.url.scheme == "https")
+
+    async def dispatch(self, request: Request, call_next: Callable):
+        session_id = request.cookies.get(self.cookie_name)
+        should_clear_cookie = False
+        db = None
+        lookup_failed = False
+        if session_id:
+            try:
+                db = ensure_db()
+                session = await get_user_session(db, session_id)
+            except Exception as exc:  # pragma: no cover - defensive logging
+                logger.debug("SessionMiddleware failed to load session: %s", exc)
+                session = None
+                lookup_failed = True
+            now = datetime.now(timezone.utc)
+            if session and not session.get("revoked_at"):
+                expires_at = self._parse_timestamp(session.get("expires_at"))
+                if expires_at and expires_at <= now:
+                    should_clear_cookie = True
+                    if db:
+                        try:
+                            await delete_user_session(db, session_id)
+                        except Exception as exc:  # pragma: no cover - defensive logging
+                            logger.debug("Failed to delete expired session %s: %s", session_id, exc)
+                else:
+                    session["session_id"] = session_id
+                    request.state.session = session
+                    request.state.session_id = session_id
+                    if session.get("user_id"):
+                        request.state.session_user_id = session.get("user_id")
+                    if db and self.touch_interval:
+                        last_seen_raw = self._parse_timestamp(session.get("last_seen_at"))
+                        needs_touch = (
+                            last_seen_raw is None
+                            or (now - last_seen_raw).total_seconds() >= self.touch_interval
+                        )
+                        if needs_touch:
+                            try:
+                                await touch_user_session(db, session_id, last_seen_at=now)
+                                session["last_seen_at"] = now.isoformat()
+                            except Exception as exc:  # pragma: no cover - defensive logging
+                                logger.debug("Failed to update session heartbeat: %s", exc)
+            elif not lookup_failed:
+                should_clear_cookie = True
+
+        response = await call_next(request)
+        if getattr(request.state, "invalidate_session_cookie", False):
+            should_clear_cookie = True
+        if should_clear_cookie and session_id:
+            response.delete_cookie(
+                self.cookie_name,
+                path="/",
+                samesite="lax",
+                httponly=True,
+                secure=self._is_secure_request(request),
+            )
         return response
 
 
@@ -43,6 +134,18 @@ class AuthCookieMiddleware(BaseHTTPMiddleware):
                 email = payload.get("email")
                 github_id = payload.get("github_id")
                 google_id = payload.get("google_id")
+                session_user_id = getattr(request.state, "session_user_id", None)
+                if session_user_id and user_id and str(session_user_id) != str(user_id):
+                    logger.warning(
+                        "Session user mismatch; clearing session cookie",
+                        extra={"token_user_id": user_id, "session_user_id": session_user_id},
+                    )
+                    request.state.invalidate_session_cookie = True
+                    if hasattr(request.state, "session"):
+                        try:
+                            delattr(request.state, "session")
+                        except Exception:
+                            pass
                 # Only backfill from DB if critical identifier (email) is missing.
                 # Avoid fetching solely for optional provider IDs (github_id/google_id).
                 if user_id and not email:
@@ -88,6 +191,7 @@ class AuthCookieMiddleware(BaseHTTPMiddleware):
                         delattr(request.state, "user_id")
                     except Exception:
                         pass
+                request.state.invalidate_session_cookie = True
         return await call_next(request)
 
 

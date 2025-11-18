@@ -17,7 +17,7 @@ from pathlib import Path
 
 from .config import Settings, settings as global_settings
 from .cloudflare_queue import QueueProducer
-from .database import Database, ensure_notifications_schema
+from .database import Database, ensure_notifications_schema, ensure_sessions_schema
 from .exceptions import APIException
 from .app_logging import setup_logging, get_logger, get_request_id
 from .middleware import (
@@ -26,6 +26,7 @@ from .middleware import (
     RateLimitMiddleware,
     RequestIDMiddleware,
     SecurityHeadersMiddleware,
+    SessionMiddleware,
 )
 from .deps import set_db_instance, set_queue_producer
 from .notifications_stream import cancel_all_sse_connections
@@ -68,6 +69,8 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
         try:
             await ensure_notifications_schema(db_instance)
             app_logger.info("Notifications schema ensured")
+            await ensure_sessions_schema(db_instance)
+            app_logger.info("Session schema ensured")
         except Exception as exc:  # pragma: no cover - defensive logging path
             app_logger.warning("Failed ensuring notifications schema: %s", exc)
 
@@ -224,8 +227,12 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
         )
 
     # Shared middleware stack for local + Worker runtimes.
+    # Note: Middleware executes in REVERSE order of registration.
+    # Register AuthCookieMiddleware before SessionMiddleware so SessionMiddleware executes first
+    # (SessionMiddleware sets request.state.session_user_id, AuthCookieMiddleware reads it)
     app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(AuthCookieMiddleware)
+    app.add_middleware(SessionMiddleware)
     app.add_middleware(
         RateLimitMiddleware,
         max_per_minute=active_settings.rate_limit_per_minute,
