@@ -39,7 +39,7 @@ Roadmap ordered by the sequence we need to ship to make “Paste YouTube URL →
   - Promote `notifications_stream` to the primary channel for drive + pipeline updates (ingest, sync, outline regenerate, webhook-driven edit).
   - When Drive webhook enqueues `drive_change_poll`, send “Drive edit detected → syncing now” SSE payloads and replace them on completion/failure.
   - Hook job lifecycle events (queued → processing → completed) into SSE; document `/api/stream` buffering requirements.
-- **Composable steps in UI**: expose outline/chapters regenerate actions that hit `/api/v1/steps/*` so agents can tweak sections without rerunning the entire pipeline.
+- **Composable steps in UI**: expose outline/sections regenerate actions via the Content API (e.g. `POST /v1/content/blog_from_document` with a `section_index` and updated `instructions`) or dashboard routes like `/dashboard/documents/{id}/sections/{index}/regenerate` that wrap `/v1/content/*`, so agents can tweak sections without rerunning the entire pipeline.
 - **Inline diffing**: show regenerated section diffs before committing to `document_versions`.
 - **Image workflow**: allow choosing/generated prompts per section, uploading replacements, or re-running image generation.
 - **AI configuration**: per-user provider preferences (OpenAI, Workers AI, Anthropic) with token cost surfacing per section.
@@ -60,7 +60,7 @@ Roadmap ordered by the sequence we need to ship to make “Paste YouTube URL →
   - Split the public `/v1` OpenAPI tags from internal `/api/v1` routes, ensure every field (tone, content_type, instructions, mode/format) has defaults + enum docs, and publish reference examples.
   - Provide copy/paste snippets (curl + Python) showing synchronous vs async usage with job polling and SSE streams.
 - **Project-scoped API keys**: multiple keys per user with RBAC for teammates.
-- **Client SDK**: publish Python/JS SDK wrapping `/api/v1/documents/*`, `/api/v1/pipelines/generate_blog`, etc., with retries.
+- **Client SDK**: publish Python/JS SDK wrapping the public `/v1/content/*`, `/v1/documents/*`, and `/v1/jobs/*` endpoints (with retries).
 - **Streaming job events**: SSE or WebSocket channel for job progress so external dashboards can subscribe.
 
 ## 7. Content Quality Improvements
