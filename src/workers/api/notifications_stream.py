@@ -5,7 +5,7 @@ import asyncio
 import logging
 import weakref
 
-from .database import list_notifications, Database
+from .database import list_notifications, Database, touch_user_session
 
 logger = logging.getLogger(__name__)
 
@@ -22,14 +22,26 @@ def _sse_headers() -> Dict[str, str]:
     }
 
 
-def notifications_stream_response(request, db: Database, user: Dict[str, Any]) -> StreamingResponse:
+def notifications_stream_response(
+    request,
+    db: Database,
+    user: Dict[str, Any],
+    *,
+    session: Optional[Dict[str, Any]] = None,
+) -> StreamingResponse:
     user_id = user.get("user_id")
     if not user_id:
         logger.warning("notifications_stream_response called without user_id in user context: %s", user)
         raise ValueError("Missing user_id in user context for notifications stream")
+    session = session or getattr(request.state, "session", None)
+    session_id = None
+    session_cursor: Optional[str] = None
+    if session:
+        session_id = session.get("session_id") or session.get("SESSION_ID") or session.get("id")
+        session_cursor = session.get("last_notification_id")
 
     async def event_generator():
-        last_sent: Optional[str] = None
+        last_sent: Optional[str] = session_cursor
         task = asyncio.current_task()
         if task:
             _active_sse_tasks.add(task)
@@ -67,6 +79,13 @@ def notifications_stream_response(request, db: Database, user: Dict[str, Any]) -
                                 },
                             )
                             context_payload = {}
+                        if session_id:
+                            try:
+                                await touch_user_session(db, session_id, last_notification_id=notification_id)
+                                if session is not None:
+                                    session["last_notification_id"] = notification_id
+                            except Exception as exc:
+                                logger.debug("Failed to persist session notification cursor: %s", exc)
                         payload = json.dumps({
                             "type": "notification.created",
                             "data": {

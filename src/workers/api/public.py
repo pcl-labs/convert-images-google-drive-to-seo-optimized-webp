@@ -1,9 +1,9 @@
 from fastapi import APIRouter, Request, HTTPException, status, Form
-from fastapi.responses import JSONResponse, RedirectResponse, PlainTextResponse
+from fastapi.responses import JSONResponse, RedirectResponse, Response, PlainTextResponse
 from typing import Optional
 import secrets
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
 
 from .config import settings
@@ -11,7 +11,12 @@ from .constants import COOKIE_OAUTH_STATE, COOKIE_GOOGLE_OAUTH_STATE
 from .auth import authenticate_github
 from .auth import authenticate_google
 from .exceptions import AuthenticationError
+<<<<<<< HEAD
 from .deps import ensure_db, get_queue_producer
+=======
+from .deps import ensure_db
+from .database import create_user_session, delete_user_session
+>>>>>>> c16b9d8 (Add tests covering session persistence and notifications)
 from .app_logging import get_logger
 from .database import create_job_extended, get_drive_watch_by_channel
 from .models import JobType
@@ -87,7 +92,45 @@ def _build_google_oauth_response(request: Request, auth_url: str, state: str) ->
     return response
 
 
-def _build_logout_response(request: Request, *, redirect: str = "/") -> RedirectResponse:
+async def _issue_session_cookie(
+    response: Response,
+    request: Request,
+    db,
+    user_id: str,
+    *,
+    is_secure: bool,
+    provider: str,
+) -> None:
+    ttl_seconds = int(settings.session_ttl_hours * 3600)
+    if ttl_seconds <= 0:
+        return
+    session_id = secrets.token_urlsafe(32)
+    try:
+        expires_at = datetime.now(timezone.utc) + timedelta(hours=settings.session_ttl_hours)
+        await create_user_session(
+            db,
+            session_id,
+            user_id,
+            expires_at,
+            ip_address=(request.client.host if request.client else None),
+            user_agent=request.headers.get("user-agent"),
+            extra={"provider": provider},
+        )
+    except Exception as exc:  # pragma: no cover - defensive logging
+        logger.warning("Failed to persist browser session for user %s: %s", user_id, exc)
+        return
+    response.set_cookie(
+        key=settings.session_cookie_name,
+        value=session_id,
+        httponly=True,
+        secure=is_secure,
+        samesite="lax",
+        max_age=ttl_seconds,
+        path="/",
+    )
+
+
+async def _build_logout_response(request: Request, *, redirect: str = "/") -> RedirectResponse:
     response = RedirectResponse(url=redirect, status_code=status.HTTP_302_FOUND)
     is_secure = _is_secure_request(request)
     response.delete_cookie("access_token", path="/", samesite="lax", httponly=True, secure=is_secure)
@@ -97,6 +140,20 @@ def _build_logout_response(request: Request, *, redirect: str = "/") -> Redirect
     response.delete_cookie("google_integration", path="/", samesite="lax", httponly=True, secure=is_secure)
     response.delete_cookie("google_redirect_next", path="/", samesite="lax", httponly=True, secure=is_secure)
     response.delete_cookie("csrf_token", path="/", samesite="lax", httponly=True, secure=is_secure)
+    session_cookie = request.cookies.get(settings.session_cookie_name)
+    if session_cookie:
+        try:
+            db = ensure_db()
+            await delete_user_session(db, session_cookie)
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.debug("Failed to revoke browser session during logout: %s", exc)
+        response.delete_cookie(
+            settings.session_cookie_name,
+            path="/",
+            samesite="lax",
+            httponly=True,
+            secure=is_secure,
+        )
     return response
 
 
@@ -355,6 +412,14 @@ async def github_callback(code: str, state: str, request: Request):
                 max_age=max_age_seconds,
                 path="/",
             )
+            await _issue_session_cookie(
+                response,
+                request,
+                db,
+                user["user_id"],
+                is_secure=is_secure,
+                provider="github",
+            )
             response.delete_cookie(key=COOKIE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
             return response
         else:
@@ -398,6 +463,14 @@ async def google_login_callback(code: str, state: str, request: Request):
                 max_age=max_age_seconds,
                 path="/",
             )
+            await _issue_session_cookie(
+                response,
+                request,
+                db,
+                user["user_id"],
+                is_secure=is_secure,
+                provider="google",
+            )
             response.delete_cookie(key=COOKIE_GOOGLE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
             return response
         else:
@@ -429,4 +502,4 @@ async def google_login_callback(code: str, state: str, request: Request):
 
 @router.get("/auth/logout", tags=["Authentication"])
 async def logout_get(request: Request):
-    return _build_logout_response(request)
+    return await _build_logout_response(request)
