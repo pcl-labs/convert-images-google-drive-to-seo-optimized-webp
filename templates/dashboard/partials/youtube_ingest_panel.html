@@ -132,6 +132,7 @@ if(!window.__youtubeIngestInit){
         const form = event.target;
         const formData = new FormData(form);
         const payload = this.buildPayload(formData);
+        const csrfToken = (formData.get('csrf_token') || '').toString();
         if(!payload.youtube_url){
           this.flash = { status: 'error', message: 'YouTube URL is required.' };
           return;
@@ -143,9 +144,13 @@ if(!window.__youtubeIngestInit){
           controller.abort();
         }, 30000);
         try {
+          const headers = { 'Content-Type': 'application/json' };
+          if(csrfToken){
+            headers['X-CSRF-Token'] = csrfToken;
+          }
           const response = await fetch('/v1/content/blog_from_youtube', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers,
             credentials: 'same-origin',
             body: JSON.stringify(payload),
             signal: controller.signal,

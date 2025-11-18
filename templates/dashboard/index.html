@@ -173,6 +173,7 @@
     const form = event.target;
     const formData = new FormData(form);
     const payload = buildTextPayload(formData);
+    const csrfToken = (formData.get('csrf_token') || '').toString();
     if(!payload.text){
       renderFlash(flashEl, 'error', { message: 'Text content is required.' });
       return;
@@ -182,9 +183,13 @@
       submitBtn.disabled = true;
     }
     try {
+      const headers = { 'Content-Type': 'application/json' };
+      if(csrfToken){
+        headers['X-CSRF-Token'] = csrfToken;
+      }
       const response = await fetch('/v1/content/blog_from_text', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         credentials: 'same-origin',
         body: JSON.stringify(payload),
       });
