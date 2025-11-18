@@ -1,0 +1,29 @@
+{% macro type_specimen(role, sample=None, annotate=True, class_name='') %}
+  {%- set role_classes = {
+    'display-large': 'text-display-large',
+    'display-medium': 'text-display-medium',
+    'display-small': 'text-display-small',
+    'headline-large': 'text-headline-large',
+    'headline-medium': 'text-headline-medium',
+    'headline-small': 'text-headline-small',
+    'title-large': 'text-title-large',
+    'title-medium': 'text-title-medium',
+    'title-small': 'text-title-small',
+    'body-large': 'text-body-large',
+    'body-medium': 'text-body-medium',
+    'body-small': 'text-body-small',
+    'label-large': 'text-label-large',
+    'label-medium': 'text-label-medium',
+    'label-small': 'text-label-small'
+  } -%}
+  {%- set specimen_text = sample or role.replace('-', ' ').title() -%}
+  <div class="space-y-1">
+    <p class="{{ role_classes.get(role, 'text-body-medium') }} text-on-surface {{ class_name }}">{{ specimen_text }}</p>
+    {% if annotate %}
+      <div class="text-label-medium text-on-surface-variant flex items-center gap-2">
+        <code class="text-xs font-mono text-on-surface-variant/80">{{ role_classes.get(role, 'text-body-medium') }}</code>
+        <span>{{ role|replace('-', ' ')|title }}</span>
+      </div>
+    {% endif %}
+  </div>
+{% endmacro %}

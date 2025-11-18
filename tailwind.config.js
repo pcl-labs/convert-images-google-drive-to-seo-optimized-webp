@@ -1,52 +1,128 @@
 /**** Tailwind CLI config ****/
 /** @type {import('tailwindcss').Config} */
+const colorVar = (token) => `rgb(var(--${token}) / <alpha-value>)`;
+const mdColor = (token) => colorVar(`md-sys-color-${token}`);
+
 module.exports = {
   darkMode: 'class',
   content: [
     './templates/**/*.html',
+    './templates/**/*.jinja',
   ],
   theme: {
     extend: {
       colors: {
-        // Semantic tokens (for theming) - using RGB format for opacity support
-        bg: 'rgb(var(--bg))',
-        surface: 'rgb(var(--surface))',
-        'surface-muted': 'rgb(var(--surface-muted) / <alpha-value>)',
-        surfaceMuted: 'rgb(var(--surface-muted) / <alpha-value>)',
-        border: 'rgb(var(--border))',
-        content: 'rgb(var(--content))',
-        contentMuted: 'rgb(var(--content-muted))',
-        primary: 'rgb(var(--primary) / <alpha-value>)',
-        primaryContrast: 'rgb(var(--primary-contrast))',
-        destructive: 'rgb(var(--destructive) / <alpha-value>)',
-        destructiveContrast: 'rgb(var(--destructive-contrast))',
-        accent: 'rgb(var(--accent))',
-        accentContrast: 'rgb(var(--accent-contrast))',
-        warning: 'rgb(var(--warning))',
-        warningContrast: 'rgb(var(--warning-contrast))',
-        ring: 'rgb(var(--ring) / <alpha-value>)',
-        // Standard Tailwind colors (still available for utility use)
-        // These are the default Tailwind color palette
+        /* Material color roles */
+        background: mdColor('background'),
+        surface: mdColor('surface'),
+        'surface-container': mdColor('surface-container'),
+        'surface-container-low': mdColor('surface-container-low'),
+        'surface-container-high': mdColor('surface-container-high'),
+        'surface-container-highest': mdColor('surface-container-highest'),
+        'surface-variant': mdColor('surface-variant'),
+        outline: mdColor('outline'),
+        'outline-variant': mdColor('outline-variant'),
+        primary: mdColor('primary'),
+        'on-primary': mdColor('on-primary'),
+        'primary-container': mdColor('primary-container'),
+        'on-primary-container': mdColor('on-primary-container'),
+        secondary: mdColor('secondary'),
+        'on-secondary': mdColor('on-secondary'),
+        'secondary-container': mdColor('secondary-container'),
+        'on-secondary-container': mdColor('on-secondary-container'),
+        tertiary: mdColor('tertiary'),
+        'on-tertiary': mdColor('on-tertiary'),
+        'tertiary-container': mdColor('tertiary-container'),
+        'on-tertiary-container': mdColor('on-tertiary-container'),
+        error: mdColor('error'),
+        'on-error': mdColor('on-error'),
+        'error-container': mdColor('error-container'),
+        'on-error-container': mdColor('on-error-container'),
+        'on-surface': mdColor('on-surface'),
+        'on-surface-variant': mdColor('on-surface-variant'),
+        'inverse-surface': mdColor('inverse-surface'),
+        'inverse-on-surface': mdColor('inverse-on-surface'),
+        'inverse-primary': mdColor('inverse-primary'),
+        scrim: mdColor('scrim'),
+        shadow: mdColor('shadow'),
+        /* Legacy aliases */
+        bg: colorVar('bg'),
+        border: colorVar('border'),
+        content: colorVar('content'),
+        contentMuted: colorVar('content-muted'),
+        surfaceMuted: colorVar('surface-muted'),
+        surfaceMutedAlt: colorVar('surface-muted'),
+        primaryContrast: colorVar('primary-contrast'),
+        destructive: colorVar('destructive'),
+        destructiveContrast: colorVar('destructive-contrast'),
+        accent: colorVar('accent'),
+        accentContrast: colorVar('accent-contrast'),
+        warning: colorVar('warning'),
+        warningContrast: colorVar('warning-contrast'),
+        ring: colorVar('ring'),
       },
       borderRadius: {
-        xs: 'var(--radius-xs)',
-        sm: 'var(--radius-sm)',
-        md: 'var(--radius-md)',
-        lg: 'var(--radius-lg)'
+        none: 'var(--md-sys-shape-corner-none)',
+        xs: 'var(--md-sys-shape-corner-extra-small)',
+        sm: 'var(--md-sys-shape-corner-small)',
+        md: 'var(--md-sys-shape-corner-medium)',
+        lg: 'var(--md-sys-shape-corner-large)',
+        xl: 'var(--md-sys-shape-corner-large-end)',
+        full: 'var(--md-sys-shape-corner-full)',
       },
       boxShadow: {
+        'elevation-0': 'var(--md-sys-elevation-level0)',
+        'elevation-1': 'var(--md-sys-elevation-level1)',
+        'elevation-2': 'var(--md-sys-elevation-level2)',
+        'elevation-3': 'var(--md-sys-elevation-level3)',
+        'elevation-4': 'var(--md-sys-elevation-level4)',
+        'elevation-5': 'var(--md-sys-elevation-level5)',
         sm: 'var(--shadow-sm)',
         md: 'var(--shadow-md)',
-        lg: 'var(--shadow-lg)'
+        lg: 'var(--shadow-lg)',
       },
       fontFamily: {
-        sans: ['var(--font-sans)', 'ui-sans-serif', 'system-ui', 'sans-serif'],
-        mono: ['var(--font-mono)', 'ui-monospace', 'monospace']
-      }
-    }
+        sans: ['var(--md-ref-typeface-plain)', 'system-ui', 'sans-serif'],
+        brand: ['var(--md-ref-typeface-brand)', 'var(--md-ref-typeface-plain)', 'sans-serif'],
+        mono: ['var(--font-mono)', 'ui-monospace', 'monospace'],
+      },
+      spacing: {
+        'dp-0': '0rem',
+        'dp-1': '0.25rem',
+        'dp-2': '0.5rem',
+        'dp-3': '0.75rem',
+        'dp-4': '1rem',
+        'dp-5': '1.5rem',
+        'dp-6': '2rem',
+        'dp-7': '2.5rem',
+        'dp-8': '3rem',
+      },
+      transitionDuration: {
+        'motion-short-1': 'var(--md-sys-motion-duration-short1)',
+        'motion-short-2': 'var(--md-sys-motion-duration-short2)',
+        'motion-short-3': 'var(--md-sys-motion-duration-short3)',
+        'motion-short-4': 'var(--md-sys-motion-duration-short4)',
+        'motion-medium-1': 'var(--md-sys-motion-duration-medium1)',
+        'motion-medium-2': 'var(--md-sys-motion-duration-medium2)',
+        'motion-medium-3': 'var(--md-sys-motion-duration-medium3)',
+        'motion-medium-4': 'var(--md-sys-motion-duration-medium4)',
+        'motion-long-1': 'var(--md-sys-motion-duration-long1)',
+        'motion-long-2': 'var(--md-sys-motion-duration-long2)',
+        'motion-long-3': 'var(--md-sys-motion-duration-long3)',
+        'motion-long-4': 'var(--md-sys-motion-duration-long4)',
+      },
+      transitionTimingFunction: {
+        'motion-standard': 'var(--md-sys-motion-easing-standard)',
+        'motion-standard-accelerate': 'var(--md-sys-motion-easing-standard-accelerate)',
+        'motion-standard-decelerate': 'var(--md-sys-motion-easing-standard-decelerate)',
+        'motion-emphasized': 'var(--md-sys-motion-easing-emphasized)',
+        'motion-emphasized-accelerate': 'var(--md-sys-motion-easing-emphasized-accelerate)',
+        'motion-emphasized-decelerate': 'var(--md-sys-motion-easing-emphasized-decelerate)',
+      },
+    },
   },
   plugins: [
     require('@tailwindcss/forms'),
-    require('@tailwindcss/typography')
+    require('@tailwindcss/typography'),
   ],
-}
+};

@@ -367,121 +367,65 @@ The dropdown uses Alpine.js for state management. The trigger should call `toggl
 
 ## Design Tokens
 
-All components use semantic design tokens defined in `assets/css/input.css`. These tokens can be updated in one place to change the entire theme.
+All components consume the Material Design 3 token set defined in `assets/css/input.css` and surfaced through Tailwind utilities inside `tailwind.config.js`. The tokens are stored as CSS custom properties using RGB triplets so opacity modifiers (`/60`, `/20`, etc.) work everywhere.
 
-### Token Format: RGB for Opacity Support
+### Color Roles
 
-**Important:** All color tokens are defined in RGB format (space-separated values, e.g., `30 41 59`) rather than hex to support Tailwind's opacity modifiers. This allows using opacity utilities like `/50`, `/80`, etc. in Tailwind classes.
+| Role | CSS Variable | Tailwind Utility | Notes |
+| --- | --- | --- | --- |
+| Primary | `--md-sys-color-primary` | `bg-primary`, `text-primary` | Baseline brand tone (light: #6750A4, dark: #D0BCFF). |
+| On Primary | `--md-sys-color-on-primary` | `text-on-primary` | Text/icons that sit on top of primary surfaces. |
+| Primary Container | `--md-sys-color-primary-container` | `bg-primary-container` | Used for filled tonal buttons/cards. |
+| Secondary | `--md-sys-color-secondary` | `bg-secondary`, `text-secondary` | Supportive tone for chips, filters, etc. |
+| Tertiary | `--md-sys-color-tertiary` | `bg-tertiary`, `text-tertiary` | Expressive tone (maps to former “accent”). |
+| Error | `--md-sys-color-error` | `bg-error`, `text-error` | Destructive emphasis; includes `error-container` utilities. |
+| Surface | `--md-sys-color-surface` | `bg-surface` | Primary background. |
+| Surface Containers | `--md-sys-color-surface-container[-low|high|highest]` | `bg-surface-container*` | Density-aware layers for cards, sheets, nav. |
+| Surface Variant | `--md-sys-color-surface-variant` | `bg-surface-variant`, `text-on-surface-variant` | Used for dividers, outlines, subdued containers. |
+| Outline | `--md-sys-color-outline` | `border-outline` | Border + hairline accents. |
+| Inverse Surface | `--md-sys-color-inverse-surface` | `bg-inverse-surface` | Snackbars, banners, dark-on-light flips. |
 
-Example:
-- ✅ `bg-surfaceMuted/50` - Works with RGB format (produces 50% opacity)
-- ❌ Hex format would not support opacity modifiers
+Legacy aliases (`bg`, `surfaceMuted`, `content`, etc.) still resolve to the new roles so existing templates remain stable while new work adopts the Material nomenclature. Switch to the explicit roles whenever you touch a component.
 
-### Color Tokens
+### Typography Scale
 
-All colors are defined as RGB values in `assets/css/input.css`. The semantic tokens stay the same, but their values change based
-on whether the document root is in light mode (`:root`) or dark mode (`.dark`).
+- Utility classes such as `text-display-large`, `text-headline-medium`, `text-body-small`, and `text-label-large` map directly to the Material type ramp.
+- The classes are defined in `@layer utilities` inside `assets/css/input.css` and use the `--md-ref-typeface-brand` / `--md-ref-typeface-plain` tokens for consistent letter spacing, line height, and weight.
+- Use `{% from 'macros/typography.html' import type_specimen %}` when building documentation or templates that must stay aligned with the token set.
 
-**Google Light Theme (`:root`)**
+### Spacing, Shape, and Elevation
 
-- `--bg`: Page background (248 249 250 - #f8f9fa)
-- `--surface`: Card/panel background (255 255 255 - #ffffff)
-- `--surface-muted`: Muted surface background (241 243 244 - #f1f3f4)
-- `--border`: Border color (218 220 224 - #dadce0)
-- `--content`: Primary text color (32 33 36 - #202124)
-- `--content-muted`: Muted text color (95 99 104 - #5f6368)
-- `--primary`: Primary brand color (26 115 232 - #1a73e8)
-- `--primary-contrast`: Primary text on primary background (255 255 255)
-- `--destructive`: Error/destructive color (217 48 37 - #d93025)
-- `--destructive-contrast`: Text on destructive background (255 255 255)
-- `--accent`: Success/accent color (52 168 83 - #34a853)
-- `--accent-contrast`: Text on accent background (15 57 24)
-- `--warning`: Warning color (251 188 5 - #fbbc05)
-- `--warning-contrast`: Text on warning background (60 40 0 - #3c2800)
-- `--ring`: Focus ring color (66 133 244 - #4285f4)
+- Spacing tokens follow a `dp-*` scale (`dp-1` = 4 dp = `0.25rem`, `dp-8` = 48 dp = `3rem`). You can mix them with Tailwind spacing utilities: `p-dp-4`, `gap-dp-2`, etc.
+- Shape tokens expose the Material corner radius scale via Tailwind’s `rounded-*` classes (`rounded-sm` = 8 dp, `rounded-xl` = 28 dp). Semantic utilities such as `.surface` and `.badge` consume the same variables.
+- Elevation tokens appear both as CSS variables (`--md-sys-elevation-level1` … `level5`) and Tailwind shadows (`shadow-elevation-3`). Surface helpers, buttons, and future components should use these levels instead of ad-hoc shadows.
 
-**Google Dark Theme (`.dark`)**
+### Motion Tokens
 
-- `--bg`: Page background (32 33 36 - #202124)
-- `--surface`: Card/panel background (41 42 45 - #292a2d)
-- `--surface-muted`: Muted surface background (60 64 67 - #3c4043)
-- `--border`: Border color (95 99 104 - #5f6368)
-- `--content`: Primary text color (232 234 237 - #e8eaed)
-- `--content-muted`: Muted text color (189 193 198 - #bdc1c6)
-- `--primary`: Primary brand color (138 180 248 - #8ab4f8)
-- `--primary-contrast`: Primary text on primary background (32 33 36 - #202124)
-- `--destructive`: Error/destructive color (242 139 130 - #f28b82)
-- `--destructive-contrast`: Text on destructive background (32 33 36 - #202124)
-- `--accent`: Success/accent color (129 201 149 - #81c995)
-- `--accent-contrast`: Text on accent background (32 33 36 - #202124)
-- `--warning`: Warning color (253 214 99 - #fdd663)
-- `--warning-contrast`: Text on warning background (32 33 36 - #202124)
-- `--ring`: Focus ring color (138 180 248 - #8ab4f8)
+- Durations (`--md-sys-motion-duration-short1` … `long4`) and easing curves (`--md-sys-motion-easing-standard`, `--md-sys-motion-easing-emphasized`, etc.) are available as Tailwind transition utilities (`duration-motion-short-3`, `ease-motion-emphasized`).
+- `static/js/motion.js` exports `window.materialMotion` which Alpine components can call to apply standardized enter/exit choreography.
 
-### Token Naming Convention
+### How Tailwind Consumes the Tokens
 
-**Tailwind Utility Classes:**
-- Always use the `bg-` prefix when using Tailwind utilities (e.g., `bg-surface-muted`, not `surface-muted`)
-- Use kebab-case: `bg-surface-muted` (recommended)
-- CamelCase also available: `bg-surfaceMuted` (for consistency with existing code)
-- Both formats support opacity modifiers: `bg-surface-muted/50` or `bg-surfaceMuted/50`
-
-**Semantic Utility Classes:**
-- Direct utility classes like `.surface` and `.surface-muted` are available for use in templates
-- These are defined in `@layer components` in `assets/css/input.css`
-
-**Examples:**
-```html
-<!-- ✅ Correct: Using Tailwind utility with bg- prefix -->
-<div class="bg-surface-muted rounded-xl p-4">Content</div>
-
-<!-- ✅ Also correct: Using semantic utility class -->
-<div class="surface-muted rounded-xl p-4">Content</div>
-
-<!-- ✅ Correct: With opacity modifier -->
-<div class="bg-surfaceMuted/50 hover:bg-surfaceMuted/80">Content</div>
-
-<!-- ❌ Incorrect: Missing bg- prefix in Tailwind utility -->
-<div class="surface-muted rounded-xl p-4">Content</div>
-```
-
-### Spacing Tokens
-
-Standard Tailwind spacing scale (0.25rem increments)
-
-### Radius Tokens
-
-- `--radius-xs`: 0.25rem
-- `--radius-sm`: 0.375rem
-- `--radius-md`: 0.5rem
-- `--radius-lg`: 0.75rem
-
-### Shadow Tokens
-
-- `--shadow-sm`: Small shadow (0 1px 2px 0 rgb(0 0 0 / 0.2))
-- `--shadow-md`: Medium shadow (0 4px 6px -1px rgb(0 0 0 / 0.25))
-- `--shadow-lg`: Large shadow (0 10px 15px -3px rgb(0 0 0 / 0.3))
-
-### Typography Tokens
-
-- `--font-sans`: System sans-serif font stack
-- `--font-mono`: System monospace font stack
-
-### Using Tokens in Tailwind Config
-
-Tokens are mapped in `tailwind.config.js` to enable first-class Tailwind utility usage:
+`tailwind.config.js` reads the custom properties via helper functions so every utility keeps opacity support:
 
 ```js
-colors: {
-  bg: 'rgb(var(--bg))',
-  surface: 'rgb(var(--surface))',
-  'surface-muted': 'rgb(var(--surface-muted) / <alpha-value>)',
-  surfaceMuted: 'rgb(var(--surface-muted) / <alpha-value>)',
-  // ... etc
-}
+const colorVar = (token) => `rgb(var(--${token}) / <alpha-value>)`;
+
+module.exports = {
+  theme: {
+    extend: {
+      colors: {
+        primary: colorVar('md-sys-color-primary'),
+        'on-primary': colorVar('md-sys-color-on-primary'),
+        surface: colorVar('md-sys-color-surface'),
+        // ...see config for all roles
+      },
+    },
+  },
+};
 ```
 
-The `<alpha-value>` placeholder allows Tailwind to inject opacity values when using modifiers like `/50`.
+Use these utilities (`bg-surface-container`, `text-on-surface-variant`, `shadow-elevation-2`, etc.) in templates instead of hard-coded values to stay on the Material track.
 
 ---
 

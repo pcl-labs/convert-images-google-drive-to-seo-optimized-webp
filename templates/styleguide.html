@@ -10,6 +10,7 @@
 {% from 'components/overlays/modal.html' import modal %}
 {% from 'components/elements/dropdown.html' import dropdown %}
 {% from 'components/layout/page.html' import page_container, page_header %}
+{% from 'macros/typography.html' import type_specimen %}
 
 {% call page_container(class='space-y-12') %}
   {{ page_header('Design System Styleguide', 'Visual reference for all components and design tokens') }}
@@ -20,87 +21,97 @@
     {% call card(title='Colors') %}
       <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         <div>
-          <div class="text-sm font-medium text-contentMuted mb-2">Backgrounds</div>
+          <div class="text-sm font-medium text-on-surface-variant mb-2">Surfaces</div>
           <div class="space-y-2">
             <div class="flex items-center gap-3">
-              <div class="w-16 h-16 rounded-md bg-bg border border-border"></div>
+              <div class="w-16 h-16 rounded-md bg-surface border border-outline-variant"></div>
               <div>
-                <div class="text-sm text-content font-medium">bg</div>
-                <div class="text-xs text-contentMuted font-mono">--bg</div>
+                <div class="text-sm text-on-surface font-medium">Surface</div>
+                <div class="text-xs text-on-surface-variant font-mono">--md-sys-color-surface</div>
               </div>
             </div>
             <div class="flex items-center gap-3">
-              <div class="w-16 h-16 rounded-md bg-surface border border-border"></div>
+              <div class="w-16 h-16 rounded-md bg-surface-container border border-outline-variant"></div>
               <div>
-                <div class="text-sm text-content font-medium">surface</div>
-                <div class="text-xs text-contentMuted font-mono">--surface</div>
+                <div class="text-sm text-on-surface font-medium">Surface container</div>
+                <div class="text-xs text-on-surface-variant font-mono">--md-sys-color-surface-container</div>
               </div>
             </div>
             <div class="flex items-center gap-3">
-              <div class="w-16 h-16 rounded-md bg-surfaceMuted border border-border"></div>
+              <div class="w-16 h-16 rounded-md bg-surface-variant border border-outline-variant"></div>
               <div>
-                <div class="text-sm text-content font-medium">surface-muted</div>
-                <div class="text-xs text-contentMuted font-mono">--surface-muted</div>
+                <div class="text-sm text-on-surface font-medium">Surface variant</div>
+                <div class="text-xs text-on-surface-variant font-mono">--md-sys-color-surface-variant</div>
               </div>
             </div>
           </div>
         </div>
         <div>
-          <div class="text-sm font-medium text-contentMuted mb-2">Text</div>
+          <div class="text-sm font-medium text-on-surface-variant mb-2">Content</div>
           <div class="space-y-2">
             <div class="flex items-center gap-3">
-              <div class="w-16 h-16 rounded-md bg-surfaceMuted border border-border flex items-center justify-center">
-                <span class="text-content">Aa</span>
+              <div class="w-16 h-16 rounded-md bg-surface-container-high border border-outline-variant flex items-center justify-center">
+                <span class="text-on-surface">Aa</span>
               </div>
               <div>
-                <div class="text-sm text-content font-medium">content</div>
-                <div class="text-xs text-contentMuted font-mono">--content</div>
+                <div class="text-sm text-on-surface font-medium">On Surface</div>
+                <div class="text-xs text-on-surface-variant font-mono">--md-sys-color-on-surface</div>
               </div>
             </div>
             <div class="flex items-center gap-3">
-              <div class="w-16 h-16 rounded-md bg-surfaceMuted border border-border flex items-center justify-center">
-                <span class="text-contentMuted">Aa</span>
+              <div class="w-16 h-16 rounded-md bg-surface-container-high border border-outline-variant flex items-center justify-center">
+                <span class="text-on-surface-variant">Aa</span>
               </div>
               <div>
-                <div class="text-sm text-content font-medium">content-muted</div>
-                <div class="text-xs text-contentMuted font-mono">--content-muted</div>
+                <div class="text-sm text-on-surface font-medium">On Surface Variant</div>
+                <div class="text-xs text-on-surface-variant font-mono">--md-sys-color-on-surface-variant</div>
               </div>
             </div>
           </div>
         </div>
         <div>
-          <div class="text-sm font-medium text-contentMuted mb-2">Brand</div>
+          <div class="text-sm font-medium text-on-surface-variant mb-2">Brand Roles</div>
           <div class="space-y-2">
             <div class="flex items-center gap-3">
-              <div class="w-16 h-16 rounded-md bg-primary border border-border"></div>
+              <div class="w-16 h-16 rounded-md bg-primary border border-outline-variant"></div>
               <div>
-                <div class="text-sm text-content font-medium">primary</div>
-                <div class="text-xs text-contentMuted font-mono">--primary</div>
+                <div class="text-sm text-on-surface font-medium">Primary</div>
+                <div class="text-xs text-on-surface-variant font-mono">--md-sys-color-primary</div>
               </div>
             </div>
             <div class="flex items-center gap-3">
-              <div class="w-16 h-16 rounded-md bg-destructive border border-border"></div>
+              <div class="w-16 h-16 rounded-md bg-primary-container border border-outline-variant"></div>
               <div>
-                <div class="text-sm text-content font-medium">destructive</div>
-                <div class="text-xs text-contentMuted font-mono">--destructive</div>
+                <div class="text-sm text-on-surface font-medium">Primary container</div>
+                <div class="text-xs text-on-surface-variant font-mono">--md-sys-color-primary-container</div>
               </div>
             </div>
             <div class="flex items-center gap-3">
-              <div class="w-16 h-16 rounded-md bg-accent border border-border"></div>
+              <div class="w-16 h-16 rounded-md bg-tertiary border border-outline-variant"></div>
               <div>
-                <div class="text-sm text-content font-medium">accent</div>
-                <div class="text-xs text-contentMuted font-mono">--accent</div>
+                <div class="text-sm text-on-surface font-medium">Tertiary</div>
+                <div class="text-xs text-on-surface-variant font-mono">--md-sys-color-tertiary</div>
               </div>
             </div>
             <div class="flex items-center gap-3">
-              <div class="w-16 h-16 rounded-md bg-warning border border-border"></div>
+              <div class="w-16 h-16 rounded-md bg-error border border-outline-variant"></div>
               <div>
-                <div class="text-sm text-content font-medium">warning</div>
-                <div class="text-xs text-contentMuted font-mono">--warning</div>
+                <div class="text-sm text-on-surface font-medium">Error</div>
+                <div class="text-xs text-on-surface-variant font-mono">--md-sys-color-error</div>
               </div>
             </div>
           </div>
         </div>
+      </div>
+    {% endcall %}
+    {% call card(title='Typography Scale') %}
+      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        {{ type_specimen('display-large', 'Display Large / 57px') }}
+        {{ type_specimen('headline-large', 'Headline Large / 32px') }}
+        {{ type_specimen('title-large', 'Title Large / 22px') }}
+        {{ type_specimen('body-large', 'Body Large / 16px') }}
+        {{ type_specimen('body-medium', 'Body Medium / 14px') }}
+        {{ type_specimen('label-large', 'Label Large / 14px') }}
       </div>
     {% endcall %}
   </section>
