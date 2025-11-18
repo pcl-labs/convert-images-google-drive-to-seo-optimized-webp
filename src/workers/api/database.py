@@ -91,6 +91,24 @@ class Database:
             cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_id ON users(google_id)")
             if 'preferences' not in user_cols:
                 cur.execute("ALTER TABLE users ADD COLUMN preferences TEXT")
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_sessions (
+                    session_id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    expires_at TEXT NOT NULL,
+                    last_notification_id TEXT,
+                    ip_address TEXT,
+                    user_agent TEXT,
+                    revoked_at TEXT,
+                    extra TEXT,
+                    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+                )
+                """
+            )
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_user_sessions_user ON user_sessions(user_id, created_at DESC)")
             # Ensure documents table
             cur.execute(
                 """
@@ -461,6 +479,16 @@ class Database:
         except Exception as e:
             logger.error(f"SQLite exec batch failed: {e}", exc_info=True)
             raise DatabaseError(f"Database operation failed: {str(e)}")
+
+
+def _serialize_timestamp(value: datetime | str | None) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc).isoformat()
 
 
 # User operations
@@ -1690,6 +1718,35 @@ async def ensure_notifications_schema(db: Database) -> None:
     await db.batch(stmts)
 
 
+async def ensure_sessions_schema(db: Database) -> None:
+    """Ensure the user_sessions table exists for session tracking."""
+    stmts = [
+        (
+            """
+            CREATE TABLE IF NOT EXISTS user_sessions (
+                session_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+                expires_at TEXT NOT NULL,
+                last_notification_id TEXT,
+                ip_address TEXT,
+                user_agent TEXT,
+                revoked_at TEXT,
+                extra TEXT,
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+            )
+            """,
+            (),
+        ),
+        (
+            "CREATE INDEX IF NOT EXISTS idx_user_sessions_user ON user_sessions(user_id, created_at DESC)",
+            (),
+        ),
+    ]
+    await db.batch(stmts)
+
+
 async def emit_event(db: Database, evt_id: str, type_: str, aggregate_type: str, aggregate_id: str, payload: dict | None) -> None:
     await db.execute(
         "INSERT OR IGNORE INTO events (id, type, aggregate_type, aggregate_id, payload, occurred_at) VALUES (?, ?, ?, ?, ?, datetime('now'))",
@@ -1841,6 +1898,83 @@ async def mark_notification_seen(db: Database, user_id: str, notification_id: st
         "UPDATE notification_deliveries SET seen_at = datetime('now') WHERE user_id = ? AND notification_id = ?",
         (user_id, notification_id),
     )
+
+
+async def create_user_session(
+    db: Database,
+    session_id: str,
+    user_id: str,
+    expires_at: datetime,
+    *,
+    ip_address: Optional[str] = None,
+    user_agent: Optional[str] = None,
+    extra: Optional[Dict[str, Any]] = None,
+) -> None:
+    now = datetime.now(timezone.utc)
+    await db.execute(
+        """
+        INSERT OR REPLACE INTO user_sessions (session_id, user_id, created_at, last_seen_at, expires_at, ip_address, user_agent, extra)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            session_id,
+            user_id,
+            _serialize_timestamp(now),
+            _serialize_timestamp(now),
+            _serialize_timestamp(expires_at),
+            ip_address,
+            user_agent,
+            json.dumps(extra or {}),
+        ),
+    )
+
+
+async def get_user_session(db: Database, session_id: str) -> Optional[Dict[str, Any]]:
+    row = await db.execute(
+        "SELECT session_id, user_id, created_at, last_seen_at, expires_at, last_notification_id, ip_address, user_agent, revoked_at, extra FROM user_sessions WHERE session_id = ?",
+        (session_id,),
+    )
+    if not row:
+        return None
+    return dict(row)
+
+
+async def touch_user_session(
+    db: Database,
+    session_id: str,
+    *,
+    last_seen_at: datetime | str | None = None,
+    expires_at: datetime | str | None = None,
+    last_notification_id: Optional[str] = None,
+    extra: Optional[Dict[str, Any]] = None,
+    revoked_at: datetime | str | None = None,
+) -> None:
+    updates: list[str] = []
+    params: list[Any] = []
+    if last_seen_at is not None:
+        updates.append("last_seen_at = ?")
+        params.append(_serialize_timestamp(last_seen_at))
+    if expires_at is not None:
+        updates.append("expires_at = ?")
+        params.append(_serialize_timestamp(expires_at))
+    if last_notification_id is not None:
+        updates.append("last_notification_id = ?")
+        params.append(last_notification_id)
+    if extra is not None:
+        updates.append("extra = ?")
+        params.append(json.dumps(extra))
+    if revoked_at is not None:
+        updates.append("revoked_at = ?")
+        params.append(_serialize_timestamp(revoked_at))
+    if not updates:
+        return
+    params.append(session_id)
+    query = f"UPDATE user_sessions SET {', '.join(updates)} WHERE session_id = ?"
+    await db.execute(query, tuple(params))
+
+
+async def delete_user_session(db: Database, session_id: str) -> None:
+    await db.execute("DELETE FROM user_sessions WHERE session_id = ?", (session_id,))
 
 
 async def dismiss_notification(db: Database, user_id: str, notification_id: str) -> None:
