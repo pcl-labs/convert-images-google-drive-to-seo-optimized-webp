@@ -142,25 +142,10 @@ async def _plan_with_openai(
     if len(trimmed_text) > 12000:
         trimmed_text = trimmed_text[:12000]
 
-    schema_description = {
-        "content_type": content_type,
-        "intent": "educate",
-        "audience": "general readers",
-        "seo": {
-            "title": "",
-            "description": "",
-            "keywords": [],
-        },
-        "sections": [],
-        "cta": {
-            "summary": "",
-            "action": "",
-        },
-    }
     user_prompt = textwrap.dedent(
         f"""
         You are Quill's planning system. Given a transcript, create a content plan for {content_type}.
-        Return JSON matching this schema:
+        Return JSON matching this schema shape (all fields are required, but you should populate them from the transcript):
         {{
           "intent": "why the article exists",
           "audience": "who it targets",
@@ -177,6 +162,8 @@ async def _plan_with_openai(
           ],
           "cta": {{"summary": "CTA wrap-up sentence", "action": "suggested action"}}
         }}
+
+        Content type: {content_type}
 
         Transcript:
         {trimmed_text}

@@ -54,7 +54,7 @@ def test_build_sync_response_missing_body():
         _build_sync_response(job_row, ContentMode.markdown, ContentFormat.mdx, "doc-1")
 
 
-def test_build_job_links_includes_stream_and_version():
+def test_build_job_links_includes_version_links():
     now = datetime.now(timezone.utc)
     job = JobStatus(
         job_id="job-123",

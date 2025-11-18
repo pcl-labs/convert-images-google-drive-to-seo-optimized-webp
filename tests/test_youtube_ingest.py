@@ -97,7 +97,7 @@ def test_start_ingest_youtube_job_stores_metadata(monkeypatch):
                     "chapters": [
                         {"title": "Intro", "timestamp": "00:00", "start_seconds": 0},
                         {"title": "Deep dive", "timestamp": "01:15", "start_seconds": 75},
-                        {"title": "Next steps", "timestamp": "02:40", "start_seconds": 160},
+                        {"title": "Next steps", "timestamp": "02:30", "start_seconds": 150},
                     ],
                 },
             }
@@ -484,59 +484,66 @@ def test_autopilot_helper_creates_generate_job(monkeypatch):
             document_id=document_id,
         )
 
-        async def _fake_generate(
-            db,
-            job_id,
-            user_id,
-            document_id,
-            options=None,
-            pipeline_job_id=None,
-        ):
-            await update_job_status(db, job_id, "completed")
+        try:
+            async def _fake_generate(
+                db,
+                job_id,
+                user_id,
+                document_id,
+                options=None,
+                pipeline_job_id=None,
+            ):
+                await update_job_status(db, job_id, "completed")
 
-        monkeypatch.setattr("src.workers.consumer.process_generate_blog_job", _fake_generate)
-        recorded_events: list[str] = []
+            monkeypatch.setattr("src.workers.consumer.process_generate_blog_job", _fake_generate)
+            recorded_events: list[str] = []
 
-        async def _fake_pipeline_event(
-            db_arg,
-            user_arg,
-            job_arg,
-            *,
-            stage,
-            status,
-            message,
-            pipeline_job_id=None,
-            data=None,
-            notify_level=None,
-            notify_text=None,
-            notify_context=None,
-        ):
-            recorded_events.append(stage)
+            async def _fake_pipeline_event(
+                db_arg,
+                user_arg,
+                job_arg,
+                *,
+                stage,
+                status,
+                message,
+                pipeline_job_id=None,
+                data=None,
+                notify_level=None,
+                notify_text=None,
+                notify_context=None,
+            ):
+                recorded_events.append(stage)
 
-        monkeypatch.setattr("src.workers.consumer._pipeline_progress_event", _fake_pipeline_event)
+            monkeypatch.setattr("src.workers.consumer._pipeline_progress_event", _fake_pipeline_event)
 
-        autopilot_options = {"tone": "serious", "content_type": "faq"}
-        await _maybe_trigger_generate_blog_pipeline(
-            db,
-            user_id,
-            document_id,
-            pipeline_job_id,
-            None,
-            autopilot_options=autopilot_options,
-        )
+            autopilot_options = {"tone": "serious", "content_type": "faq"}
+            await _maybe_trigger_generate_blog_pipeline(
+                db,
+                user_id,
+                document_id,
+                pipeline_job_id,
+                None,  # parent_job_id: no parent job
+                autopilot_options=autopilot_options,
+            )
 
-        rows = await db.execute_all(
-            "SELECT * FROM jobs WHERE job_type = 'generate_blog' AND document_id = ? ORDER BY created_at DESC",
-            (document_id,),
-        )
-        assert rows
-        job = dict(rows[0])
-        payload_data = _parse_metadata(job.get("payload"))
-        assert payload_data.get("pipeline_job_id") == pipeline_job_id
-        options_payload = payload_data.get("options") or {}
-        assert options_payload.get("tone") == "serious"
-        assert options_payload.get("content_type") == "faq"
-        assert "generate_blog.enqueue" in recorded_events
+            rows = await db.execute_all(
+                "SELECT * FROM jobs WHERE job_type = 'generate_blog' AND document_id = ? ORDER BY created_at DESC",
+                (document_id,),
+            )
+            assert rows
+            job = dict(rows[0])
+            payload_data = _parse_metadata(job.get("payload"))
+            assert payload_data.get("pipeline_job_id") == pipeline_job_id
+            options_payload = payload_data.get("options") or {}
+            assert options_payload.get("tone") == "serious"
+            assert options_payload.get("content_type") == "faq"
+            assert "generate_blog.enqueue" in recorded_events
+        finally:
+            # best-effort cleanup of jobs and document created by this test
+            await db.execute("DELETE FROM jobs WHERE document_id = ?", (document_id,))
+            await db.execute("DELETE FROM jobs WHERE job_id = ?", (pipeline_job_id,))
+            await db.execute("DELETE FROM documents WHERE document_id = ?", (document_id,))
+            await db.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
 
     asyncio.run(_run())
 

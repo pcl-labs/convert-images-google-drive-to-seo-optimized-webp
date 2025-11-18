@@ -334,31 +334,6 @@ async def get_job_detail(job_id: str, user: dict = Depends(get_current_user)):
     links = _build_job_links(job_model)
     return JobDetailResponse(job=job_model, links=links)
 
-
-async def _wait_for_job_completion(db, user_id: str, job_id: str, timeout: float = 120.0) -> Dict[str, Any]:
-    deadline = asyncio.get_event_loop().time() + timeout
-    while True:
-        job_row = await get_job(db, job_id, user_id)
-        if job_row and job_row.get("status") in {
-            JobStatusEnum.COMPLETED.value,
-            JobStatusEnum.FAILED.value,
-            JobStatusEnum.CANCELLED.value,
-        }:
-            return dict(job_row)
-        if asyncio.get_event_loop().time() >= deadline:
-            raise HTTPException(
-                status.HTTP_504_GATEWAY_TIMEOUT,
-                detail=f"Job {job_id} did not complete within {int(timeout)} seconds",
-            )
-        await asyncio.sleep(0.5)
-
-
-def _resolve_format(mode: ContentMode, requested: Optional[ContentFormat]) -> ContentFormat:
-    if requested:
-        return requested
-    return ContentFormat.json if mode == ContentMode.structured else ContentFormat.mdx
-
-
 def _job_response(
     mode: ContentMode,
     fmt: ContentFormat,
@@ -376,48 +351,6 @@ def _job_response(
         status=job_status.status,
         job_type=job_type,
         detail=detail,
-    )
-
-
-def _build_sync_response(
-    job_row: Dict[str, Any],
-    mode: ContentMode,
-    fmt: ContentFormat,
-    document_id: str,
-) -> ContentResponse:
-    output = _safe_json(job_row.get("output"))
-    if not isinstance(output, dict):
-        output = {}
-    version_id = output.get("version_id")
-    if not version_id:
-        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Job output missing version information")
-    if mode == ContentMode.structured:
-        if fmt != ContentFormat.json:
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Structured mode only supports JSON format")
-        return StructuredContentResponse(
-            document_id=document_id,
-            version_id=version_id,
-            content=output,
-        )
-    if fmt == ContentFormat.json:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Markdown mode requires mdx or html format")
-    body_block = output.get("body") or {}
-    if fmt == ContentFormat.mdx:
-        body = body_block.get("mdx")
-        media_type = "text/plain; charset=utf-8"
-    else:
-        body = body_block.get("html")
-        media_type = "text/html; charset=utf-8"
-    if not body:
-        raise HTTPException(
-            status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Blog output missing {fmt.value.upper()} body",
-        )
-    return MarkdownContentResponse(
-        format=fmt,
-        document_id=document_id,
-        version_id=version_id,
-        body=body,
     )
 
 

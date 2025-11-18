@@ -9,10 +9,37 @@
           <p class="text-sm font-semibold text-content">{{ job.kind }}</p>
           <p class="text-xs text-contentMuted">Created {{ job.created_at }}</p>
           <div class="flex flex-wrap gap-3 text-[11px] text-contentMuted">
-            <a href="/v1/jobs/{{ job.id }}" target="_blank" rel="noopener" class="text-primary hover:text-primary/80">Job API</a>
-            <a href="/api/pipelines/stream?job_id={{ job.id }}" target="_blank" rel="noopener" class="text-primary hover:text-primary/80">Stream</a>
+            <a
+              href="/v1/jobs/{{ job.id }}"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="text-primary hover:text-primary/80"
+              aria-label="Job API (opens in new tab)"
+            >
+              Job API
+              <span class="sr-only">(opens in new tab)</span>
+            </a>
+            <a
+              href="/api/pipelines/stream?job_id={{ job.id }}"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="text-primary hover:text-primary/80"
+              aria-label="Stream (opens in new tab)"
+            >
+              Stream
+              <span class="sr-only">(opens in new tab)</span>
+            </a>
             {% if job.document_id %}
-              <a href="/v1/documents/{{ job.document_id }}" target="_blank" rel="noopener" class="text-primary hover:text-primary/80">Document API</a>
+              <a
+                href="/v1/documents/{{ job.document_id }}"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="text-primary hover:text-primary/80"
+                aria-label="Document API (opens in new tab)"
+              >
+                Document API
+                <span class="sr-only">(opens in new tab)</span>
+              </a>
             {% endif %}
           </div>
         </div>
