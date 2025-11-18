@@ -107,6 +107,7 @@ class Settings:
     cors_origins: List[str] = field(default_factory=lambda: ["http://localhost:8000"])
     transcript_langs: List[str] = field(default_factory=lambda: ["en"])
     enable_drive_pipeline: bool = True
+    auto_generate_after_ingest: bool = True
     drive_webhook_url: Optional[str] = None
     drive_webhook_secret: Optional[str] = None
     drive_watch_renewal_window_minutes: int = 60
@@ -148,6 +149,7 @@ class Settings:
         self.drive_watch_renewal_window_minutes = _int(self.drive_watch_renewal_window_minutes, 60)
         self.openai_blog_temperature = _float(self.openai_blog_temperature, 0.6)
         self.openai_blog_max_output_tokens = _int(self.openai_blog_max_output_tokens, 2200)
+        self.auto_generate_after_ingest = _bool(self.auto_generate_after_ingest)
         if not self.jwt_secret_key:
             raise ValueError("JWT_SECRET_KEY is required")
         if self.environment == "production" and not self.encryption_key:
