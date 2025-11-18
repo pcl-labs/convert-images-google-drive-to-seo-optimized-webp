@@ -11,3 +11,4 @@ passlib[bcrypt]
 httpx
 pydantic-settings
 pytest
+openai>=1.30.0

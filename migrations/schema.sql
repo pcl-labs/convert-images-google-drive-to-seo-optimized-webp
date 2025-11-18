@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS users (
     github_id TEXT UNIQUE,
     google_id TEXT UNIQUE,
     email TEXT NOT NULL UNIQUE,
+    preferences TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -223,7 +224,13 @@ BEFORE INSERT ON pipeline_events
 WHEN NEW.event_type NOT IN (
     'ingest_youtube',
     'drive_workspace',
-    'drive_sync'
+    'drive_sync',
+    'optimize_drive',
+    'ingest_drive',
+    'generate_blog',
+    'outline.generate',
+    'chapters.organize',
+    'blog.compose'
 )
 BEGIN
     SELECT RAISE(ABORT, 'Invalid event_type value for pipeline_events.');
@@ -234,7 +241,13 @@ BEFORE UPDATE ON pipeline_events
 WHEN NEW.event_type NOT IN (
     'ingest_youtube',
     'drive_workspace',
-    'drive_sync'
+    'drive_sync',
+    'optimize_drive',
+    'ingest_drive',
+    'generate_blog',
+    'outline.generate',
+    'chapters.organize',
+    'blog.compose'
 )
 BEGIN
     SELECT RAISE(ABORT, 'Invalid event_type value for pipeline_events.');

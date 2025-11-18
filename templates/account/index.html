@@ -151,6 +151,64 @@
 </script>
 {% endcall %}
 
+{% call card(title='AI defaults') %}
+<div class="space-y-4">
+  <p class="text-sm text-contentMuted">These defaults pre-populate YouTube → blog jobs and can fall back to your settings when API calls omit options.</p>
+  {% if ai_message %}
+    <p class="text-xs text-primary" role="status">{{ ai_message }}</p>
+  {% elif ai_error %}
+    <p class="text-xs text-destructive" role="status">{{ ai_error }}</p>
+  {% endif %}
+  <form method="post" action="/dashboard/account/ai" class="space-y-3">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+    <div class="grid gap-3 sm:grid-cols-2">
+      <label class="space-y-1 text-sm text-content">
+        <span class="text-xs font-semibold uppercase tracking-wide text-contentMuted">Default tone</span>
+        <input type="text" name="tone" value="{{ ai_preferences.tone }}" placeholder="e.g. authoritative"
+               class="w-full rounded-md border border-border bg-surface px-3 py-2 text-sm text-content focus:border-primary focus:ring-1 focus:ring-primary" />
+        <span class="text-xs text-contentMuted">Used when no tone is specified.</span>
+      </label>
+      <label class="space-y-1 text-sm text-content">
+        <span class="text-xs font-semibold uppercase tracking-wide text-contentMuted">Model</span>
+        <select name="model"
+                class="w-full rounded-md border border-border bg-surface px-3 py-2 text-sm text-content focus:border-primary focus:ring-1 focus:ring-primary">
+          {% for option in ai_model_choices %}
+            <option value="{{ option.value }}" {% if option.value == ai_preferences.model %}selected{% endif %}>
+              {{ option.label }}
+            </option>
+          {% endfor %}
+        </select>
+        <span class="text-xs text-contentMuted">OpenAI Responses API models.</span>
+      </label>
+      <label class="space-y-1 text-sm text-content">
+        <span class="text-xs font-semibold uppercase tracking-wide text-contentMuted">Max sections</span>
+        <input type="number" name="max_sections" min="1" max="12" value="{{ ai_preferences.max_sections }}"
+               class="w-full rounded-md border border-border bg-surface px-3 py-2 text-sm text-content focus:border-primary focus:ring-1 focus:ring-primary" />
+      </label>
+      <label class="space-y-1 text-sm text-content">
+        <span class="text-xs font-semibold uppercase tracking-wide text-contentMuted">Target chapters</span>
+        <input type="number" name="target_chapters" min="1" max="12" value="{{ ai_preferences.target_chapters }}"
+               class="w-full rounded-md border border-border bg-surface px-3 py-2 text-sm text-content focus:border-primary focus:ring-1 focus:ring-primary" />
+      </label>
+      <label class="space-y-1 text-sm text-content">
+        <span class="text-xs font-semibold uppercase tracking-wide text-contentMuted">Temperature</span>
+        <input type="number" step="0.1" min="0" max="2" name="temperature" value="{{ '%.1f'|format(ai_preferences.temperature) }}"
+               class="w-full rounded-md border border-border bg-surface px-3 py-2 text-sm text-content focus:border-primary focus:ring-1 focus:ring-primary" />
+        <span class="text-xs text-contentMuted">Higher values add more creativity.</span>
+      </label>
+      <label class="flex items-center gap-2 text-sm text-content pt-6">
+        <input type="checkbox" name="include_images" value="1" {% if ai_preferences.include_images %}checked{% endif %}
+               class="h-4 w-4 rounded border-border text-primary focus:ring-primary">
+        <span class="text-xs text-contentMuted uppercase tracking-wide">Generate image prompts</span>
+      </label>
+    </div>
+    <div class="flex justify-end">
+      {{ button('Save defaults', variant='primary', attrs='type="submit"', extra_classes='inline-flex items-center gap-2') }}
+    </div>
+  </form>
+</div>
+{% endcall %}
+
 {% call card(title='Danger zone') %}
 <div class="space-y-3">
   <div class="space-y-1">

@@ -26,6 +26,13 @@ def _int(value: Any, default: int) -> int:
         return default
 
 
+def _float(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _list(value: Any, *, default: List[str], sep: str = ",") -> List[str]:
     if isinstance(value, list):
         return [str(item).strip() for item in value if str(item).strip()]
@@ -100,6 +107,13 @@ class Settings:
     drive_webhook_secret: Optional[str] = None
     drive_watch_renewal_window_minutes: int = 60
     static_files_dir: str = "./static"
+    openai_api_key: Optional[str] = None
+    openai_api_base: Optional[str] = None
+    # Default OpenAI blog model (GPT-5.1 is the current target model).
+    # See https://platform.openai.com/docs/models/gpt-5.1
+    openai_blog_model: str = "gpt-5.1"
+    openai_blog_temperature: float = 0.6
+    openai_blog_max_output_tokens: int = 2200
 
     def __post_init__(self) -> None:
         self.environment = (self.environment or "development").lower()
@@ -118,6 +132,8 @@ class Settings:
         self.cors_origins = _list(self.cors_origins, default=["http://localhost:8000"])
         self.transcript_langs = _list(self.transcript_langs, default=["en"])
         self.drive_watch_renewal_window_minutes = _int(self.drive_watch_renewal_window_minutes, 60)
+        self.openai_blog_temperature = _float(self.openai_blog_temperature, 0.6)
+        self.openai_blog_max_output_tokens = _int(self.openai_blog_max_output_tokens, 2200)
         if not self.jwt_secret_key:
             raise ValueError("JWT_SECRET_KEY is required")
         if self.environment == "production" and not self.encryption_key:

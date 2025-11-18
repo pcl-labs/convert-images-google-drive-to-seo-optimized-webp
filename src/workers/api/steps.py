@@ -258,20 +258,11 @@ async def transcript_fetch(request: Request, payload: TranscriptFetchRequest, us
     return response_body
 
 
-@router.post("/outline.generate")
-async def outline_generate(request: Request, payload: OutlineGenerateRequest, user: dict = Depends(get_current_user)):
-    db = ensure_db()
-    key = _require_idempotency_key(request)
-    body = payload.model_dump()
-    hash_val = _payload_hash(body)
-    maybe_cached = await _check_idempotency(db, user["user_id"], key, hash_val)
-    if maybe_cached:
-        return maybe_cached
-
+async def run_outline_generate(db, user_id: str, payload: OutlineGenerateRequest) -> Dict[str, Any]:
     source_text = payload.text
     doc: Optional[Dict[str, Any]] = None
     if payload.document_id:
-        doc = await _load_document_text(db, user["user_id"], payload.document_id)
+        doc = await _load_document_text(db, user_id, payload.document_id)
         source_text = source_text or (doc.get("raw_text") or "")
     # Validate non-empty input
     if not source_text or not str(source_text).strip():
@@ -284,43 +275,56 @@ async def outline_generate(request: Request, payload: OutlineGenerateRequest, us
         max_sections = 5
     # Run in a worker thread to avoid blocking event loop
     outline = await asyncio.to_thread(generate_outline, source_text, max_sections)
-    outline_text = _outline_to_text(outline)
+    outline_text_blocks = []
+    for item in outline:
+        title = (item or {}).get("title")
+        summary = (item or {}).get("summary")
+        if not title and not summary:
+            continue
+        if title:
+            outline_text_blocks.append(f"{title}")
+        if summary:
+            outline_text_blocks.append(summary.strip())
+    outline_text = "\n\n".join(outline_text_blocks).strip()
     if payload.document_id and doc:
         merged_meta = _dict_from_field(doc.get("metadata"))
         merged_meta["latest_outline"] = outline
         merged_meta["drive_stage"] = "outline"
-        updates = {"raw_text": outline_text, "metadata": merged_meta}
+        updates = {
+            "metadata": merged_meta,
+            "drive_text": outline_text,
+        }
         await update_document(db, payload.document_id, updates)
-        updated_doc = await _load_document_text(db, user["user_id"], payload.document_id)
+        updated_doc = await _load_document_text(db, user_id, payload.document_id)
         try:
-            await _sync_drive_doc_after_persist(db, user["user_id"], updated_doc, updates)
+            await _sync_drive_doc_after_persist(db, user_id, updated_doc, updates)
         except DRIVE_SYNC_EXCEPTIONS as exc:
             logger.exception(
                 "drive_sync_outline_failed",
-                extra={"document_id": payload.document_id, "user_id": user["user_id"]},
+                extra={"document_id": payload.document_id, "user_id": user_id},
                 exc_info=True,
             )
             await _schedule_drive_reconcile_job(
                 db,
                 payload.document_id,
-                user["user_id"],
+                user_id,
                 updated_doc.get("drive_file_id"),
                 metadata_snapshot=_dict_from_field(updated_doc.get("metadata")),
             )
         except Exception:
             raise
-    response_body = {"outline": outline, "document_id": payload.document_id, "text": outline_text}
+    response_body: Dict[str, Any] = {"outline": outline, "document_id": payload.document_id, "text": outline_text}
     if payload.job_id:
         await record_usage_event(
             db,
-            user["user_id"],
+            user_id,
             payload.job_id,
             "outline",
             {"sections": len(outline), "chars": len(source_text or "")},
         )
         await _record_step_pipeline_event(
             db,
-            user["user_id"],
+            user_id,
             payload.job_id,
             event_type="outline.generate",
             stage="outline.generate",
@@ -328,6 +332,20 @@ async def outline_generate(request: Request, payload: OutlineGenerateRequest, us
             message="Outline generated",
             document_id=payload.document_id,
         )
+    return response_body
+
+
+@router.post("/outline.generate")
+async def outline_generate(request: Request, payload: OutlineGenerateRequest, user: dict = Depends(get_current_user)):
+    db = ensure_db()
+    key = _require_idempotency_key(request)
+    body = payload.model_dump()
+    hash_val = _payload_hash(body)
+    maybe_cached = await _check_idempotency(db, user["user_id"], key, hash_val)
+    if maybe_cached:
+        return maybe_cached
+
+    response_body = await run_outline_generate(db, user["user_id"], payload)
     await _finalize_idempotency(db, user["user_id"], key, "outline.generate", hash_val, response_body, status.HTTP_200_OK)
     return response_body
 
@@ -395,7 +413,7 @@ async def blog_compose(request: Request, payload: BlogComposeRequest, user: dict
         chapters_task = asyncio.to_thread(organize_chapters, text)
         outline, chapters = await asyncio.gather(outline_task, chapters_task)
     chapters = chapters or [{"title": item.get("title"), "summary": item.get("summary")} for item in (outline or [])]
-    composed = await asyncio.to_thread(compose_blog, chapters, tone=payload.tone)
+    composed = await compose_blog(chapters, tone=payload.tone)
     if payload.document_id:
         # Merge metadata to avoid dropping existing fields
         if doc is None:
