@@ -20,3 +20,8 @@ dependencies = [
 dev = [
     "workers-py>=1.7.0,<1.8.0",
 ]
+
+[tool.pytest.ini_options]
+markers = [
+    "autopilot_enabled: enable autopilot-dependent behavior in tests",
+]

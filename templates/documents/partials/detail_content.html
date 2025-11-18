@@ -87,25 +87,56 @@
   {% include "documents/partials/version_viewer.html" %}
 {% endcall %}
 
+{% set content_plan = document.content_plan %}
+{% set plan_sections = content_plan.sections if content_plan and content_plan.sections else [] %}
+{% set has_plan = plan_sections|length > 0 %}
 {% set has_outline = document.latest_outline and document.latest_outline|length > 0 %}
-{% call card(title='Latest outline') %}
+{% call card(title='Content plan') %}
   <div class="space-y-3">
-    <div class="flex items-center justify-between">
-      <p class="text-sm text-contentMuted">
-        {% if has_outline %}
-          Generated outline mirrored from Quill &rarr; Drive.
-        {% else %}
-          No outline yet—generate one to kick off the AI workflow.
-        {% endif %}
-      </p>
-      <form hx-post="/dashboard/documents/{{ document.id }}/outline/regenerate" hx-target="#doc-flash" hx-swap="innerHTML" class="inline-flex items-center gap-2 text-xs">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <button type="submit" class="inline-flex items-center rounded-full border border-border px-3 py-1 text-content hover:border-primary/70">
-          {{ 'Regenerate outline' if has_outline else 'Generate outline' }}
-        </button>
-      </form>
-    </div>
-    {% if has_outline %}
+    <p class="text-sm text-contentMuted">
+      {% if has_plan %}
+        Schema-aware plan generated during the latest pipeline run. Sections feed both the AI composer and Drive mirrors.
+      {% else %}
+        Plan/outline results will appear here once the content pipeline runs.
+      {% endif %}
+    </p>
+    {% if has_plan %}
+      <ol class="space-y-3 text-sm text-content">
+        {% for section in plan_sections %}
+          <li class="rounded-lg border border-border/60 p-3">
+            <div class="flex items-center justify-between gap-3">
+              <p class="font-semibold">{{ section.title }}</p>
+              {% if section.purpose %}
+                <span class="text-xs uppercase tracking-wide text-contentMuted">{{ section.purpose|replace('_', ' ') }}</span>
+              {% endif %}
+            </div>
+            <p class="mt-1 text-contentMuted">{{ section.summary }}</p>
+            {% if section.key_points %}
+              <ul class="mt-2 list-disc list-inside space-y-1 text-contentMuted">
+                {% for point in section.key_points %}
+                  <li>{{ point }}</li>
+                {% endfor %}
+              </ul>
+            {% endif %}
+            {% if section.cta %}
+              <div class="mt-2 text-xs font-semibold uppercase tracking-wide text-primary">Call to action</div>
+            {% endif %}
+            {% if section.call_to_action %}
+              <p class="text-xs text-contentMuted mt-1">{{ section.call_to_action }}</p>
+            {% endif %}
+          </li>
+        {% endfor %}
+      </ol>
+      {% if content_plan.cta %}
+        <div class="rounded-lg bg-surfaceMuted p-3 text-sm text-content">
+          <p class="font-semibold">CTA</p>
+          <p class="text-contentMuted">{{ content_plan.cta.summary or 'Summarize the key takeaways and invite the reader to act.' }}</p>
+          {% if content_plan.cta.action %}
+            <p class="text-xs uppercase tracking-wide text-primary mt-1">{{ content_plan.cta.action }}</p>
+          {% endif %}
+        </div>
+      {% endif %}
+    {% elif has_outline %}
       <ol class="list-decimal list-inside space-y-2 text-sm text-content">
         {% for item in document.latest_outline %}
           <li>
@@ -117,10 +148,35 @@
         {% endfor %}
       </ol>
     {% else %}
-      <p class="text-xs text-contentMuted">Outline results will appear here once generated.</p>
+      <p class="text-xs text-contentMuted">Plan results will appear here once generated.</p>
     {% endif %}
   </div>
 {% endcall %}
+    {% call card(title='AI blog generation') %}
+      <div class="space-y-4 text-sm">
+        <p class="text-contentMuted">
+          Generate a full blog draft from this document. Content type controls the schema we target (default is Schema.org BlogPosting) and instructions are passed directly to the composer. The draft is versioned and synced back to Drive automatically.
+        </p>
+        <form id="document-generate-form" data-document-id="{{ document.id }}" class="space-y-3">
+          <input type="hidden" name="tone" value="informative">
+          <input type="hidden" name="max_sections" value="5">
+          <input type="hidden" name="target_chapters" value="4">
+          <input type="hidden" name="include_images" value="on">
+          {% set current_type = document.latest_generation.content_type if document.latest_generation else 'https://schema.org/BlogPosting' %}
+          <label class="block text-xs font-semibold uppercase tracking-wide text-contentMuted">Content type</label>
+          <select name="content_type" class="w-full rounded-lg border border-border bg-card/80 px-3 py-2 text-sm text-content focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary">
+            {% for value, label in content_schema_choices %}
+              <option value="{{ value }}" {% if current_type == value or (not current_type and loop.first) %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+          <label class="block text-xs font-semibold uppercase tracking-wide text-contentMuted">Instructions (optional)</label>
+          <textarea name="instructions" rows="3" class="w-full rounded-lg border border-border bg-card/80 px-3 py-2 text-sm text-content focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary" placeholder="Add any constraints, key bullets, or tone guidance..."></textarea>
+          <button type="submit" class="inline-flex items-center rounded-full border border-border px-4 py-2 text-sm font-medium text-content hover:border-primary/70">
+            Generate blog draft
+          </button>
+        </form>
+      </div>
+    {% endcall %}
     {% if document.raw_text %}
       {% call card(title='Raw text') %}
         <pre class="whitespace-pre-wrap text-sm text-content">{{ document.raw_text }}</pre>
@@ -201,9 +257,17 @@
         <ul class="divide-y divide-border/70 text-sm">
           {% for job in jobs %}
             <li class="py-2 flex items-center justify-between">
-              <div>
+              <div class="space-y-1">
                 <p class="font-medium text-content">{{ job.kind }}</p>
                 <p class="text-xs text-contentMuted">{{ job.created_at or '' }}</p>
+                <p class="font-mono text-[11px] text-contentMuted break-all">{{ job.id }}</p>
+                <div class="flex flex-wrap gap-3 text-[11px] text-contentMuted">
+                  <a href="/v1/jobs/{{ job.id }}" target="_blank" rel="noopener" class="text-primary hover:text-primary/80">Job API</a>
+                  <a href="/api/pipelines/stream?job_id={{ job.id }}" target="_blank" rel="noopener" class="text-primary hover:text-primary/80">Stream</a>
+                  {% if job.document_id %}
+                    <a href="/v1/documents/{{ job.document_id }}" target="_blank" rel="noopener" class="text-primary hover:text-primary/80">Document API</a>
+                  {% endif %}
+                </div>
               </div>
               <span class="text-xs px-2 py-1 rounded-full border border-border/70 text-contentMuted">{{ job.status_label }}</span>
             </li>
@@ -282,7 +346,168 @@
       targetButton.focus();
     }
   }
+  function extractContentMeta(payload){
+    if(!payload || typeof payload !== 'object'){
+      return { jobId: null, documentId: null, versionId: null, message: 'Request completed.' };
+    }
+    if(payload.job_id){
+      return {
+        jobId: payload.job_id,
+        documentId: payload.document_id || null,
+        versionId: payload.version_id || null,
+        message: `Job ${payload.job_id} queued`,
+      };
+    }
+    const documentId = payload.document_id || null;
+    const versionId = payload.version_id || (payload.content && payload.content.version_id) || null;
+    let message = 'Request completed.';
+    if(versionId){
+      message = `Version ${versionId} ready`;
+    } else if(documentId){
+      message = `Document ${documentId} updated`;
+    }
+    return { jobId: null, documentId, versionId, message };
+  }
+  function buildContentLinks(meta){
+    const links = {};
+    if(!meta || typeof meta !== 'object'){
+      return links;
+    }
+    if(meta.documentId){
+      links.document = `/v1/documents/${meta.documentId}`;
+      if(meta.versionId){
+        links.version = `/v1/documents/${meta.documentId}/versions/${meta.versionId}`;
+      }
+    }
+    if(meta.jobId){
+      links.job = `/v1/jobs/${meta.jobId}`;
+      links.stream = `/api/pipelines/stream?job_id=${meta.jobId}`;
+    }
+    return links;
+  }
+  function renderDocFlash(kind, meta){
+    const flashEl = document.getElementById('doc-flash');
+    if(!flashEl){
+      return;
+    }
+    flashEl.innerHTML = '';
+    const wrapper = document.createElement('div');
+    wrapper.className = `rounded-lg border px-3 py-2 text-sm ${kind === 'success' ? 'border-accent/40 bg-accent/5 text-accent' : 'border-destructive/40 bg-destructive/5 text-destructive'}`;
+    const title = document.createElement('p');
+    title.className = 'font-medium';
+    title.textContent = meta && meta.message ? meta.message : (kind === 'success' ? 'Request completed.' : 'Request failed.');
+    wrapper.appendChild(title);
+    const links = buildContentLinks(meta);
+    const linkLabels = { document: 'Document API', version: 'Version API', job: 'Job API', stream: 'Live stream' };
+    const linkKeys = Object.keys(links);
+    if(linkKeys.length){
+      const linkWrap = document.createElement('div');
+      linkWrap.className = 'mt-2 flex flex-wrap gap-3 text-xs text-contentMuted';
+      linkKeys.forEach((key) => {
+        if(!links[key]){
+          return;
+        }
+        const anchor = document.createElement('a');
+        anchor.href = links[key];
+        anchor.target = '_blank';
+        anchor.rel = 'noopener';
+        anchor.className = 'text-primary hover:text-primary/80';
+        anchor.textContent = `${linkLabels[key] || 'Open'} →`;
+        linkWrap.appendChild(anchor);
+      });
+      wrapper.appendChild(linkWrap);
+    }
+    flashEl.appendChild(wrapper);
+  }
+  function buildDocumentPayload(form){
+    const formData = new FormData(form);
+    const documentId = form.getAttribute('data-document-id') || '';
+    const payload = {
+      document_id: documentId,
+      mode: 'structured',
+      async: true,
+      options: {},
+    };
+    const tone = (formData.get('tone') || '').trim();
+    if(tone){
+      payload.options.tone = tone;
+    }
+    const maxSections = parseInt(formData.get('max_sections'), 10);
+    if(Number.isFinite(maxSections)){
+      payload.options.max_sections = maxSections;
+    }
+    const targetChapters = parseInt(formData.get('target_chapters'), 10);
+    if(Number.isFinite(targetChapters)){
+      payload.options.target_chapters = targetChapters;
+    }
+    const includeImages = formData.get('include_images');
+    if(typeof includeImages === 'string'){
+      payload.options.include_images = includeImages === 'on' || includeImages === 'true';
+    }
+    const contentType = (formData.get('content_type') || '').trim();
+    payload.options.content_type = contentType || 'https://schema.org/BlogPosting';
+    const instructions = (formData.get('instructions') || '').trim();
+    if(instructions){
+      payload.options.instructions = instructions;
+    }
+    return payload;
+  }
+  async function handleDocumentGenerate(event){
+    event.preventDefault();
+    const form = event.target;
+    const payload = buildDocumentPayload(form);
+    if(!payload.document_id){
+      renderDocFlash('error', { message: 'Document ID missing from form.' });
+      return;
+    }
+    const submitBtn = form.querySelector('button[type="submit"]');
+    if(submitBtn){
+      submitBtn.disabled = true;
+    }
+    try {
+      const response = await fetch('/v1/content/blog_from_document', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify(payload),
+      });
+      let data = {};
+      try {
+        data = await response.json();
+      } catch (_) {
+        data = {};
+      }
+      if(!response.ok){
+        const message = (data && data.detail) || 'Failed to queue blog generation.';
+        renderDocFlash('error', { message });
+        return;
+      }
+      const meta = extractContentMeta(data);
+      renderDocFlash('success', meta);
+    } catch (err) {
+      renderDocFlash('error', { message: err && err.message ? err.message : 'Failed to queue blog generation.' });
+    } finally {
+      if(submitBtn){
+        submitBtn.disabled = false;
+      }
+    }
+  }
+  function initDocumentContentForm(){
+    const form = document.getElementById('document-generate-form');
+    if(!form || form.__contentBound){
+      return;
+    }
+    form.addEventListener('submit', handleDocumentGenerate);
+    form.__contentBound = true;
+  }
   document.addEventListener('DOMContentLoaded', () => {
     switchVersionTab('outline');
+    initDocumentContentForm();
+  });
+  document.addEventListener('htmx:afterSwap', (event) => {
+    const target = event.detail && event.detail.target;
+    if(target && target.id === 'document-detail-root'){
+      initDocumentContentForm();
+    }
   });
 </script>

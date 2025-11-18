@@ -187,6 +187,18 @@ class GenerateBlogOptions(BaseModel):
     model: Optional[str] = Field(default=None, min_length=3, max_length=60)
     temperature: Optional[float] = Field(default=None, ge=0, le=2)
     section_index: Optional[int] = Field(default=None, ge=0, le=50)
+    content_type: Optional[str] = Field(
+        default=None,
+        description="Optional content type hint such as 'generic_blog', 'faq', 'recipe'.",
+        min_length=3,
+        max_length=80,
+    )
+    instructions: Optional[str] = Field(
+        default=None,
+        description="Additional generation instructions or constraints.",
+        min_length=1,
+        max_length=2000,
+    )
 
     @model_validator(mode="after")
     def validate_section_index_bounds(self):

@@ -18,7 +18,6 @@ from .models import (
     GenerateBlogRequest,
     GenerateBlogOptions,
 )
-from .steps import OutlineGenerateRequest, run_outline_generate
 from .deps import ensure_services, ensure_db, parse_job_progress, get_current_user
 from .auth import verify_jwt_token
 from .database import (
@@ -75,6 +74,13 @@ from .ai_preferences import (
     normalize_ai_preferences,
     set_ai_preferences,
 )
+
+CONTENT_SCHEMA_CHOICES = [
+    ("https://schema.org/BlogPosting", "Blog post"),
+    ("https://schema.org/FAQPage", "FAQ Page"),
+    ("https://schema.org/HowTo", "How-To Guide"),
+    ("https://schema.org/Recipe", "Recipe"),
+]
 
 
 def _status_label(value: str) -> str:
@@ -521,6 +527,7 @@ def _document_to_view(doc: dict) -> dict:
     frontmatter = _json_field(doc.get("frontmatter"), {})
     latest_generation = metadata.get("latest_generation") if isinstance(metadata, dict) else {}
     latest_outline = metadata.get("latest_outline") if isinstance(metadata, dict) else []
+    content_plan = metadata.get("content_plan") if isinstance(metadata, dict) else None
     source_type = (doc.get("source_type") or "unknown").lower()
     source_label = {
         "drive": "Drive",
@@ -549,6 +556,7 @@ def _document_to_view(doc: dict) -> dict:
         "latest_title": frontmatter.get("title") if isinstance(frontmatter, dict) else None,
         "latest_generation": latest_generation,
         "latest_outline": latest_outline,
+        "content_plan": content_plan,
         "created_at": doc.get("created_at"),
         "raw_text": doc.get("raw_text"),
         "drive_sync_status": metadata.get("drive_sync_status") if isinstance(metadata, dict) else None,
@@ -805,6 +813,7 @@ async def _render_youtube_ingest_panel(
         "flash": flash,
         "ingest_job": ingest_job,
         "ingest_events": events,
+        "content_schema_choices": CONTENT_SCHEMA_CHOICES,
     }
     return templates.TemplateResponse("dashboard/partials/youtube_ingest_panel.html", context, status_code=status_code)
 
@@ -1038,6 +1047,7 @@ async def dashboard(request: Request, page: int = 1, user: dict = Depends(get_cu
         "youtube_connected": youtube_connected,
         "ingest_job": recent_youtube_job,
         "ingest_events": recent_youtube_events,
+        "content_schema_choices": CONTENT_SCHEMA_CHOICES,
     }
     resp = templates.TemplateResponse("dashboard/index.html", context)
     if not request.cookies.get("csrf_token"):
@@ -1139,6 +1149,7 @@ async def document_detail_page(document_id: str, request: Request, user: dict = 
         "csrf_token": csrf,
         "drive_meta": drive_meta,
         "page_title": title_hint or f"Document {document_id}",
+        "content_schema_choices": CONTENT_SCHEMA_CHOICES,
     }
     template_name = "documents/detail_fragment.html" if _is_htmx(request) else "documents/detail.html"
     resp = templates.TemplateResponse(template_name, context)
@@ -1193,6 +1204,8 @@ async def dashboard_generate_blog(
     max_sections: int = Form(5),
     target_chapters: int = Form(4),
     include_images: Optional[str] = Form("on"),
+    content_type: str = Form("https://schema.org/BlogPosting"),
+    instructions: Optional[str] = Form(None),
     csrf_token: str = Form(...),
     user: dict = Depends(get_current_user),
 ):
@@ -1205,6 +1218,8 @@ async def dashboard_generate_blog(
             max_sections=max_sections,
             target_chapters=target_chapters,
             include_images=_form_bool(include_images),
+            content_type=content_type.strip() or "https://schema.org/BlogPosting",
+            instructions=(instructions or "").strip() or None,
         )
     except Exception as exc:
         return _render_flash(request, f"Invalid options: {exc}", "error", status.HTTP_400_BAD_REQUEST)
@@ -1278,35 +1293,6 @@ async def dashboard_drive_sync(
         )
         return _render_flash(request, f"Drive sync failed: {exc}", "error", status.HTTP_502_BAD_GATEWAY)
     return _render_flash(request, "Drive sync started", "success")
-
-
-@router.post("/dashboard/documents/{document_id}/outline/regenerate", response_class=HTMLResponse)
-async def dashboard_outline_regenerate(
-    document_id: str,
-    request: Request,
-    csrf_token: str = Form(...),
-    user: dict = Depends(get_current_user),
-):
-    _validate_csrf(request, csrf_token)
-    db = ensure_db()
-    document = await get_document(db, document_id, user_id=user["user_id"])
-    if not document:
-        return _render_flash(request, "Document not found", "error", status.HTTP_404_NOT_FOUND)
-    step_request = OutlineGenerateRequest(document_id=document_id)
-    try:
-        await run_outline_generate(db, user["user_id"], step_request)
-    except HTTPException as exc:
-        detail = exc.detail if isinstance(exc.detail, str) else "Failed to regenerate outline"
-        return _render_flash(request, detail, "error", exc.status_code)
-    except Exception:
-        logger.exception("outline_regenerate_failed", extra={"document_id": document_id})
-        return _render_flash(
-            request,
-            "Outline regeneration failed. Please try again.",
-            "error",
-            status.HTTP_500_INTERNAL_SERVER_ERROR,
-        )
-    return _render_flash(request, "Outline regenerated", "success")
 
 
 @router.post("/dashboard/documents/{document_id}/exports/{target}", response_class=HTMLResponse)
@@ -1437,6 +1423,8 @@ async def create_drive_document_form(
 async def create_youtube_document_form(
     request: Request,
     youtube_url: str = Form(...),
+    content_type: str = Form("https://schema.org/BlogPosting"),
+    instructions: Optional[str] = Form(None),
     csrf_token: str = Form(...),
     user: dict = Depends(get_current_user),
 ):
@@ -1447,8 +1435,20 @@ async def create_youtube_document_form(
         flash = {"status": "error", "message": "YouTube URL is required"}
         return await _render_ingest_response(request, db, user, flash, status_code=status.HTTP_400_BAD_REQUEST)
     _, queue = ensure_services()
+    schema_value = content_type.strip() or "https://schema.org/BlogPosting"
+    autopilot_options = {
+        "content_type": schema_value,
+        "instructions": (instructions or "").strip() or None,
+    }
     try:
-        job = await start_ingest_youtube_job(db, queue, user["user_id"], url)
+        job = await start_ingest_youtube_job(
+            db,
+            queue,
+            user["user_id"],
+            url,
+            autopilot_options={k: v for k, v in autopilot_options.items() if v},
+            autopilot_enabled=True,
+        )
         flash = {
             "status": "success",
             "message": f"YouTube ingest job {job.job_id} queued (doc {job.document_id})",
@@ -1468,6 +1468,8 @@ async def create_text_document_form(
     request: Request,
     text_body: str = Form(...),
     title: Optional[str] = Form(None),
+    content_type: str = Form("https://schema.org/BlogPosting"),
+    instructions: Optional[str] = Form(None),
     csrf_token: str = Form(...),
     user: dict = Depends(get_current_user),
 ):
@@ -1478,8 +1480,21 @@ async def create_text_document_form(
     if not body:
         flash = {"status": "error", "message": "Text content is required"}
         return await _render_ingest_response(request, db, user, flash, status_code=status.HTTP_400_BAD_REQUEST)
+    schema_value = content_type.strip() or "https://schema.org/BlogPosting"
+    autopilot_options = {
+        "content_type": schema_value,
+        "instructions": (instructions or "").strip() or None,
+    }
     try:
-        job = await start_ingest_text_job(db, queue, user["user_id"], body, title)
+        job = await start_ingest_text_job(
+            db,
+            queue,
+            user["user_id"],
+            body,
+            title,
+            autopilot_options={k: v for k, v in autopilot_options.items() if v},
+            autopilot_enabled=True,
+        )
         flash = {
             "status": "success",
             "message": f"Text ingest job {job.job_id} queued (doc {job.document_id})",

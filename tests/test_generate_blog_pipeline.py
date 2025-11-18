@@ -55,12 +55,19 @@ def test_process_generate_blog_job_creates_output():
             document_id=document_id,
         )
 
+        instructions = "Focus on actionable tips for creators."
         await process_generate_blog_job(
             db,
             job_id,
             user_id,
             document_id,
-            {"tone": "playful", "max_sections": 3, "target_chapters": 3, "include_images": True},
+            {
+                "tone": "playful",
+                "max_sections": 3,
+                "target_chapters": 3,
+                "include_images": True,
+                "instructions": instructions,
+            },
         )
 
         try:
@@ -75,6 +82,11 @@ def test_process_generate_blog_job_creates_output():
             assert output["sections"]
             assert output["options"]["tone"] == "playful"
             assert output["options"]["model"]
+            assert output["options"]["content_type"] == "generic_blog"
+            assert output["options"]["instructions"] == instructions
+            assert isinstance(output.get("plan"), dict)
+            assert output["plan"].get("content_type") == "generic_blog"
+            assert output["plan"].get("instructions") == instructions
 
             stored_doc = await get_document(db, document_id, user_id=user_id)
             assert stored_doc is not None
@@ -85,6 +97,19 @@ def test_process_generate_blog_job_creates_output():
             latest_gen = metadata.get("latest_generation", {})
             assert latest_gen.get("model")
             assert latest_gen.get("tone") == "playful"
+            assert latest_gen.get("content_type") == "generic_blog"
+            assert latest_gen.get("instructions") == instructions
+            outline_snapshot = metadata.get("latest_outline")
+            assert isinstance(outline_snapshot, list)
+            assert outline_snapshot
+            assert outline_snapshot[0].get("slot") == "intro"
+            plan_snapshot = metadata.get("content_plan")
+            assert isinstance(plan_snapshot, dict)
+            assert plan_snapshot.get("content_type") == "generic_blog"
+            assert plan_snapshot.get("instructions") == instructions
+            assert plan_snapshot.get("schema_version") == 1
+            assert plan_snapshot.get("sections")
+            assert plan_snapshot["sections"][0]["title"]
             assert stored_doc.get("latest_version_id")
 
             versions = await db.execute_all("SELECT * FROM document_versions WHERE document_id = ?", (document_id,))
