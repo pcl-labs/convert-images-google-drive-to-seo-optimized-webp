@@ -91,24 +91,8 @@ class Database:
             cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_id ON users(google_id)")
             if 'preferences' not in user_cols:
                 cur.execute("ALTER TABLE users ADD COLUMN preferences TEXT")
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS user_sessions (
-                    session_id TEXT PRIMARY KEY,
-                    user_id TEXT NOT NULL,
-                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                    last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
-                    expires_at TEXT NOT NULL,
-                    last_notification_id TEXT,
-                    ip_address TEXT,
-                    user_agent TEXT,
-                    revoked_at TEXT,
-                    extra TEXT,
-                    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
-                )
-                """
-            )
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_user_sessions_user ON user_sessions(user_id, created_at DESC)")
+            # Note: user_sessions table is created by ensure_sessions_schema() called at app startup
+            # No need to duplicate here since ensure_sessions_schema() handles all database types
             # Ensure documents table
             cur.execute(
                 """
