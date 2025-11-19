@@ -19,6 +19,7 @@ compatibility_flags = ["python_workers"]  # Required for Python Workers
 [vars]
 ENVIRONMENT = "development"  # Used by Settings.environment (set to "production" for prod deploy)
 DEBUG = "false"             # Used by Settings.debug
+BASE_URL = "http://localhost:8787"  # OAuth redirect URI base (matches wrangler dev port)
 
 # D1 Database binding
 # The binding name "DB" must match what the code expects (see src/workers/runtime.py)

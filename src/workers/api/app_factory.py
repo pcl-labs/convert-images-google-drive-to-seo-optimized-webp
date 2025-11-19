@@ -239,6 +239,24 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
             content={"detail": exc.detail, "request_id": extra["request_id"]},
         )
 
+    @app.exception_handler(Exception)
+    async def global_exception_handler(request, exc):  # pragma: no cover - FastAPI wiring
+        """Catch all unhandled exceptions and log them."""
+        request_id = get_request_id()
+        app_logger.error(
+            "Unhandled exception",
+            exc_info=True,
+            extra={
+                "request_id": request_id,
+                "path": request.url.path,
+                "method": request.method,
+            },
+        )
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Internal Server Error", "request_id": request_id},
+        )
+
     # Shared middleware stack for local + Worker runtimes.
     # Note: Middleware executes in REVERSE order of registration.
     # Register AuthCookieMiddleware before SessionMiddleware so SessionMiddleware executes first

@@ -96,7 +96,14 @@ def mount_static_files(app, static_dir_setting: Optional[str] = None, assets_bin
                 elif path.endswith('.webmanifest'):
                     content_type = "application/manifest+json"
                 return Response(content=content, media_type=content_type)
+            elif response.status == 404:
+                # File not found in bundle (may be too large or not included)
+                # Return 404 instead of 500 - this is expected for missing assets
+                logger.warning(f"Asset not found in bundle: {path} (may be too large or excluded)")
+                raise HTTPException(status_code=404, detail=f"Static file not found: {path}")
             else:
+                # Other error status from assets binding
+                logger.error(f"Assets binding returned unexpected status {response.status} for {path}")
                 raise HTTPException(status_code=response.status, detail=f"Assets binding returned status {response.status} for {path}")
         except HTTPException:
             raise
