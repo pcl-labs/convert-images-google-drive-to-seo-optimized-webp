@@ -62,6 +62,26 @@ def _load_dotenv(path: Path) -> Dict[str, str]:
 
 @dataclass
 class Settings:
+    """
+    Application settings loaded from environment variables.
+    
+    This class works in both local development and Cloudflare Workers:
+    
+    **Local Development:**
+    - Reads from `.env` file (if present) and `os.environ`
+    - `d1_database` is typically None, causing Database() to fall back to SQLite
+    - `static_files_dir` can be set to a filesystem path for local dev
+    - `queue` and `dlq` are None when `USE_INLINE_QUEUE=true` (default)
+    
+    **Cloudflare Workers:**
+    - Reads from `os.environ` (populated by `wrangler.toml` vars + secrets)
+    - `d1_database` is set from `env.DB` binding via `runtime.apply_worker_env()`
+    - `static_files_dir` should be None (uses package-based loader)
+    - `queue` and `dlq` are set from `env.JOB_QUEUE` and `env.DLQ` bindings
+    
+    See `src/workers/runtime.py` for how Worker bindings are injected.
+    See `docs/CLOUDFLARE_WORKERS.md` for setup instructions.
+    """
     app_name: str = "Quill API"
     app_version: str = "1.0.0"
     environment: str = "development"
@@ -109,7 +129,7 @@ class Settings:
     drive_webhook_url: Optional[str] = None
     drive_webhook_secret: Optional[str] = None
     drive_watch_renewal_window_minutes: int = 60
-    static_files_dir: str = "./static"
+    static_files_dir: Optional[str] = None
     openai_api_key: Optional[str] = None
     openai_api_base: Optional[str] = None
     # Default OpenAI blog model (GPT-5.1 is the current target model).
@@ -124,7 +144,12 @@ class Settings:
         self.jwt_use_cookies = _bool(self.jwt_use_cookies)
         self.use_inline_queue = _bool(self.use_inline_queue)
         self.enable_drive_pipeline = _bool(self.enable_drive_pipeline)
-        self.static_files_dir = str(self.static_files_dir or "./static")
+        # static_files_dir: None means use package-based loader (Worker-compatible)
+        # If set to a path, mount_static_files() will try filesystem first, then fall back to package
+        if self.static_files_dir:
+            self.static_files_dir = str(self.static_files_dir)
+        else:
+            self.static_files_dir = None
         self.rate_limit_per_minute = _int(self.rate_limit_per_minute, 60)
         self.rate_limit_per_hour = _int(self.rate_limit_per_hour, 1000)
         self.api_key_length = _int(self.api_key_length, 32)

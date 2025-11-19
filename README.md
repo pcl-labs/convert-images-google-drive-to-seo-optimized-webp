@@ -41,9 +41,14 @@ pip install -r requirements.txt
 
 ## Usage
 
-### Web API Usage (FastAPI)
+The Quill API runs in two modes:
 
-The project includes a FastAPI web server for programmatic access.
+1. **Local Development**: FastAPI + Uvicorn (for development and testing)
+2. **Cloudflare Workers**: Python Worker runtime with D1 database and Queues (for production)
+
+Both modes use the same FastAPI application code. See `docs/CLOUDFLARE_WORKERS.md` for detailed setup instructions for both environments.
+
+### Local Development
 
 #### Start the API Server
 
@@ -62,6 +67,29 @@ The API will be available at `http://localhost:8000`
 
 For local development with queue processing, also set:
 - `USE_INLINE_QUEUE=true` (default) - Enables in-memory queue for local dev
+
+### Cloudflare Workers
+
+For Cloudflare Workers development and deployment:
+
+```bash
+# Development / Preview
+wrangler dev
+
+# Production Deployment
+wrangler deploy
+```
+
+**Prerequisites:**
+- Cloudflare account and `wrangler` CLI installed
+- D1 database created and migrated
+- Secrets configured via `wrangler secret put`
+
+See `docs/CLOUDFLARE_WORKERS.md` for complete setup instructions, including:
+- D1 database setup and migrations
+- Queue configuration
+- Secret management
+- Environment-specific configuration
 
 #### API Endpoints
 
@@ -204,15 +232,22 @@ Visit `http://localhost:8000/docs` in your browser for interactive API testing.
 ## File Structure
 
 ```
-├── api/                   # FastAPI web application
-│   └── main.py            # API entry point
-├── core/                  # Core business logic
-│   ├── drive_utils.py     # Google Drive API utilities
-│   ├── filename_utils.py  # Filename parsing/sanitization helpers
-│   └── image_processor.py # Image processing
-├── run_api.py             # Script to run the API server
+├── src/workers/           # Worker-compatible application code
+│   ├── main.py            # Cloudflare Worker entrypoint
+│   ├── api/               # FastAPI application
+│   │   ├── main.py        # FastAPI app initialization
+│   │   ├── config.py      # Configuration (Settings class)
+│   │   ├── app_factory.py # Application factory
+│   │   └── ...            # API routes, middleware, etc.
+│   ├── core/              # Core business logic
+│   ├── templates/         # Jinja2 templates (package-based)
+│   └── static/            # Static assets (package-based)
+├── run_api.py             # Script to run API server locally
+├── wrangler.toml          # Cloudflare Workers configuration
 ├── requirements.txt       # Python dependencies
 ├── docs/                  # Documentation
+│   ├── CLOUDFLARE_WORKERS.md  # Worker setup guide
+│   └── DEPLOYMENT.md      # Deployment instructions
 └── README.md             # This file
 ```
 
