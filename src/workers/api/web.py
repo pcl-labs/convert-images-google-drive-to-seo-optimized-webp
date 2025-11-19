@@ -10,8 +10,7 @@ import logging
 import json
 import secrets
 import hmac
-from jinja2 import Environment, PackageLoader, FileSystemLoader
-import jinja2
+# Jinja2 imports removed - using Jinja2Templates directly
 
 from .models import (
     OptimizeDocumentRequest,
@@ -128,17 +127,14 @@ def _validate_csrf(request: Request, form_token: Optional[str]) -> None:
 
 router = APIRouter()
 
-# Templates are now packaged in src/workers/templates/
-# Use FileSystemLoader with path relative to src/workers (which is the root)
+# Templates are packaged in src/workers/templates/
+# Use simple filesystem-based Jinja2Templates
 from pathlib import Path
 
-templates_path = Path(__file__).parent.parent / "templates"
-jinja_env = Environment(
-    loader=FileSystemLoader(str(templates_path)),
-    autoescape=True,
-    auto_reload=False,  # Disable auto-reload in production
-)
-templates = Jinja2Templates(env=jinja_env)
+BASE_DIR = Path(__file__).resolve().parent.parent  # src/workers
+TEMPLATES_DIR = BASE_DIR / "templates"
+
+templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 base_url_value = (settings.base_url or "").strip()
 templates.env.globals["base_url"] = base_url_value.rstrip("/") if base_url_value else ""

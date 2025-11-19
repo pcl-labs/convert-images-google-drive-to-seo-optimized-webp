@@ -280,17 +280,37 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         self.last_cleanup = time.monotonic()
     
     def _get_client_id(self, request: Request) -> str:
-        """Get client identifier for rate limiting."""
+        """Get client identifier for rate limiting.
+        
+        Note: In Cloudflare Workers, request.client may be None.
+        We also look at CF-Connecting-IP / X-Forwarded-For headers for client IP,
+        and fall back to "unknown" rather than rejecting the request.
+        """
         user_id = getattr(request.state, "user_id", None)
         if user_id:
             return f"user:{user_id}"
-        # Require valid client info for rate limiting
-        if not request.client or not request.client.host:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Client information missing",
-            )
-        return f"ip:{request.client.host}"
+        
+        # Try connection info first
+        ip = None
+        if request.client and getattr(request.client, "host", None):
+            ip = request.client.host
+        
+        # Fallback to headers if no client.host
+        if not ip:
+            headers = request.headers
+            ip = headers.get("CF-Connecting-IP")
+            if not ip:
+                xff = headers.get("X-Forwarded-For", "")
+                if xff:
+                    ip = xff.split(",")[0].strip() or None
+            if not ip:
+                ip = headers.get("X-Real-IP")
+        
+        # Final fallback: don't 400, just treat IP as unknown
+        if not ip:
+            ip = "unknown"
+        
+        return f"ip:{ip}"
     
     async def _is_rate_limited(self, client_id: str) -> bool:
         """Check if client is rate limited (thread-safe)."""
@@ -323,20 +343,17 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 del self.requests[client_id]
     
     async def dispatch(self, request: Request, call_next: Callable):
-        # Skip rate limiting for health checks
-        if request.url.path in ["/health"]:
+        # Skip rate limiting for health checks and static assets
+        path = request.url.path
+        if (
+            path == "/health"
+            or path.startswith("/static/")
+            or path == "/favicon.ico"
+            or path == "/robots.txt"
+        ):
             return await call_next(request)
         
-        try:
-            client_id = self._get_client_id(request)
-        except HTTPException as exc:
-            return JSONResponse(
-                status_code=exc.status_code,
-                content={
-                    "error": exc.detail,
-                    "error_code": "CLIENT_INFO_REQUIRED",
-                },
-            )
+        client_id = self._get_client_id(request)
         
         if await self._is_rate_limited(client_id):
             return JSONResponse(
