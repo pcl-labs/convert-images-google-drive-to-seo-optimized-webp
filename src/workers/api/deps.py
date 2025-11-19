@@ -40,10 +40,13 @@ def ensure_db() -> Database:
                 logger.warning("Database lazily initialized outside lifespan; consider calling set_db_instance during startup.")
             except Exception as exc:
                 logger.error("Failed to initialize database: %s", exc, exc_info=True)
+                # Ensure we raise HTTPException so it can be caught by route handlers
+                if isinstance(exc, HTTPException):
+                    raise
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail="Failed to initialize database",
-                )
+                ) from exc
     return _db_instance
 
 

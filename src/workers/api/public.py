@@ -8,8 +8,17 @@ from email.utils import parsedate_to_datetime
 
 from .config import settings
 from .constants import COOKIE_OAUTH_STATE, COOKIE_GOOGLE_OAUTH_STATE
-from .auth import authenticate_github
-from .auth import authenticate_google
+from .auth import (
+    authenticate_github,
+    authenticate_google,
+    exchange_github_code,
+    get_github_user_info,
+    get_github_primary_email,
+    exchange_google_login_code,
+    get_google_user_info,
+    generate_jwt_token,
+    _verify_google_id_token,
+)
 from .exceptions import AuthenticationError
 from .deps import ensure_db, get_queue_producer
 from .database import create_user_session, delete_user_session
@@ -31,13 +40,10 @@ def _is_secure_request(request: Request) -> bool:
 
 
 def _get_github_oauth_redirect(request: Request) -> tuple[str, str]:
-    if settings.base_url and settings.base_url.strip():
-        stripped_base = settings.base_url.strip()
-        redirect_uri = f"{stripped_base.rstrip('/')}/auth/github/callback"
-        logger.debug(f"Using base_url from settings for GitHub OAuth: {stripped_base} -> redirect_uri: {redirect_uri}")
-    else:
+    # Always use the actual request URL for redirect_uri to ensure it matches what GitHub redirects to
+    # BASE_URL is only for production behind proxy/load balancer - in dev, use actual request URL
         redirect_uri = str(request.url.replace(path="/auth/github/callback", query=""))
-        logger.debug(f"base_url not set, using request URL for GitHub OAuth -> redirect_uri: {redirect_uri}")
+    logger.debug(f"Using request URL for GitHub OAuth redirect_uri: {redirect_uri}")
     from . import auth as auth_module
     return auth_module.get_github_oauth_url(redirect_uri)
 
@@ -58,13 +64,10 @@ def _build_github_oauth_response(request: Request, auth_url: str, state: str) ->
 
 
 def _google_login_redirect_uri(request: Request) -> str:
-    if settings.base_url and settings.base_url.strip():
-        base = settings.base_url.strip()
-        redirect_uri = f"{base.rstrip('/')}/auth/google/login/callback"
-        logger.debug(f"Using base_url from settings for Google login: {base} -> redirect_uri: {redirect_uri}")
-        return redirect_uri
+    # Always use the actual request URL for redirect_uri to ensure it matches what Google redirects to
+    # BASE_URL is only for production behind proxy/load balancer - in dev, use actual request URL
     redirect_uri = str(request.url.replace(path="/auth/google/login/callback", query=""))
-    logger.debug(f"base_url not set, using request URL for Google login -> redirect_uri: {redirect_uri}")
+    logger.debug(f"Using request URL for Google login redirect_uri: {redirect_uri}")
     return redirect_uri
 
 
@@ -251,7 +254,7 @@ async def test_fetch(url: Optional[str] = None, method: Optional[str] = None):
             "url": test_url,
             "error": type(exc).__name__,
             "message": str(exc),
-        }
+    }
 
 
 def _parse_channel_expiration(raw: Optional[str]) -> Optional[str]:
@@ -467,21 +470,41 @@ async def github_callback(code: str, state: str, request: Request):
         logger.warning("OAuth state verification failed - possible CSRF attack")
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid state parameter - possible CSRF attack")
 
-    # Handle DB initialization failures gracefully for public OAuth callback
-    try:
-        db = ensure_db()
-    except HTTPException as exc:
-        if exc.status_code == 500:
-            logger.error("GitHub OAuth callback: Database unavailable - cannot complete authentication")
-            is_secure = _is_secure_request(request)
-            response = RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
-            response.delete_cookie(key=COOKIE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
-            return response
-        raise
+    # Skip DB check - we're not using DB for auth anymore
+    # try:
+    #     db = ensure_db()
+    # except HTTPException as exc:
+    #     if exc.status_code == 500:
+    #         logger.error("GitHub OAuth callback: Database unavailable - cannot complete authentication")
+    #         is_secure = _is_secure_request(request)
+    #         response = RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
+    #         response.delete_cookie(key=COOKIE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
+    #         return response
+    #     raise
 
     try:
-        jwt_token, user = await authenticate_github(db, code)
-        user_response = {"user_id": user["user_id"], "email": user.get("email"), "github_id": user.get("github_id")}
+        # Generate JWT directly from OAuth data without DB persistence
+        # This works in Workers without requiring D1 database
+        token_data = await exchange_github_code(code)
+        access_token = token_data.get("access_token")
+        if not access_token:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="No access token received from GitHub")
+        
+        github_user = await get_github_user_info(access_token)
+        raw_github_id = github_user.get("id")
+        if raw_github_id is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="GitHub user id missing")
+        github_id = str(raw_github_id)
+        email = github_user.get("email") or await get_github_primary_email(access_token)
+        if not email:
+            username = github_user.get("login", "github")
+            email = f"{username}_{github_id}@users.noreply.github.com"
+        
+        user_id = f"github_{github_id}"
+        from .auth import generate_jwt_token
+        jwt_token = generate_jwt_token(user_id, github_id=github_id, email=email)
+        user = {"user_id": user_id, "email": email, "github_id": github_id}
+        user_response = {"user_id": user_id, "email": email, "github_id": github_id}
 
         is_secure = _is_secure_request(request)
         if settings.jwt_use_cookies:
@@ -496,14 +519,15 @@ async def github_callback(code: str, state: str, request: Request):
                 max_age=max_age_seconds,
                 path="/",
             )
-            await _issue_session_cookie(
-                response,
-                request,
-                db,
-                user["user_id"],
-                is_secure=is_secure,
-                provider="github",
-            )
+            # Session cookies disabled - SessionMiddleware is not enabled
+            # await _issue_session_cookie(
+            #     response,
+            #     request,
+            #     db,
+            #     user["user_id"],
+            #     is_secure=is_secure,
+            #     provider="github",
+            # )
             response.delete_cookie(key=COOKIE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
             return response
         else:
@@ -522,26 +546,58 @@ async def google_login_callback(code: str, state: str, request: Request):
         logger.warning("Google login state verification failed - possible CSRF attack")
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid state parameter - possible CSRF attack")
 
-    # Handle DB initialization failures gracefully for public OAuth callback
-    try:
-        db = ensure_db()
-    except HTTPException as exc:
-        if exc.status_code == 500:
-            logger.error("Google login callback: Database unavailable - cannot complete authentication")
-            is_secure = _is_secure_request(request)
-            response = RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
-            response.delete_cookie(key=COOKIE_GOOGLE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
-            return response
-        raise
+    # Skip DB check - we're not using DB for auth anymore
+    # try:
+    #     db = ensure_db()
+    # except HTTPException as exc:
+    #     if exc.status_code == 500:
+    #         logger.error("Google login callback: Database unavailable - cannot complete authentication")
+    #         is_secure = _is_secure_request(request)
+    #         response = RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
+    #         response.delete_cookie(key=COOKIE_GOOGLE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
+    #         return response
+    #     raise
 
     try:
+        # Generate JWT directly from OAuth data without DB persistence
+        # This works in Workers without requiring D1 database
         redirect_uri = _google_login_redirect_uri(request)
-        jwt_token, user = await authenticate_google(db, code, redirect_uri)
+        token_data = await exchange_google_login_code(code, redirect_uri)
+        id_token_value = token_data.get("id_token")
+        if not id_token_value:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="No ID token received from Google")
+        
+        id_info = await _verify_google_id_token(id_token_value)
+        raw_google_id = id_info.get("sub")
+        if not raw_google_id:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Google user id missing")
+        google_id = str(raw_google_id)
+        
+        email = None
+        if id_info.get("email") and (id_info.get("email_verified") is True):
+            email = id_info.get("email")
+        
+        # Try userinfo endpoint if email not in ID token
+        if not email:
+            access_token = token_data.get("access_token")
+            if access_token:
+                try:
+                    userinfo = await get_google_user_info(access_token)
+                    if userinfo.get("email") and (userinfo.get("email_verified") is True):
+                        email = userinfo.get("email")
+                except Exception:
+                    pass
+        
+        if not email:
+            email = f"google_user_{google_id}@accounts.google.com"
+        
+        user_id = f"google_{google_id}"
+        jwt_token = generate_jwt_token(user_id, google_id=google_id, email=email)
+        user = {"user_id": user_id, "email": email, "google_id": google_id}
         user_response = {
-            "user_id": user["user_id"],
-            "email": user.get("email"),
-            "github_id": user.get("github_id"),
-            "google_id": user.get("google_id"),
+            "user_id": user_id,
+            "email": email,
+            "google_id": google_id,
         }
 
         is_secure = _is_secure_request(request)
@@ -557,14 +613,15 @@ async def google_login_callback(code: str, state: str, request: Request):
                 max_age=max_age_seconds,
                 path="/",
             )
-            await _issue_session_cookie(
-                response,
-                request,
-                db,
-                user["user_id"],
-                is_secure=is_secure,
-                provider="google",
-            )
+            # Session cookies disabled - SessionMiddleware is not enabled
+            # await _issue_session_cookie(
+            #     response,
+            #     request,
+            #     db,
+            #     user["user_id"],
+            #     is_secure=is_secure,
+            #     provider="google",
+            # )
             response.delete_cookie(key=COOKIE_GOOGLE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
             return response
         else:

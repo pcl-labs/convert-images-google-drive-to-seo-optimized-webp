@@ -9,12 +9,13 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urljoin
 from urllib.request import Request, urlopen
 
-# Import fetch from Cloudflare Workers (js module)
-# This is the same fetch API that works for static assets
+# Import fetch and Request from Cloudflare Workers (js module)
 try:
-    from js import fetch as _worker_fetch
+    from js import fetch as _worker_fetch, Request as JSRequest, Object as JSObject
 except ImportError:
     _worker_fetch = None
+    JSRequest = None
+    JSObject = None
 
 
 class RequestError(Exception):
@@ -152,41 +153,75 @@ async def _fetch_request(
     if _worker_fetch is None:
         raise RuntimeError("fetch API not available - this code requires Cloudflare Workers runtime")
     
+    import logging
+    logger = logging.getLogger(__name__)
+    
     # Build URL with params
     full_url = _build_url(url, params)
     
-    # Prepare headers
+    # Prepare headers and body using standard approach
     request_headers: Dict[str, str] = dict(headers or {})
-    
-    # Prepare body
     body = _prepare_body(data, json_body, request_headers)
     
-    # Create Request object for fetch
-    # In Cloudflare Workers, fetch accepts a Request object or URL string
-    fetch_options = {
+    # Build fetch options as Python dict first
+    fetch_options_dict = {
         "method": method.upper(),
-        "headers": request_headers,
     }
-    if body is not None:
-        fetch_options["body"] = body
     
-    # Call fetch (it's async in Workers)
-    response = await _worker_fetch(full_url, **fetch_options)
+    # Convert headers dict to JavaScript object explicitly
+    if JSObject is not None and request_headers:
+        fetch_options_dict["headers"] = JSObject.fromEntries([
+            [k, v] for k, v in request_headers.items()
+        ])
+    else:
+        fetch_options_dict["headers"] = request_headers
+    
+    # Convert body from bytes to string for text-based content types
+    # Cloudflare Workers Python fetch API (via Pyodide) expects string for form-encoded and JSON
+    if body is not None:
+        content_type = request_headers.get("Content-Type", "")
+        if isinstance(body, bytes):
+            # For text-based content types, decode bytes to string
+            if content_type in ("application/x-www-form-urlencoded", "application/json"):
+                fetch_options_dict["body"] = body.decode("utf-8")
+            else:
+                # Keep binary data as bytes
+                fetch_options_dict["body"] = body
+        else:
+            fetch_options_dict["body"] = body
+    
+    # Convert entire fetch_options dict to JavaScript object
+    if JSObject is not None:
+        fetch_options = JSObject.fromEntries([
+            [k, v] for k, v in fetch_options_dict.items()
+        ])
+    else:
+        fetch_options = fetch_options_dict
+    
+    # Call fetch with URL and options
+    try:
+        response = await _worker_fetch(full_url, fetch_options)
+    except Exception as exc:
+        logger.error(
+            "Fetch call failed: url=%s, method=%s, error=%s",
+            full_url,
+            method.upper(),
+            exc,
+            exc_info=True,
+        )
+        raise
     
     # Extract response data
     status = response.status
     
     # Convert Headers object to dict
-    # Cloudflare Workers fetch response.headers is a Headers object
-    # Headers object supports keys() and get() methods
     response_headers = {}
     for key in response.headers.keys():
         value = response.headers.get(key)
         if value:
             response_headers[key.lower()] = value
     
-    # Read response body - same approach as static_loader.py
-    # response.bytes() returns bytes directly in Cloudflare Workers
+    # Read response body
     content = await response.bytes()
     if not isinstance(content, bytes):
         content = bytes(content)

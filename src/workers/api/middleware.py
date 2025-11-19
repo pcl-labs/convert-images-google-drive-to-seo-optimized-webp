@@ -216,7 +216,12 @@ class AuthCookieMiddleware(BaseHTTPMiddleware):
     """Populate request.state.user from JWT in access_token cookie for DRY auth."""
 
     async def dispatch(self, request: Request, call_next: Callable):
+        # Try cookie first, then Authorization header
         token = request.cookies.get("access_token")
+        if not token:
+            auth_header = request.headers.get("Authorization", "")
+            if auth_header.startswith("Bearer "):
+                token = auth_header[7:].strip()
         if token:
             try:
                 payload = verify_jwt_token(token)
@@ -259,8 +264,9 @@ class AuthCookieMiddleware(BaseHTTPMiddleware):
                                 # Provider IDs remain best-effort; don't force a DB hit just for them.
                                 github_id = github_id or stored.get("github_id")
                                 google_id = google_id or stored.get("google_id")
-                    except Exception as exc:
+                    except (HTTPException, Exception) as exc:
                         # DB unavailable - continue without DB enrichment, don't fail request
+                        # HTTPException(500) from ensure_db() is caught here so it doesn't fail the request
                         logger.debug("AuthCookieMiddleware: DB unavailable, cannot hydrate user from DB - continuing with JWT claims only: %s", exc)
                 request.state.user = {
                     "user_id": user_id,

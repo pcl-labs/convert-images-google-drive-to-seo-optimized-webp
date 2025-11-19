@@ -896,25 +896,19 @@ async def providers_status(user: dict = Depends(get_current_user)):
 
 
 @router.get("/auth/me", response_model=UserResponse, tags=["Authentication"])
-async def get_current_user_info(user: dict = Depends(get_current_user)):
-    created_at_val = user.get("created_at")
-    created_at_dt = None
-    if isinstance(created_at_val, datetime):
-        created_at_dt = created_at_val if created_at_val.tzinfo else created_at_val.replace(tzinfo=timezone.utc)
-    elif isinstance(created_at_val, str):
-        try:
-            dt = datetime.fromisoformat(created_at_val)
-            created_at_dt = dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-        except Exception:
-            created_at_dt = None
-    if created_at_dt is None:
-        # Use current time if DB unavailable - don't fail request
-        created_at_dt = datetime.now(timezone.utc)
+async def get_current_user_info(request: Request):
+    # Get user from state set by AuthCookieMiddleware
+    user = getattr(request.state, "user", None)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required",
+        )
     return UserResponse(
-        user_id=user["user_id"],
+        user_id=user.get("user_id", "unknown"),
         github_id=user.get("github_id"),
         email=user.get("email"),
-        created_at=created_at_dt,
+        created_at=datetime.now(timezone.utc),
     )
 
 

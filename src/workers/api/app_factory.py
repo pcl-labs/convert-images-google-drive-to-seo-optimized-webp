@@ -261,11 +261,15 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
     # Note: Middleware executes in REVERSE order of registration.
     # Register AuthCookieMiddleware before SessionMiddleware so SessionMiddleware executes first
     # (SessionMiddleware sets request.state.session_user_id, AuthCookieMiddleware reads it)
-    app.add_middleware(SecurityHeadersMiddleware)
+    # Re-enabling AuthCookieMiddleware - core auth functionality
     app.add_middleware(AuthCookieMiddleware)
-    app.add_middleware(SessionMiddleware)
-    app.add_middleware(FlashMiddleware)
-    # Temporarily disabled RateLimitMiddleware - may cause issues with time.monotonic() in Workers
+    # SessionMiddleware and FlashMiddleware disabled - only used for toast notifications
+    # To re-enable: ensure D1 database is configured and SessionMiddleware is tested
+    # app.add_middleware(SessionMiddleware)
+    # app.add_middleware(FlashMiddleware)
+    
+    # RateLimitMiddleware disabled - uses time.monotonic() and asyncio.Lock() which may not work correctly in Workers
+    # To re-enable: implement using Cloudflare KV or Workers KV for distributed rate limiting
     # app.add_middleware(
     #     RateLimitMiddleware,
     #     max_per_minute=active_settings.rate_limit_per_minute,

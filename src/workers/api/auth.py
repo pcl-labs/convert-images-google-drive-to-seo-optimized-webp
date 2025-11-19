@@ -345,8 +345,27 @@ async def exchange_google_login_code(code: str, redirect_uri: str) -> Dict[str, 
     }
 
     try:
+        # Log the request details for debugging
+        logger.debug(
+            "Google token exchange request: url=https://oauth2.googleapis.com/token, data keys=%s",
+            list(data.keys()),
+        )
         async with AsyncSimpleClient(timeout=10.0) as client:
             response = await client.post("https://oauth2.googleapis.com/token", data=data)
+            logger.debug(
+                "Google token exchange response: status=%s, headers=%s, body_length=%s",
+                response.status_code,
+                dict(response.headers),
+                len(response.content),
+            )
+            # Log response text for non-200 status codes
+            if response.status_code != 200:
+                response_text = response.text[:500] if response.text else "(empty)"
+                logger.error(
+                    "Google token exchange error: status=%s, response_text=%r",
+                    response.status_code,
+                    response_text,
+                )
             response.raise_for_status()
             try:
                 return response.json()
@@ -354,12 +373,14 @@ async def exchange_google_login_code(code: str, redirect_uri: str) -> Dict[str, 
                 logger.error("Failed to parse Google token response: %s", exc)
                 raise AuthenticationError("Invalid response format from Google OAuth service") from exc
     except HTTPStatusError as exc:
+        # Log full response for debugging
+        response_body = exc.response.text[:500] if exc.response.text else "(empty)"
         logger.error(
-            "HTTP error during Google login token exchange: %s %s",
+            "HTTP error during Google login token exchange: %s - Response: %s",
             exc.response.status_code,
-            exc.response.text,
+            response_body,
         )
-        raise AuthenticationError(f"Failed to exchange Google code: HTTP {exc.response.status_code}") from exc
+        raise AuthenticationError(f"Failed to exchange Google code: HTTP {exc.response.status_code} - {response_body}") from exc
     except RequestError as exc:
         logger.error("Network error during Google login token exchange: %s", exc)
         raise AuthenticationError("Failed to connect to Google OAuth service") from exc
