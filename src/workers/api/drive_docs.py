@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 from .app_logging import get_logger
 from .database import Database, get_document, update_document
 from .google_oauth import build_docs_service_for_user, build_drive_service_for_user
-from src.workers.core.google_async import execute_google_request
+from core.google_async import execute_google_request
 
 logger = get_logger(__name__)
 

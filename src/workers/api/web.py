@@ -10,7 +10,8 @@ import logging
 import json
 import secrets
 import hmac
-from jinja2 import Environment, PackageLoader
+from jinja2 import Environment, PackageLoader, FileSystemLoader
+import jinja2
 
 from .models import (
     OptimizeDocumentRequest,
@@ -66,9 +67,9 @@ from .pipeline_stream import pipeline_stream_response
 from .flash import add_flash
 from .constants import COOKIE_OAUTH_STATE, COOKIE_GOOGLE_OAUTH_STATE
 from .utils import normalize_ui_status
-from src.workers.core.constants import GOOGLE_SCOPE_DRIVE, GOOGLE_SCOPE_YOUTUBE, GOOGLE_SCOPE_GMAIL, GOOGLE_INTEGRATION_SCOPES
+from core.constants import GOOGLE_SCOPE_DRIVE, GOOGLE_SCOPE_YOUTUBE, GOOGLE_SCOPE_GMAIL, GOOGLE_INTEGRATION_SCOPES
 from .google_oauth import parse_google_scope_list, build_docs_service_for_user, build_drive_service_for_user
-from src.workers.core.google_async import execute_google_request
+from core.google_async import execute_google_request
 from .drive_workspace import ensure_drive_workspace
 from .drive_docs import sync_drive_doc_for_document
 from .ai_preferences import (
@@ -128,10 +129,12 @@ def _validate_csrf(request: Request, form_token: Optional[str]) -> None:
 router = APIRouter()
 
 # Templates are now packaged in src/workers/templates/
-# Use PackageLoader to load templates from the package, which works in both
-# local dev and Cloudflare Workers (Pyodide) environments
+# Use FileSystemLoader with path relative to src/workers (which is the root)
+from pathlib import Path
+
+templates_path = Path(__file__).parent.parent / "templates"
 jinja_env = Environment(
-    loader=PackageLoader("workers", "templates"),
+    loader=FileSystemLoader(str(templates_path)),
     autoescape=True,
     auto_reload=False,  # Disable auto-reload in production
 )

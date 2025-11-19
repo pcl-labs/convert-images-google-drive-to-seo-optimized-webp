@@ -18,7 +18,7 @@ from .database import (
     upsert_drive_watch,
 )
 from .google_oauth import build_drive_service_for_user
-from src.workers.core.google_async import execute_google_request
+from core.google_async import execute_google_request
 
 logger = get_logger(__name__)
 

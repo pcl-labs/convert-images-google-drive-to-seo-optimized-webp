@@ -151,11 +151,12 @@ def mount_static_files(app, static_dir_setting: Optional[str] = None) -> None:
     
     # Final fallback: Use custom ASGI router for package resources (Works workers)
     # This handles the case where we can't access filesystem but can read from package
-    from starlette.routing import Mount
+    from starlette.routing import Mount, Route
     
     app.mount(
         "/static",
         Mount(
+            path="/static",
             routes=[
                 Route("/{path:path}", _serve_static_file, methods=["GET"]),
             ],

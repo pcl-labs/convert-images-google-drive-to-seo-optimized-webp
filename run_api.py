@@ -7,7 +7,7 @@ NOTE: This module is for LOCAL DEVELOPMENT ONLY.
 It is NOT used in the Cloudflare Python Worker runtime.
 
 The Cloudflare Worker uses src/workers/main.py as its entrypoint,
-which uses the ASGI adapter (src/workers/asgi_adapter.py) to handle requests
+which uses Cloudflare's built-in `asgi` module to handle requests
 without Uvicorn.
 
 For local development: python run_api.py

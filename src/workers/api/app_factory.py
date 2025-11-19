@@ -5,7 +5,7 @@ This factory is used in both environments:
 - Local Development: Called by src/workers/api/main.py, which is imported by
   run_api.py (Uvicorn server). Uvicorn is NOT used in the Worker runtime.
 - Cloudflare Worker: Called by src/workers/main.py (WorkerEntrypoint), which
-  uses src/workers/asgi_adapter.py to handle requests without Uvicorn.
+  uses Cloudflare's built-in `asgi` module to handle requests without Uvicorn.
 
 The same FastAPI app instance works in both environments via the ASGI interface.
 """

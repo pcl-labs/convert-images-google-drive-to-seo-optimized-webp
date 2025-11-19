@@ -17,7 +17,7 @@ compatibility_flags = ["python_workers"]  # Required for Python Workers
 # Environment variables (accessible via os.environ in Worker)
 # These are set at deploy time and can be overridden per-environment
 [vars]
-ENVIRONMENT = "production"  # Used by Settings.environment
+ENVIRONMENT = "development"  # Used by Settings.environment (set to "production" for prod deploy)
 DEBUG = "false"             # Used by Settings.debug
 
 # D1 Database binding

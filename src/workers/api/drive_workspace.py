@@ -17,7 +17,7 @@ from .database import (
 )
 from .google_oauth import build_docs_service_for_user, build_drive_service_for_user
 from .drive_watch import ensure_drive_watch
-from src.workers.core.google_async import execute_google_request
+from core.google_async import execute_google_request
 
 logger = get_logger(__name__)
 

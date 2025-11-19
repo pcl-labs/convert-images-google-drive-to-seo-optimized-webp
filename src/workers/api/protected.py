@@ -1,7 +1,7 @@
 MAX_TEXT_LENGTH = 20000  # configurable upper bound for text ingestion
 from fastapi import APIRouter, Request, Depends, HTTPException, status
 from fastapi.responses import RedirectResponse, PlainTextResponse
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
 import uuid
 import secrets
 import json
@@ -62,18 +62,17 @@ from .google_oauth import (
 from .constants import COOKIE_GOOGLE_OAUTH_STATE
 from .app_logging import get_logger
 from .exceptions import JobNotFoundError
-from ..core.drive_utils import extract_folder_id_from_input
-from ..core.google_clients import GoogleAPIError
-from ..core.youtube_api import fetch_video_metadata, YouTubeAPIError
-from ..core.youtube_captions import YouTubeCaptionsError
+from core.drive_utils import extract_folder_id_from_input
+from core.google_clients import GoogleAPIError
+from core.youtube_api import fetch_video_metadata, YouTubeAPIError
+from core.youtube_captions import YouTubeCaptionsError
 from .deps import (
     ensure_db,
     ensure_services,
     get_current_user,
     parse_job_progress,
 )
-from .utils import enqueue_job_with_guard
-from ..core.url_utils import parse_youtube_video_id
+from core.url_utils import parse_youtube_video_id
 from .drive_workspace import ensure_drive_workspace, ensure_document_drive_structure, link_document_drive_workspace
 from .drive_docs import sync_drive_doc_for_document
 from .youtube_ingest import ingest_youtube_document, build_outline_from_chapters
@@ -112,6 +111,47 @@ def _validate_redirect_path(path: str, fallback: str) -> str:
 def _parse_job_progress_model(progress_str: str) -> JobProgress:
     data = parse_job_progress(progress_str) or {}
     return JobProgress(**data)
+
+
+async def enqueue_job_with_guard(
+    queue: Any,
+    job_id: str,
+    user_id: str,
+    payload: Dict[str, Any],
+    allow_inline_fallback: bool = False,
+) -> Tuple[bool, Optional[Exception], bool]:
+    """
+    Enqueue a job with environment-aware error handling.
+    
+    Returns:
+        (enqueued: bool, exception: Optional[Exception], should_fail: bool)
+        - enqueued: True if successfully enqueued
+        - exception: Exception if enqueue failed, None otherwise
+        - should_fail: True if the caller should raise an HTTPException (production mode)
+    """
+    from .cloudflare_queue import QueueProducer
+    
+    if not isinstance(queue, QueueProducer):
+        # Fallback: try to use queue directly if it's a QueueLike
+        try:
+            await queue.send(payload)
+            return True, None, False
+        except Exception as e:
+            logger.error("Queue send failed", exc_info=True, extra={"job_id": job_id})
+            should_fail = settings.environment == "production" and not allow_inline_fallback
+            return False, e, should_fail
+    
+    try:
+        enqueued = await queue.send_generic(payload)
+        if enqueued:
+            return True, None, False
+        else:
+            should_fail = settings.environment == "production" and not allow_inline_fallback
+            return False, None, should_fail
+    except Exception as e:
+        logger.error("Queue send failed", exc_info=True, extra={"job_id": job_id})
+        should_fail = settings.environment == "production" and not allow_inline_fallback
+        return False, e, should_fail
 
 
 def _summarize_google_tokens(rows: list[dict]) -> dict:

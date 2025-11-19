@@ -4,17 +4,22 @@ Cloudflare Worker entrypoint that forwards requests into the shared FastAPI app.
 
 from __future__ import annotations
 
-import asyncio
-import logging
+import sys
+from pathlib import Path
+
+# Add src/workers to Python path for Cloudflare Workers
+# This allows imports to work when main.py is executed directly
+_workers_path = Path(__file__).parent
+if str(_workers_path) not in sys.path:
+    sys.path.insert(0, str(_workers_path))
 
 from workers import WorkerEntrypoint
+import asgi
 
-logger = logging.getLogger(__name__)
+from runtime import apply_worker_env
 
-# Lazily initialize the FastAPI app the first time a request hits the worker.
-fastapi_app = None
-_app_lock: asyncio.Lock | None = None
-_app_init_error: Exception | None = None
+# Lazily initialize the FastAPI app the first time a request hits the worker
+app = None
 
 
 class Default(WorkerEntrypoint):
@@ -22,63 +27,46 @@ class Default(WorkerEntrypoint):
     Cloudflare Python Worker entrypoint.
     
     This class is the main entrypoint for the Cloudflare Worker runtime.
-    It handles HTTP requests by forwarding them to the FastAPI app via the
-    ASGI adapter (workers.asgi_adapter.handle_worker_request).
+    It handles HTTP requests by forwarding them to the FastAPI app via
+    Cloudflare's built-in ASGI server.
     
     The FastAPI app is lazily initialized on the first request to avoid
     hitting Cloudflare's startup CPU limit.
-    
-    Note: This is NOT used in local development. Local dev uses run_api.py
-    with Uvicorn. The Worker runtime does NOT use Uvicorn.
     """
     async def fetch(self, request):
-        global fastapi_app, _app_init_error, _app_lock
+        global app
         
-        # Import inside the handler to avoid startup CPU limit
-        from workers.runtime import apply_worker_env
-        from api.app_factory import create_app
-        from workers.asgi_adapter import handle_worker_request
-        
+        # 1) Apply Worker env → os.environ before importing/using config
+        # This ensures JWT_SECRET_KEY and other secrets are in os.environ
+        # before config.py evaluates Settings.from_env() at import time
         apply_worker_env(self.env)
-
-        if _app_lock is None:
-            _app_lock = asyncio.Lock()
-
-        if fastapi_app is None and _app_init_error is None:
-            async with _app_lock:
-                if fastapi_app is None and _app_init_error is None:
-                    try:
-                        fastapi_app = create_app()
-                    except Exception as exc:
-                        logger.exception(
-                            "Failed to initialize FastAPI app in worker",
-                            exc_info=True,
-                        )
-                        _app_init_error = exc
-                        raise
-
-        if _app_init_error is not None:
-            # Re-raise the initialization error for subsequent requests
-            raise _app_init_error.with_traceback(_app_init_error.__traceback__)
-
-        return await handle_worker_request(fastapi_app, request, self.env, self.ctx)
+        
+        # 2) Import app_factory AFTER env is applied (avoids config.py reading env too early)
+        from api.app_factory import create_app
+        
+        # 3) Lazily create FastAPI app once per isolate
+        if app is None:
+            app = create_app()
+        
+        # 4) Delegate to Cloudflare's ASGI server
+        return await asgi.fetch(app, request, self.env)
 
     async def on_fetch(self, request, env, ctx):
         """Cloudflare Python Worker entrypoint for fetch events.
 
         This method is discovered by the Workers runtime; delegate to the
-        existing fetch() implementation which uses self.env/self.ctx.
+        existing fetch() implementation.
         """
         return await self.fetch(request)
     
     async def queue(self, batch, env):
         """Handle queue messages from Cloudflare Queues."""
         # Import inside the handler to avoid startup CPU limit
-        from workers.runtime import apply_worker_env
+        from runtime import apply_worker_env
         from api.database import Database
-        from workers.consumer import handle_queue_message
+        from consumer import handle_queue_message
         from api.config import settings
-        from workers.api.cloudflare_queue import QueueProducer
+        from api.cloudflare_queue import QueueProducer
         
         apply_worker_env(env)
         db = Database(db=env.DB)

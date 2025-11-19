@@ -14,7 +14,7 @@ except Exception:  # pragma: no cover - OpenAI optional during tests
     AsyncOpenAI = None  # type: ignore
     OpenAIError = Exception  # type: ignore
 
-from src.workers.api.config import settings
+from api.config import settings
 
 logger = logging.getLogger(__name__)
 

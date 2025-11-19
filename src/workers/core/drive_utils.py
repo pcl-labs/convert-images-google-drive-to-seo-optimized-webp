@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, Optional, Set, Tuple, overload, Literal
 
-from simple_http import HTTPStatusError, RequestError, SimpleClient
+from api.simple_http import HTTPStatusError, RequestError, SimpleClient
 
 from .google_clients import GoogleAPIError, GoogleDriveClient, OAuthToken
 from .constants import DEFAULT_EXTENSIONS

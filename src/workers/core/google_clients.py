@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
-from simple_http import HTTPStatusError, RequestError, SimpleClient, SimpleResponse
+from api.simple_http import HTTPStatusError, RequestError, SimpleClient, SimpleResponse
 
 logger = logging.getLogger(__name__)
 

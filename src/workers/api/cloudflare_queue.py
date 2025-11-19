@@ -13,7 +13,7 @@ import logging
 import datetime
 from typing import Dict, Any, Optional, Protocol
 
-from simple_http import AsyncSimpleClient
+from api.simple_http import AsyncSimpleClient
 
 from .config import settings
 
