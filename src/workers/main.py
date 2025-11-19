@@ -18,6 +18,19 @@ _app_init_error: Exception | None = None
 
 
 class Default(WorkerEntrypoint):
+    """
+    Cloudflare Python Worker entrypoint.
+    
+    This class is the main entrypoint for the Cloudflare Worker runtime.
+    It handles HTTP requests by forwarding them to the FastAPI app via the
+    ASGI adapter (workers.asgi_adapter.handle_worker_request).
+    
+    The FastAPI app is lazily initialized on the first request to avoid
+    hitting Cloudflare's startup CPU limit.
+    
+    Note: This is NOT used in local development. Local dev uses run_api.py
+    with Uvicorn. The Worker runtime does NOT use Uvicorn.
+    """
     async def fetch(self, request):
         global fastapi_app, _app_init_error, _app_lock
         
