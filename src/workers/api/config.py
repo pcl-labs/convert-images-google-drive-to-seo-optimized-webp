@@ -78,8 +78,6 @@ class Settings:
     jwt_expiration_hours: int = 24
     jwt_use_cookies: bool = True
 
-    encryption_key: Optional[str] = None
-
     api_key_length: int = 32
     pbkdf2_iterations: int = 600_000
 
@@ -152,8 +150,6 @@ class Settings:
         self.auto_generate_after_ingest = _bool(self.auto_generate_after_ingest)
         if not self.jwt_secret_key:
             raise ValueError("JWT_SECRET_KEY is required")
-        if self.environment == "production" and not self.encryption_key:
-            raise ValueError("ENCRYPTION_KEY is required in production")
         if self.environment == "production" and self.use_inline_queue:
             raise ValueError("USE_INLINE_QUEUE=true is not allowed in production")
         if not self.use_inline_queue:

@@ -14,10 +14,6 @@ wrangler secret put GITHUB_CLIENT_SECRET
 # JWT secret (generate a strong random string)
 wrangler secret put JWT_SECRET_KEY
 
-# Encryption key for ChaCha20-Poly1305 (32-byte base64 URL-safe). Generate with:
-# python -c "import os, base64; print(base64.urlsafe_b64encode(os.urandom(32)).decode())"
-wrangler secret put ENCRYPTION_KEY
-
 # Google OAuth client (single client with Drive + YouTube scopes)
 wrangler secret put GOOGLE_CLIENT_ID
 wrangler secret put GOOGLE_CLIENT_SECRET
@@ -92,7 +88,6 @@ These are set as secrets in Cloudflare Workers:
 - `GITHUB_CLIENT_ID` - GitHub OAuth Client ID (required)
 - `GITHUB_CLIENT_SECRET` - GitHub OAuth Client Secret (required)
 - `JWT_SECRET_KEY` - Secret key for JWT tokens (required)
-- `ENCRYPTION_KEY` - Base64 URL-safe 32-byte key for ChaCha20-Poly1305 encryption (required)
 - `GITHUB_REDIRECT_URI` - OAuth redirect URI (optional, defaults to callback URL)
 - `ENVIRONMENT` - Environment name (optional, defaults to "production")
 - `DEBUG` - Enable debug mode (optional, defaults to "false")
@@ -180,7 +175,6 @@ pytest --cov=. tests/
 - [ ] D1 database created and schema migrated
 - [ ] Queues created (`quill-jobs` and `quill-dlq`)
 - [ ] All secrets set via `wrangler secret put`
-  - [ ] ENCRYPTION_KEY set (ChaCha20-Poly1305 key). Plan key rotation and data re-encryption outside of runtime.
 - [ ] Environment variables configured (`.env` for local, secrets for production)
 - [ ] `wrangler.toml` configured with queue bindings
 - [ ] Health endpoint responding

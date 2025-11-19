@@ -763,24 +763,7 @@ async def get_user_by_api_key(db: Database, api_key: str) -> Optional[Dict[str, 
 
 
 # Google OAuth token operations (per integration)
-def _decrypt_google_token_row(row: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    if not row:
-        return None
-    from .crypto import decrypt
-    decoded = dict(row)
-    for field in ("access_token", "refresh_token"):
-        if decoded.get(field):
-            try:
-                decoded[field] = decrypt(decoded[field])
-            except Exception as e:
-                # Log decryption failure with context and return None to prevent processing partial data
-                logger.error(
-                    f"Failed to decrypt {field} for user_id={decoded.get('user_id')}, "
-                    f"integration={decoded.get('integration')}",
-                    exc_info=True
-                )
-                return None
-    return decoded
+# Note: Tokens are stored as plain text - Cloudflare D1 encrypts data at rest automatically
 
 
 async def list_google_tokens(db: Database, user_id: str) -> List[Dict[str, Any]]:
@@ -790,9 +773,7 @@ async def list_google_tokens(db: Database, user_id: str) -> List[Dict[str, Any]]
     if not rows:
         return tokens
     for row in rows:
-        decoded = _decrypt_google_token_row(dict(row))
-        if decoded:
-            tokens.append(decoded)
+        tokens.append(dict(row))
     return tokens
 
 
@@ -803,7 +784,7 @@ async def get_google_token(db: Database, user_id: str, integration: str) -> Opti
     )
     if not result:
         return None
-    return _decrypt_google_token_row(dict(result))
+    return dict(result)
 
 
 async def upsert_google_token(
@@ -816,11 +797,11 @@ async def upsert_google_token(
     token_type: Optional[str],
     scopes: Optional[str],
 ) -> None:
-    """Insert or update Google OAuth tokens for a specific integration."""
-    from .crypto import encrypt
+    """Insert or update Google OAuth tokens for a specific integration.
+    
+    Tokens are stored as plain text - Cloudflare D1 encrypts data at rest automatically.
+    """
     token_id = f"{user_id}:{integration}"
-    encrypted_access = encrypt(access_token) if access_token else None
-    encrypted_refresh = encrypt(refresh_token) if refresh_token else None
     query = """
         INSERT INTO google_integration_tokens (
             token_id, user_id, integration, access_token, refresh_token, expiry, token_type, scopes, created_at, updated_at
@@ -835,7 +816,7 @@ async def upsert_google_token(
     """
     await db.execute(
         query,
-        (token_id, user_id, integration, encrypted_access, encrypted_refresh, expiry, token_type, scopes),
+        (token_id, user_id, integration, access_token, refresh_token, expiry, token_type, scopes),
     )
 
 
@@ -846,12 +827,13 @@ async def update_google_token_expiry(
     access_token: str,
     expiry: Optional[str],
 ) -> None:
-    """Update access token and expiry after refresh."""
-    from .crypto import encrypt
-    encrypted_access = encrypt(access_token) if access_token else None
+    """Update access token and expiry after refresh.
+    
+    Tokens are stored as plain text - Cloudflare D1 encrypts data at rest automatically.
+    """
     await db.execute(
         "UPDATE google_integration_tokens SET access_token = ?, expiry = ?, updated_at = datetime('now') WHERE user_id = ? AND integration = ?",
-        (encrypted_access, expiry, user_id, integration),
+        (access_token, expiry, user_id, integration),
     )
 
 

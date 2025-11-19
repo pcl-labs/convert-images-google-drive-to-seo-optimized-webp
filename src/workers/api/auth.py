@@ -8,8 +8,9 @@ import base64
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, Tuple
 from urllib.parse import urlencode
-import jwt
 import logging
+
+from .jwt import encode, decode, ExpiredSignatureError, InvalidTokenError
 
 from simple_http import AsyncSimpleClient, HTTPStatusError, RequestError
 
@@ -130,21 +131,21 @@ def generate_jwt_token(
         "exp": datetime.now(timezone.utc) + timedelta(hours=settings.jwt_expiration_hours),
         "iat": datetime.now(timezone.utc),
     }
-    return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
+    return encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
 
 def verify_jwt_token(token: str) -> Dict[str, Any]:
     """Verify and decode a JWT token."""
     try:
-        payload = jwt.decode(
+        payload = decode(
             token,
             settings.jwt_secret_key,
             algorithms=[settings.jwt_algorithm]
         )
         return payload
-    except jwt.ExpiredSignatureError:
+    except ExpiredSignatureError:
         raise AuthenticationError("Token has expired")
-    except jwt.InvalidTokenError:
+    except InvalidTokenError:
         raise AuthenticationError("Invalid token")
 
 

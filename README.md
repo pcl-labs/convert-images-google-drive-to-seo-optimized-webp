@@ -274,8 +274,7 @@ pytest tests/test_local.py -v
 Set in `.env` or your shell as needed:
 
 **Required:**
-- `JWT_SECRET_KEY` (required) - Secret key for JWT token generation and encryption key derivation
-- `ENCRYPTION_KEY` (required in production) - Base64 URL-safe 32-byte key used by the ChaCha20-Poly1305 cipher for encrypting sensitive data
+- `JWT_SECRET_KEY` (required) - Secret key for JWT token generation
 
 **OAuth (optional):**
 - `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_REDIRECT_URI`
@@ -311,7 +310,7 @@ For production, set `USE_INLINE_QUEUE=false` and provide `CLOUDFLARE_ACCOUNT_ID`
 - `uvicorn`: ASGI server for FastAPI
 - `python-multipart`: Form data support
 - `pydantic`: Data validation for request/response models
-- `pyjwt`: JWT handling (HMAC-only)
+- Pure-Python JWT implementation (HS256 only, using standard library)
 - `pytest`: Testing framework
 
 ## Security Features
@@ -331,20 +330,11 @@ The application includes in-memory rate limiting middleware that tracks requests
     - **Redis** for distributed rate limiting
     - **Cloudflare Rate Limiting** (native CF feature)
 
-### Token Encryption
+### Data Storage Security
 
-Google OAuth tokens (`access_token` and `refresh_token`) are encrypted at rest using [ChaCha20-Poly1305](https://cryptography.io/en/latest/hazmat/primitives/aead/#chacha20-poly1305) via the `cryptography` library. Each ciphertext is a URL-safe base64 string containing:
+Google OAuth tokens and other sensitive data are stored in Cloudflare D1, which automatically encrypts data at rest. No application-level encryption is required - Cloudflare handles encryption at the storage layer.
 
-- Version byte
-- 96-bit nonce (randomly generated per encryption)
-- ChaCha20-Poly1305 ciphertext + authentication tag
-
-The cipher key comes from the `ENCRYPTION_KEY` environment variable (a base64-encoded 32 byte key suitable for ChaCha20-Poly1305).
-
-**Key Management:**
-- Generate the key with `python -c "import os, base64; print(base64.urlsafe_b64encode(os.urandom(32)).decode())"`
-- **Key Rotation**: deploy a new `ENCRYPTION_KEY`, then cycle user tokens (re-link Google integrations) or run a migration script that decrypts with the old key and re-encrypts with the new key. Once data is re-encrypted you can discard the old key.
-- **Backup**: Keep secure backups of both `JWT_SECRET_KEY` and `ENCRYPTION_KEY`; losing either means OAuth tokens become unrecoverable.
+**Note:** For production deployments, ensure your Cloudflare D1 database is properly configured and access is restricted via Workers bindings and proper authentication.
 
 ## License
 
