@@ -1055,78 +1055,55 @@ async def styleguide(request: Request):
 
 
 @router.get("/dashboard", response_class=HTMLResponse)
-async def dashboard(request: Request, page: int = 1):
+async def dashboard(request: Request, user: dict = Depends(get_current_user)):
     """
-    Simplified dashboard endpoint to verify authentication is working.
-    Shows user info if authenticated, or "No auth" if not.
+    Main dashboard page showing job stats, integrations, and ingest forms.
     """
-    # Debug: Check what cookies are present
-    cookies_present = list(request.cookies.keys())
-    access_token_cookie = request.cookies.get("access_token")
-    auth_header = request.headers.get("Authorization", "")
-    has_bearer_token = auth_header.startswith("Bearer ")
+    # Handle DB initialization failures with explicit 503 for protected routes
+    try:
+        db = ensure_db()
+    except HTTPException as exc:
+        if exc.status_code == 500:
+            logger.error("Dashboard: Database unavailable")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Service temporarily unavailable"
+            ) from exc
+        raise
     
-    logger.debug(
-        "Dashboard: cookies=%s, access_token_present=%s, access_token_length=%s, request.state.user=%s, has_bearer_token=%s",
-        cookies_present,
-        access_token_cookie is not None,
-        len(access_token_cookie) if access_token_cookie else 0,
-        getattr(request.state, "user", None) is not None,
-        has_bearer_token,
-    )
+    csrf = _get_csrf_token(request)
     
-    user = getattr(request.state, "user", None)
-    if not user:
-        # Provide detailed debugging info
-        debug_info = {
-            "message": "No authentication found",
-            "cookies_present": cookies_present,
-            "access_token_cookie": {
-                "present": access_token_cookie is not None,
-                "length": len(access_token_cookie) if access_token_cookie else 0,
-            },
-            "authorization_header": {
-                "present": bool(auth_header),
-                "has_bearer": has_bearer_token,
-            },
-            "request_state": {
-                "user_present": False,
-                "user_id_present": hasattr(request.state, "user_id"),
-            },
-            "how_to_authenticate": {
-                "github": "/auth/github/start",
-                "google": "/auth/google/login/start",
-                "note": "After OAuth login, you'll be redirected here with an access_token cookie",
-            },
-        }
-        
-        # Try to verify token if present
-        token_to_verify = access_token_cookie
-        if not token_to_verify and has_bearer_token:
-            token_to_verify = auth_header[7:].strip()
-        
-        if token_to_verify:
-            try:
-                from .auth import verify_jwt_token
-                payload = verify_jwt_token(token_to_verify)
-                debug_info["token_verification"] = {
-                    "valid": True,
-                    "user_id": payload.get("user_id"),
-                    "email": payload.get("email"),
-                    "exp": payload.get("exp"),
-                }
-                debug_info["message"] = "Token found and valid, but request.state.user not set (middleware issue?)"
-            except Exception as exc:
-                debug_info["token_verification"] = {
-                    "valid": False,
-                    "error": str(exc),
-                    "error_type": type(exc).__name__,
-                }
-                debug_info["message"] = f"Token found but invalid: {str(exc)}"
-        
-        return JSONResponse(content=debug_info, status_code=200)
+    # Load job stats
+    stats: dict = {}
+    try:
+        stats = await get_job_stats(db, user["user_id"])
+    except Exception as exc:
+        logger.exception("Failed loading job stats: %s", exc)
+        stats = {"queued": 0, "running": 0, "completed": 0}
     
-    return PlainTextResponse(f"Hello {user.get('email', user.get('user_id', 'user'))}! Auth is working. User ID: {user.get('user_id')}")
+    # Check Google integrations
+    google_tokens = await list_google_tokens(db, user["user_id"])  # type: ignore
+    token_map = {str(row.get("integration")).lower(): row for row in (google_tokens or []) if row.get("integration")}
+    drive_connected = "drive" in token_map
+    youtube_connected = "youtube" in token_map
+    
+    context = {
+        "request": request,
+        "user": user,
+        "stats": stats,
+        "drive_connected": drive_connected,
+        "youtube_connected": youtube_connected,
+        "csrf_token": csrf,
+        "content_schema_choices": CONTENT_SCHEMA_CHOICES,
+        "page_title": "Dashboard",
+    }
+    
+    template_name = "dashboard/index_fragment.html" if _is_htmx(request) else "dashboard/index.html"
+    resp = templates.TemplateResponse(template_name, context)
+    if not request.cookies.get("csrf_token"):
+        is_secure = _is_secure_request(request, settings)
+        resp.set_cookie("csrf_token", csrf, httponly=True, samesite="lax", secure=is_secure)
+    return resp
 
 
 def _is_htmx(request: Request) -> bool:

@@ -776,7 +776,15 @@ async def google_auth_start(
     request: Request,
     integration: str = Query("drive", description="Google integration to connect (drive, youtube, gmail)"),
     redirect: Optional[str] = Query(None, description="Optional path to redirect after linking"),
+    user: dict = Depends(get_current_user),
 ):
+    """Start Google OAuth flow for linking an integration.
+    
+    Stores OAuth state in user's session instead of cookies for better cross-site redirect reliability.
+    """
+    from .database import touch_user_session
+    import json
+    
     try:
         integration_key = normalize_google_integration(integration)
         if settings.base_url:
@@ -786,46 +794,81 @@ async def google_auth_start(
         state = secrets.token_urlsafe(16)
         auth_url = get_google_oauth_url(state, redirect_uri, integration=integration_key)
 
-        is_secure = settings.environment == "production" or request.url.scheme == "https"
+        # Store OAuth state in user's session instead of cookies
+        # This is more reliable for cross-site redirects
+        db = ensure_db()
+        session = getattr(request.state, "session", None)
+        session_id = getattr(request.state, "session_id", None)
+        
+        logger.debug(
+            "Google integration OAuth start: session_present=%s, session_id=%s, user_id=%s",
+            session is not None,
+            session_id,
+            user["user_id"],
+        )
+        
+        # If no session exists, create one for this authenticated user
+        if not session_id:
+            from .database import create_user_session, create_user
+            from datetime import timedelta
+            # Ensure user exists in database (required for foreign key constraint in user_sessions)
+            await create_user(
+                db,
+                user["user_id"],
+                github_id=user.get("github_id"),
+                google_id=user.get("google_id"),
+                email=user.get("email"),
+            )
+            session_id = secrets.token_urlsafe(32)
+            expires_at = datetime.now(timezone.utc) + timedelta(hours=settings.session_ttl_hours)
+            await create_user_session(
+                db,
+                session_id,
+                user["user_id"],
+                expires_at,
+                ip_address=(request.client.host if request.client else None),
+                user_agent=request.headers.get("user-agent"),
+                extra={"oauth_state": state, "google_redirect_uri": redirect_uri, "google_integration": integration_key},
+            )
+            redirect_path = redirect or f"/dashboard/integrations/{integration_key}"
+            redirect_path = _validate_redirect_path(redirect_path, f"/dashboard/integrations/{integration_key}")
+            # Update with redirect path
+            from .database import touch_user_session
+            await touch_user_session(
+                db,
+                session_id,
+                extra={"oauth_state": state, "google_redirect_uri": redirect_uri, "google_integration": integration_key, "google_redirect_next": redirect_path},
+            )
+            logger.info("Google integration OAuth: Created session %s and stored state for user %s", session_id, user["user_id"])
+            
+            # Set session cookie in response
+            is_secure = settings.environment == "production" or request.url.scheme == "https"
+            response = RedirectResponse(url=auth_url)
+            response.set_cookie(
+                key=settings.session_cookie_name,
+                value=session_id,
+                httponly=True,
+                secure=is_secure,
+                samesite="lax",
+                max_age=int(settings.session_ttl_hours * 3600),
+                path="/",
+            )
+            return response
+        else:
+            # Update session extra with OAuth state
+            current_extra = json.loads(session.get("extra", "{}")) if isinstance(session.get("extra"), str) else (session.get("extra") or {})
+            current_extra["oauth_state"] = state
+            current_extra["google_redirect_uri"] = redirect_uri
+            current_extra["google_integration"] = integration_key
+            redirect_path = redirect or f"/dashboard/integrations/{integration_key}"
+            redirect_path = _validate_redirect_path(redirect_path, f"/dashboard/integrations/{integration_key}")
+            current_extra["google_redirect_next"] = redirect_path
+            
+            await touch_user_session(db, session_id, extra=current_extra)
+            logger.info("Google integration OAuth: Stored state in session %s for user %s", session_id, user["user_id"])
+        
+        # If we stored in session, just redirect
         response = RedirectResponse(url=auth_url)
-        response.set_cookie(
-            key=COOKIE_GOOGLE_OAUTH_STATE,
-            value=state,
-            httponly=True,
-            secure=is_secure,
-            samesite="lax",
-            max_age=600,
-            path="/",
-        )
-        response.set_cookie(
-            key="google_redirect_uri",
-            value=redirect_uri,
-            httponly=True,
-            secure=is_secure,
-            samesite="lax",
-            max_age=600,
-            path="/",
-        )
-        response.set_cookie(
-            key="google_integration",
-            value=integration_key,
-            httponly=True,
-            secure=is_secure,
-            samesite="lax",
-            max_age=600,
-            path="/",
-        )
-        redirect_path = redirect or f"/dashboard/integrations/{integration_key}"
-        redirect_path = _validate_redirect_path(redirect_path, f"/dashboard/integrations/{integration_key}")
-        response.set_cookie(
-            key="google_redirect_next",
-            value=redirect_path,
-            httponly=True,
-            secure=is_secure,
-            samesite="lax",
-            max_age=600,
-            path="/",
-        )
         return response
     except Exception as e:
         logger.error(f"Google auth initiation failed: {e}")
@@ -834,26 +877,132 @@ async def google_auth_start(
 
 @router.get("/auth/google/callback", tags=["Authentication"])
 async def google_auth_callback(code: str, state: str, request: Request, user: dict = Depends(get_current_user)):
+    """Handle Google OAuth callback for integration linking.
+    
+    Retrieves OAuth state from user's session (preferred) or cookies (fallback).
+    """
+    from .database import touch_user_session
+    import json
+    
     db = ensure_db()
 
-    stored_state = request.cookies.get(COOKIE_GOOGLE_OAUTH_STATE)
-    if not stored_state or not secrets.compare_digest(stored_state, state):
-        logger.warning("Google OAuth state verification failed - possible CSRF attack")
+    # Try to get state from session first (preferred method)
+    stored_state = None
+    redirect_uri = None
+    integration_key = None
+    next_path = None
+    
+    session = getattr(request.state, "session", None)
+    session_id = getattr(request.state, "session_id", None)
+    
+    # If session isn't loaded by middleware, try to load it manually from cookie
+    # This can happen on cross-site redirects where middleware might not have loaded it
+    if not session_id:
+        session_cookie = request.cookies.get(settings.session_cookie_name)
+        if session_cookie:
+            from .database import get_user_session
+            try:
+                session = await get_user_session(db, session_cookie)
+                if session:
+                    session_id = session_cookie
+                    logger.debug("Google integration callback: Manually loaded session %s from cookie", session_id)
+            except Exception as exc:
+                logger.debug("Google integration callback: Failed to manually load session: %s", exc)
+    
+    logger.debug(
+        "Google integration callback: session_present=%s, session_id=%s, cookies=%s",
+        session is not None,
+        session_id,
+        list(request.cookies.keys()),
+    )
+    
+    if session and session_id:
+        session_extra = session.get("extra")
+        if session_extra:
+            if isinstance(session_extra, str):
+                try:
+                    session_extra = json.loads(session_extra)
+                except Exception:
+                    session_extra = {}
+            else:
+                session_extra = session_extra or {}
+            
+            stored_state = session_extra.get("oauth_state")
+            redirect_uri = session_extra.get("google_redirect_uri")
+            integration_key = session_extra.get("google_integration")
+            next_path = session_extra.get("google_redirect_next")
+            
+            logger.debug(
+                "Google integration callback: Found in session - state_present=%s, integration=%s",
+                stored_state is not None,
+                integration_key,
+            )
+            
+            # Clean up OAuth state from session after retrieving
+            if stored_state:
+                session_extra.pop("oauth_state", None)
+                session_extra.pop("google_redirect_uri", None)
+                session_extra.pop("google_integration", None)
+                session_extra.pop("google_redirect_next", None)
+                await touch_user_session(db, session_id, extra=session_extra)
+                logger.info("Google integration OAuth: Retrieved state from session %s", session_id)
+    
+    # Fallback to cookies if not found in session
+    if not stored_state:
+        stored_state = request.cookies.get(COOKIE_GOOGLE_OAUTH_STATE)
+        if not redirect_uri:
+            redirect_uri = request.cookies.get("google_redirect_uri")
+        if not integration_key:
+            integration_cookie = request.cookies.get("google_integration")
+            if integration_cookie:
+                try:
+                    integration_key = normalize_google_integration(integration_cookie)
+                except Exception:
+                    pass
+        if not next_path:
+            next_path = request.cookies.get("google_redirect_next")
+        
+        logger.debug(
+            "Google integration callback: Fallback to cookies - state_present=%s, integration=%s",
+            stored_state is not None,
+            integration_key,
+        )
+
+    # Verify state
+    if not stored_state:
+        logger.warning(
+            "Google OAuth state verification failed - no stored state found. session_id=%s, cookies=%s",
+            session_id,
+            list(request.cookies.keys()),
+        )
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid state parameter - possible CSRF attack")
+    
+    if not secrets.compare_digest(stored_state, state):
+        logger.warning(
+            "Google OAuth state verification failed - state mismatch. stored_length=%d, received_length=%d",
+            len(stored_state) if stored_state else 0,
+            len(state) if state else 0,
+        )
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid state parameter - possible CSRF attack")
 
-    redirect_uri = request.cookies.get("google_redirect_uri") or str(request.url.replace(query=""))
-    integration_cookie = request.cookies.get("google_integration")
-    try:
-        integration_key = normalize_google_integration(integration_cookie)
-    except Exception:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing or invalid Google integration selection")
+    # Validate integration
+    if not redirect_uri:
+        redirect_uri = str(request.url.replace(query=""))
+    if not integration_key:
+        try:
+            integration_key = normalize_google_integration(None)  # Will use default
+        except Exception:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing or invalid Google integration selection")
 
     try:
         await exchange_google_code(db, user["user_id"], code, redirect_uri, integration=integration_key)
         is_secure = settings.environment == "production" or request.url.scheme == "https"
-        next_path = request.cookies.get("google_redirect_next") or f"/dashboard/integrations/{integration_key}"
+        if not next_path:
+            next_path = f"/dashboard/integrations/{integration_key}"
         next_path = _validate_redirect_path(next_path, f"/dashboard/integrations/{integration_key}")
         response = RedirectResponse(url=next_path, status_code=status.HTTP_302_FOUND)
+        
+        # Clean up cookies (in case fallback was used)
         response.delete_cookie(key=COOKIE_GOOGLE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
         response.delete_cookie(key="google_redirect_uri", path="/", samesite="lax", httponly=True, secure=is_secure)
         response.delete_cookie(key="google_integration", path="/", samesite="lax", httponly=True, secure=is_secure)

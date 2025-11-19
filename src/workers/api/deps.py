@@ -63,7 +63,12 @@ def ensure_services() -> Tuple[Database, QueueProducer]:
     return _db_instance, _queue_producer
 
 
-def get_current_user(request: Request) -> dict:
+async def get_current_user(request: Request) -> dict:
+    """Get current authenticated user from request state.
+    
+    Must be async to avoid FastAPI running it in a thread pool,
+    which is not supported in Cloudflare Workers Python.
+    """
     user = getattr(request.state, "user", None)
     if user is None:
         raise HTTPException(

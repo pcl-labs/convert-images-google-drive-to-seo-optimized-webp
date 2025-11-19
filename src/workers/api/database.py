@@ -585,22 +585,29 @@ async def create_user(
     email: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Create a new user."""
+    # D1 doesn't accept Python None - convert to empty string for optional fields
+    # email is required (NOT NULL), so ensure it's not None
+    github_id_val = github_id if github_id is not None else ""
+    google_id_val = google_id if google_id is not None else ""
+    email_val = email if email is not None else ""
+    
     query = """
         INSERT INTO users (user_id, github_id, google_id, email)
         VALUES (?, ?, ?, ?)
         ON CONFLICT(user_id) DO UPDATE SET
-            github_id = COALESCE(excluded.github_id, users.github_id),
-            google_id = COALESCE(excluded.google_id, users.google_id),
-            email = COALESCE(excluded.email, users.email),
+            github_id = COALESCE(NULLIF(excluded.github_id, ''), users.github_id),
+            google_id = COALESCE(NULLIF(excluded.google_id, ''), users.google_id),
+            email = COALESCE(NULLIF(excluded.email, ''), users.email),
             updated_at = datetime('now')
         RETURNING *
     """
-    result = await db.execute(query, (user_id, github_id, google_id, email))
+    result = await db.execute(query, (user_id, github_id_val, google_id_val, email_val))
     if not result:
         # If RETURNING doesn't work, fetch the user manually
         logger.warning(f"RETURNING clause didn't return result, fetching user manually: {user_id}")
         return await get_user_by_id(db, user_id) or {}
-    return dict(result) if result else {}
+    # Convert JsProxy to dict (function is defined earlier in this file)
+    return _jsproxy_to_dict(result) if result else {}
 
 
 async def create_job_extended(
@@ -657,28 +664,37 @@ async def get_user_by_id(db: Database, user_id: str) -> Optional[Dict[str, Any]]
     """Get user by ID."""
     query = "SELECT * FROM users WHERE user_id = ?"
     result = await db.execute(query, (user_id,))
-    return dict(result) if result else None
+    if not result:
+        return None
+    # Convert JsProxy to dict
+    return _jsproxy_to_dict(result)
 
 
 async def get_user_by_github_id(db: Database, github_id: str) -> Optional[Dict[str, Any]]:
     """Get user by GitHub ID."""
     query = "SELECT * FROM users WHERE github_id = ?"
     result = await db.execute(query, (github_id,))
-    return dict(result) if result else None
+    if not result:
+        return None
+    return _jsproxy_to_dict(result)
 
 
 async def get_user_by_google_id(db: Database, google_id: str) -> Optional[Dict[str, Any]]:
     """Get user by Google subject identifier."""
     query = "SELECT * FROM users WHERE google_id = ?"
     result = await db.execute(query, (google_id,))
-    return dict(result) if result else None
+    if not result:
+        return None
+    return _jsproxy_to_dict(result)
 
 
 async def get_user_by_email(db: Database, email: str) -> Optional[Dict[str, Any]]:
     """Get user by email address."""
     query = "SELECT * FROM users WHERE email = ?"
     result = await db.execute(query, (email,))
-    return dict(result) if result else None
+    if not result:
+        return None
+    return _jsproxy_to_dict(result)
 
 
 async def delete_user_account(db: Database, user_id: str) -> bool:
@@ -873,8 +889,10 @@ async def list_google_tokens(db: Database, user_id: str) -> List[Dict[str, Any]]
     tokens: List[Dict[str, Any]] = []
     if not rows:
         return tokens
-    for row in rows:
-        tokens.append(dict(row))
+    # Convert JsProxy results to Python list
+    rows_list = _jsproxy_to_list(rows)
+    for row in rows_list:
+        tokens.append(_jsproxy_to_dict(row))
     return tokens
 
 
@@ -885,7 +903,8 @@ async def get_google_token(db: Database, user_id: str, integration: str) -> Opti
     )
     if not result:
         return None
-    return dict(result)
+    # Convert JsProxy to dict
+    return _jsproxy_to_dict(result)
 
 
 async def upsert_google_token(
@@ -1215,7 +1234,11 @@ async def list_documents(
         "SELECT COUNT(*) as total FROM documents WHERE user_id = ?",
         (user_id,),
     )
-    total = dict(count_row).get("total", 0) if count_row else 0
+    if count_row:
+        count_dict = _jsproxy_to_dict(count_row)
+        total = count_dict.get("total", 0)
+    else:
+        total = 0
     rows = await db.execute_all(
         """
         SELECT * FROM documents
@@ -1225,13 +1248,19 @@ async def list_documents(
         """,
         (user_id, page_size, offset),
     )
-    docs = [dict(row) for row in rows] if rows else []
+    if not rows:
+        return [], total
+    # Convert JsProxy results to Python list
+    rows_list = _jsproxy_to_list(rows)
+    docs = [_jsproxy_to_dict(row) for row in rows_list]
     return docs, total
 
 
 async def get_drive_workspace(db: Database, user_id: str) -> Optional[Dict[str, Any]]:
     row = await db.execute("SELECT * FROM drive_workspaces WHERE user_id = ?", (user_id,))
-    return dict(row) if row else None
+    if not row:
+        return None
+    return _jsproxy_to_dict(row)
 
 
 async def upsert_drive_workspace(
@@ -1257,7 +1286,9 @@ async def upsert_drive_workspace(
         """
     )
     row = await db.execute(query, (user_id, root_folder_id, drafts_folder_id, published_folder_id, meta_json))
-    return dict(row) if row else {}
+    if not row:
+        return {}
+    return _jsproxy_to_dict(row)
 
 
 async def upsert_drive_watch(
@@ -1301,7 +1332,9 @@ async def upsert_drive_watch(
             state,
         ),
     )
-    return dict(row) if row else {}
+    if not row:
+        return {}
+    return _jsproxy_to_dict(row)
 
 
 async def delete_drive_watch(
@@ -1330,12 +1363,16 @@ async def delete_drive_watch(
 
 async def get_drive_watch_by_document(db: Database, document_id: str) -> Optional[Dict[str, Any]]:
     row = await db.execute("SELECT * FROM drive_watches WHERE document_id = ?", (document_id,))
-    return dict(row) if row else None
+    if not row:
+        return None
+    return _jsproxy_to_dict(row)
 
 
 async def get_drive_watch_by_channel(db: Database, channel_id: str) -> Optional[Dict[str, Any]]:
     row = await db.execute("SELECT * FROM drive_watches WHERE channel_id = ?", (channel_id,))
-    return dict(row) if row else None
+    if not row:
+        return None
+    return _jsproxy_to_dict(row)
 
 
 async def list_drive_watches_for_user(db: Database, user_id: str) -> List[Dict[str, Any]]:
@@ -1347,7 +1384,11 @@ async def list_drive_watches_for_user(db: Database, user_id: str) -> List[Dict[s
         """,
         (user_id,),
     )
-    return [dict(row) for row in rows or []]
+    if not rows:
+        return []
+    # Convert JsProxy results to Python list
+    rows_list = _jsproxy_to_list(rows)
+    return [_jsproxy_to_dict(row) for row in rows_list]
 
 
 async def list_drive_watches_expiring(
@@ -1381,7 +1422,11 @@ async def list_drive_watches_expiring(
             """,
             (cutoff_iso,),
         )
-    return [dict(row) for row in rows or []]
+    if not rows:
+        return []
+    # Convert JsProxy results to Python list
+    rows_list = _jsproxy_to_list(rows)
+    return [_jsproxy_to_dict(row) for row in rows_list]
 
 
 async def update_drive_watch_fields(
@@ -2541,7 +2586,8 @@ async def get_user_session(db: Database, session_id: str) -> Optional[Dict[str, 
     )
     if not row:
         return None
-    return dict(row)
+    # Convert JsProxy to dict
+    return _jsproxy_to_dict(row)
 
 
 async def touch_user_session(

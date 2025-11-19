@@ -489,7 +489,12 @@ class DriveWorkspaceSyncService:
         else:
             query = "SELECT * FROM documents WHERE user_id = ? AND drive_file_id IS NOT NULL"
         rows = await self.db.execute_all(query, tuple(params))
-        return [dict(row) for row in rows or []]
+        if not rows:
+            return []
+        # Convert JsProxy results to Python list
+        from .database import _jsproxy_to_list, _jsproxy_to_dict
+        rows_list = _jsproxy_to_list(rows)
+        return [_jsproxy_to_dict(row) for row in rows_list]
 
     async def _mark_pending_revision(
         self,

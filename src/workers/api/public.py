@@ -257,6 +257,36 @@ async def test_fetch(url: Optional[str] = None, method: Optional[str] = None):
     }
 
 
+@router.get("/debug/users", tags=["Public"])
+async def debug_users():
+    """Debug endpoint to list all users in the database."""
+    try:
+        from .deps import ensure_db
+        from .database import _jsproxy_to_list, _jsproxy_to_dict
+        
+        db = ensure_db()
+        users = await db.execute_all("SELECT * FROM users ORDER BY created_at DESC LIMIT 50")
+        users_list = _jsproxy_to_list(users)
+        users_data = []
+        for u in users_list:
+            if isinstance(u, dict):
+                users_data.append(u)
+            else:
+                users_data.append(_jsproxy_to_dict(u))
+        
+        return {
+            "success": True,
+            "count": len(users_data),
+            "users": users_data,
+        }
+    except Exception as exc:
+        return {
+            "success": False,
+            "error": str(exc),
+            "error_type": type(exc).__name__
+        }
+
+
 @router.get("/debug/db-test", tags=["Public"])
 async def debug_db_test():
     """
