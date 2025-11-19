@@ -199,13 +199,112 @@ def test_decode_algorithm_case_insensitive():
     assert decoded3["sub"] == "user-123"
 
 
-def test_decode_with_none_algorithms():
-    """Test that decode accepts None for algorithms (allows any)."""
+def test_decode_with_none_algorithms_defaults_to_hs256():
+    """Test that decode defaults to HS256 when algorithms is None."""
     secret = "test-secret"
     payload = {"sub": "user-123", "exp": 9999999999}
     
     token = encode(payload, secret, algorithm="HS256")
+    # Passing None should default to ["HS256"]
     decoded = decode(token, secret, algorithms=None)
     
     assert decoded["sub"] == "user-123"
+
+
+def test_decode_defaults_to_hs256_when_algorithms_not_provided():
+    """Test that decode defaults to HS256 when algorithms parameter is omitted."""
+    secret = "test-secret"
+    payload = {"sub": "user-123", "exp": 9999999999}
+    
+    token = encode(payload, secret, algorithm="HS256")
+    # Not passing algorithms parameter should default to ["HS256"]
+    decoded = decode(token, secret)
+    
+    assert decoded["sub"] == "user-123"
+
+
+def test_decode_handles_iat_claim():
+    """Test that decode accepts and preserves iat (issued-at) claim."""
+    secret = "test-secret"
+    iat = int(datetime.now(timezone.utc).timestamp())
+    payload = {"sub": "user-123", "iat": iat, "exp": 9999999999}
+    
+    token = encode(payload, secret, algorithm="HS256")
+    decoded = decode(token, secret, algorithms=["HS256"])
+    
+    assert decoded["iat"] == iat
+    assert decoded["sub"] == "user-123"
+
+
+def test_decode_handles_iat_as_datetime():
+    """Test that decode handles iat claim when provided as datetime object."""
+    secret = "test-secret"
+    iat_time = datetime.now(timezone.utc)
+    payload = {"sub": "user-123", "iat": iat_time, "exp": 9999999999}
+    
+    token = encode(payload, secret, algorithm="HS256")
+    decoded = decode(token, secret, algorithms=["HS256"])
+    
+    # iat should be converted to timestamp
+    assert isinstance(decoded["iat"], (int, float))
+    assert abs(decoded["iat"] - iat_time.timestamp()) < 1
+
+
+def test_decode_rejects_malformed_base64():
+    """Test that decode rejects tokens with malformed base64 encoding."""
+    secret = "test-secret"
+    
+    # Invalid base64 characters
+    with pytest.raises(InvalidTokenError):
+        decode("invalid.base64!@#.token", secret, algorithms=["HS256"])
+
+
+def test_decode_rejects_malformed_json():
+    """Test that decode rejects tokens with malformed JSON in header or payload."""
+    secret = "test-secret"
+    
+    # Create token with invalid JSON in header
+    import base64
+    invalid_json = base64.urlsafe_b64encode(b"{invalid json}").rstrip(b"=").decode()
+    payload_b64 = base64.urlsafe_b64encode(b'{"sub":"user-123"}').rstrip(b"=").decode()
+    sig_b64 = base64.urlsafe_b64encode(b"fake-signature").rstrip(b"=").decode()
+    token = f"{invalid_json}.{payload_b64}.{sig_b64}"
+    
+    with pytest.raises(InvalidTokenError):
+        decode(token, secret, algorithms=["HS256"])
+
+
+def test_decode_rejects_empty_token():
+    """Test that decode rejects empty or whitespace-only tokens."""
+    secret = "test-secret"
+    
+    with pytest.raises(InvalidTokenError, match="Not a JWT"):
+        decode("", secret, algorithms=["HS256"])
+    
+    with pytest.raises(InvalidTokenError, match="Not a JWT"):
+        decode("   ", secret, algorithms=["HS256"])
+
+
+def test_decode_rejects_token_with_missing_alg_header():
+    """Test that decode rejects tokens with missing alg in header."""
+    secret = "test-secret"
+    
+    # Create token manually with missing alg
+    import json
+    import base64
+    import hmac
+    import hashlib
+    
+    header = {"typ": "JWT"}  # Missing "alg"
+    header_b64 = base64.urlsafe_b64encode(json.dumps(header).encode()).rstrip(b"=").decode()
+    payload = {"sub": "user-123", "exp": 9999999999}
+    payload_b64 = base64.urlsafe_b64encode(json.dumps(payload).encode()).rstrip(b"=").decode()
+    signing_input = f"{header_b64}.{payload_b64}".encode("ascii")
+    sig = hmac.new(secret.encode("utf-8"), signing_input, hashlib.sha256).digest()
+    sig_b64 = base64.urlsafe_b64encode(sig).rstrip(b"=").decode()
+    token = f"{header_b64}.{payload_b64}.{sig_b64}"
+    
+    # Should reject because alg is missing/empty
+    with pytest.raises(InvalidTokenError, match="Algorithm not allowed"):
+        decode(token, secret, algorithms=["HS256"])
 

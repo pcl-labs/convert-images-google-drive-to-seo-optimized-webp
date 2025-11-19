@@ -33,7 +33,31 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
 
 
 class SessionMiddleware(BaseHTTPMiddleware):
-    """Load, refresh, and clear user sessions tied to session cookies."""
+    """Load, refresh, and clear user sessions tied to session cookies.
+    
+    This middleware manages browser sessions stored in D1. Sessions coexist with JWT tokens:
+    - JWT (access_token cookie): Stateless authentication token containing user claims
+    - Session (session_id cookie): Stateful tracking for activity, notifications, metadata
+    
+    Session Architecture:
+    - Sessions are stored in the user_sessions table in D1
+    - Session cookie name is configurable via settings.session_cookie_name (default: "session_id")
+    - Sessions have a TTL (settings.session_ttl_hours, default: 72 hours)
+    - Sessions are automatically touched (last_seen_at updated) based on touch_interval
+    - Expired or revoked sessions are automatically cleared
+    
+    Cookie Security:
+    - httponly=True: Prevents JavaScript access
+    - secure=is_secure: HTTPS-only in production (based on request scheme)
+    - samesite="lax": CSRF protection while allowing OAuth redirects
+    
+    The middleware:
+    1. Loads session from session_id cookie on each request
+    2. Validates session expiration and revocation status
+    3. Touches session (updates last_seen_at) if touch_interval elapsed
+    4. Clears invalid/expired session cookies
+    5. Populates request.state.session and request.state.session_id
+    """
 
     def __init__(self, app: ASGIApp):
         super().__init__(app)

@@ -301,8 +301,7 @@ For production, set `USE_INLINE_QUEUE=false` and provide `CLOUDFLARE_ACCOUNT_ID`
 
 ## Dependencies
 
-- `google-auth-oauthlib`: OAuth 2.0 authentication helpers
-- `httpx`: REST client for Google APIs
+- `httpx`: REST client for Google APIs and OAuth flows
 - `Pillow`: Image processing
 - `pillow-heif`: HEIC image support
 - `tqdm`: Progress bars
@@ -310,8 +309,10 @@ For production, set `USE_INLINE_QUEUE=false` and provide `CLOUDFLARE_ACCOUNT_ID`
 - `uvicorn`: ASGI server for FastAPI
 - `python-multipart`: Form data support
 - `pydantic`: Data validation for request/response models
-- Pure-Python JWT implementation (HS256 only, using standard library)
+- Pure-Python JWT implementation (`src/workers/api/jwt.py`): HS256-only JWT signing/verification using standard library (`hmac`, `hashlib`, `base64`, `json`) - no external crypto libraries required, fully Cloudflare Workers-compatible
 - `pytest`: Testing framework
+
+**Note**: OAuth flows (GitHub and Google) are implemented using pure HTTP requests via `AsyncSimpleClient` - no `google-auth` or `google-auth-oauthlib` dependencies required. This approach is lightweight and compatible with Cloudflare Python Workers.
 
 ## Security Features
 
@@ -329,6 +330,26 @@ The application includes in-memory rate limiting middleware that tracks requests
     - **Cloudflare KV** for shared rate limit state
     - **Redis** for distributed rate limiting
     - **Cloudflare Rate Limiting** (native CF feature)
+
+### Authentication & Sessions
+
+**JWT Tokens**: 
+- Pure-Python HS256 implementation in `src/workers/api/jwt.py`
+- Uses standard library only (`hmac`, `hashlib`, `base64`, `json`) - no C-extensions
+- Fully compatible with Cloudflare Python Workers
+- Tokens stored in `access_token` cookie (httponly, secure, samesite=lax)
+
+**OAuth Flows**:
+- GitHub and Google OAuth implemented via pure HTTP requests
+- No `google-auth` or `google-auth-oauthlib` dependencies
+- Uses `AsyncSimpleClient` for all OAuth API calls
+- Cloudflare Workers-compatible
+
+**Sessions**:
+- Browser sessions stored in D1 `user_sessions` table
+- Session ID stored in `session_id` cookie (httponly, secure, samesite=lax)
+- Sessions coexist with JWTs: JWTs provide stateless auth, sessions provide stateful tracking (activity, notifications, metadata)
+- Session TTL configurable via `SESSION_TTL_HOURS` (default: 72 hours)
 
 ### Data Storage Security
 

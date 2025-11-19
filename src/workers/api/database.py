@@ -1880,6 +1880,35 @@ async def create_user_session(
     user_agent: Optional[str] = None,
     extra: Optional[Dict[str, Any]] = None,
 ) -> None:
+    """Create or update a user session in the user_sessions table.
+    
+    Sessions are stored in D1 and tracked via a session_id cookie. They coexist with
+    JWT tokens (stored in access_token cookie) - JWTs provide stateless authentication
+    while sessions provide stateful tracking (activity, notifications, metadata).
+    
+    Session data is stored unencrypted in D1 (Cloudflare provides encryption at rest).
+    No field-level encryption is used.
+    
+    Args:
+        db: Database connection
+        session_id: Unique session identifier (typically from cookie)
+        user_id: User identifier this session belongs to
+        expires_at: When the session expires (UTC datetime)
+        ip_address: Optional IP address of the client
+        user_agent: Optional user agent string
+        extra: Optional JSON-serializable metadata dictionary
+    
+    The session is stored in the user_sessions table with the following structure:
+    - session_id (PRIMARY KEY): Unique session identifier
+    - user_id: Foreign key to users table
+    - created_at: When the session was created
+    - last_seen_at: Last activity timestamp (updated by touch_user_session)
+    - expires_at: Session expiration time
+    - last_notification_id: Cursor for notification streaming
+    - ip_address, user_agent: Client metadata
+    - revoked_at: Revocation timestamp (NULL if active)
+    - extra: JSON metadata (e.g., OAuth provider)
+    """
     now = datetime.now(timezone.utc)
     await db.execute(
         """
@@ -1907,6 +1936,20 @@ async def create_user_session(
 
 
 async def get_user_session(db: Database, session_id: str) -> Optional[Dict[str, Any]]:
+    """Retrieve a user session by session_id.
+    
+    Sessions are loaded from the user_sessions table in D1. The session_id typically
+    comes from the session_id cookie set during login.
+    
+    Args:
+        db: Database connection
+        session_id: Session identifier to look up
+    
+    Returns:
+        Dictionary with session fields (session_id, user_id, created_at, last_seen_at,
+        expires_at, last_notification_id, ip_address, user_agent, revoked_at, extra)
+        or None if session not found
+    """
     row = await db.execute(
         "SELECT session_id, user_id, created_at, last_seen_at, expires_at, last_notification_id, ip_address, user_agent, revoked_at, extra FROM user_sessions WHERE session_id = ?",
         (session_id,),
@@ -1926,6 +1969,20 @@ async def touch_user_session(
     extra: Optional[Dict[str, Any]] = None,
     revoked_at: datetime | str | None = None,
 ) -> None:
+    """Update session fields (touch/refresh session).
+    
+    Used to update session activity (last_seen_at), extend expiration, update
+    notification cursor, or revoke the session.
+    
+    Args:
+        db: Database connection
+        session_id: Session identifier to update
+        last_seen_at: Update last activity timestamp
+        expires_at: Update expiration time
+        last_notification_id: Update notification cursor
+        extra: Update metadata dictionary
+        revoked_at: Set revocation timestamp (to revoke session)
+    """
     updates: list[str] = []
     params: list[Any] = []
     if last_seen_at is not None:

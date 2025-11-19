@@ -150,7 +150,10 @@ def verify_jwt_token(token: str) -> Dict[str, Any]:
 
 
 async def get_github_user_info(access_token: str) -> Dict[str, Any]:
-    """Get user information from GitHub using access token with robust error handling."""
+    """Get user information from GitHub using access token with robust error handling.
+    
+    Uses pure HTTP GET request via AsyncSimpleClient (no third-party auth libraries).
+    """
     try:
         async with AsyncSimpleClient(timeout=10.0) as client:
             response = await client.get(
@@ -199,7 +202,11 @@ async def get_github_primary_email(access_token: str) -> Optional[str]:
 
 
 async def exchange_github_code(code: str) -> Dict[str, Any]:
-    """Exchange GitHub OAuth code for access token."""
+    """Exchange GitHub OAuth code for access token.
+    
+    Uses pure HTTP requests via AsyncSimpleClient (no third-party auth libraries).
+    This approach is Cloudflare Workers-compatible and avoids heavy dependencies.
+    """
     if not settings.github_client_id or not settings.github_client_secret:
         raise AuthenticationError("GitHub OAuth not configured")
     
@@ -321,7 +328,11 @@ def get_google_login_oauth_url(redirect_uri: str) -> Tuple[str, str]:
 
 
 async def exchange_google_login_code(code: str, redirect_uri: str) -> Dict[str, Any]:
-    """Exchange Google OAuth code for tokens for the login flow."""
+    """Exchange Google OAuth code for tokens for the login flow.
+    
+    Uses pure HTTP POST request via AsyncSimpleClient (no google-auth libraries).
+    This approach is Cloudflare Workers-compatible and avoids heavy dependencies.
+    """
     if not settings.google_client_id or not settings.google_client_secret:
         raise AuthenticationError("Google OAuth not configured")
 
@@ -376,7 +387,12 @@ async def get_google_user_info(access_token: str) -> Dict[str, Any]:
 
 
 async def _verify_google_id_token(id_token_value: str) -> Dict[str, Any]:
-    """Verify Google ID token via the official tokeninfo endpoint."""
+    """Verify Google ID token via the official tokeninfo endpoint.
+    
+    Uses pure HTTP GET request to Google's tokeninfo endpoint via AsyncSimpleClient.
+    No google-auth library required - verification is done via Google's HTTP API.
+    This approach is Cloudflare Workers-compatible.
+    """
     try:
         async with AsyncSimpleClient(timeout=10.0) as client:
             response = await client.get(

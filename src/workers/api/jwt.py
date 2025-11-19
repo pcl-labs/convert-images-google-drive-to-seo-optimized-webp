@@ -58,7 +58,25 @@ def encode(payload: Dict[str, Any], key: str, algorithm: str = "HS256") -> str:
 
 
 def decode(token: str, key: str, algorithms: Optional[List[str]] = None) -> Dict[str, Any]:
-    """Decode and verify a JWT token."""
+    """Decode and verify a JWT token.
+    
+    Args:
+        token: JWT token string to decode
+        key: Secret key for signature verification
+        algorithms: List of allowed algorithms. Defaults to ["HS256"] for security.
+                    Pass None explicitly to allow any algorithm (not recommended).
+    
+    Returns:
+        Decoded payload dictionary
+        
+    Raises:
+        InvalidTokenError: If token is malformed, signature is invalid, or algorithm is not allowed
+        ExpiredSignatureError: If token has expired
+    """
+    # Default to HS256 for security if algorithms not explicitly provided
+    if algorithms is None:
+        algorithms = ["HS256"]
+    
     try:
         parts = token.split(".")
         if len(parts) != 3:
@@ -67,7 +85,7 @@ def decode(token: str, key: str, algorithms: Optional[List[str]] = None) -> Dict
         header = json.loads(_b64url_decode(header_b64))
         payload = json.loads(_b64url_decode(payload_b64))
         algo = (header.get("alg") or "").upper()
-        if algorithms is not None and algo not in [a.upper() for a in algorithms]:
+        if algo not in [a.upper() for a in algorithms]:
             raise InvalidTokenError("Algorithm not allowed")
         signing_input = f"{header_b64}.{payload_b64}".encode("ascii")
         if algo == "HS256":
