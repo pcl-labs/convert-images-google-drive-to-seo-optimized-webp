@@ -153,12 +153,16 @@ async def get_github_user_info(access_token: str) -> Dict[str, Any]:
     """Get user information from GitHub using access token with robust error handling.
     
     Uses pure HTTP GET request via AsyncSimpleClient (no third-party auth libraries).
+    GitHub requires a User-Agent header for all API requests.
     """
     try:
         async with AsyncSimpleClient(timeout=10.0) as client:
             response = await client.get(
                 "https://api.github.com/user",
-                headers={"Authorization": f"Bearer {access_token}"},
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "User-Agent": settings.app_name or "Cloudflare-Worker",
+                },
             )
             response.raise_for_status()
             try:
@@ -174,12 +178,16 @@ async def get_github_user_info(access_token: str) -> Dict[str, Any]:
 async def get_github_primary_email(access_token: str) -> Optional[str]:
     """Fetch the user's primary verified email from GitHub.
     Requires the user:email scope. Returns None if not available.
+    GitHub requires a User-Agent header for all API requests.
     """
     try:
         async with AsyncSimpleClient(timeout=10.0) as client:
             resp = await client.get(
                 "https://api.github.com/user/emails",
-                headers={"Authorization": f"Bearer {access_token}"},
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "User-Agent": settings.app_name or "Cloudflare-Worker",
+                },
             )
             resp.raise_for_status()
             emails = resp.json()

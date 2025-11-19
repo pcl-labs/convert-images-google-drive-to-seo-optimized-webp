@@ -42,7 +42,7 @@ def _is_secure_request(request: Request) -> bool:
 def _get_github_oauth_redirect(request: Request) -> tuple[str, str]:
     # Always use the actual request URL for redirect_uri to ensure it matches what GitHub redirects to
     # BASE_URL is only for production behind proxy/load balancer - in dev, use actual request URL
-        redirect_uri = str(request.url.replace(path="/auth/github/callback", query=""))
+    redirect_uri = str(request.url.replace(path="/auth/github/callback", query=""))
     logger.debug(f"Using request URL for GitHub OAuth redirect_uri: {redirect_uri}")
     from . import auth as auth_module
     return auth_module.get_github_oauth_url(redirect_uri)
