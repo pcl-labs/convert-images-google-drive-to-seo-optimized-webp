@@ -2491,6 +2491,10 @@ async def create_user_session(
     - extra: JSON metadata (e.g., OAuth provider)
     """
     now = datetime.now(timezone.utc)
+    # D1 doesn't accept Python None/undefined - use empty strings for optional fields
+    ip_address_val = ip_address if ip_address is not None else ""
+    user_agent_val = user_agent if user_agent is not None else ""
+    
     await db.execute(
         """
         INSERT INTO user_sessions (session_id, user_id, created_at, last_seen_at, expires_at, ip_address, user_agent, extra)
@@ -2509,8 +2513,8 @@ async def create_user_session(
             _serialize_timestamp(now),
             _serialize_timestamp(now),
             _serialize_timestamp(expires_at),
-            ip_address,
-            user_agent,
+            ip_address_val,
+            user_agent_val,
             json.dumps(extra or {}),
         ),
     )

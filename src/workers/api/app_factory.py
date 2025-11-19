@@ -266,9 +266,10 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
     # (SessionMiddleware sets request.state.session_user_id, AuthCookieMiddleware reads it)
     # Re-enabling AuthCookieMiddleware - core auth functionality
     app.add_middleware(AuthCookieMiddleware)
-    # SessionMiddleware and FlashMiddleware disabled - only used for toast notifications
-    # To re-enable: ensure D1 database is configured and SessionMiddleware is tested
-    # app.add_middleware(SessionMiddleware)
+    # Re-enabling SessionMiddleware - D1 is now working
+    # Sessions are used for stateful tracking (notifications, activity) and can help with OAuth flows
+    app.add_middleware(SessionMiddleware)
+    # FlashMiddleware disabled - only used for toast notifications, can be re-enabled later
     # app.add_middleware(FlashMiddleware)
     
     # RateLimitMiddleware disabled - uses time.monotonic() and asyncio.Lock() which may not work correctly in Workers

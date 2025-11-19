@@ -398,6 +398,738 @@ async def debug_migrate_db():
         }
 
 
+@router.get("/debug/cookie-test", tags=["Public"])
+async def debug_cookie_test(request: Request):
+    """
+    Debug endpoint to test cookie setting and reading.
+    Sets a test cookie and shows what cookies are present in the request.
+    """
+    # Check what cookies are currently present
+    all_cookies = dict(request.cookies)
+    
+    # Set a test cookie
+    response = JSONResponse({
+        "message": "Test cookie endpoint",
+        "cookies_before": list(all_cookies.keys()),
+        "test_cookie_set": True,
+    })
+    
+    # Set a test cookie with same settings as access_token
+    is_secure = _is_secure_request(request)
+    response.set_cookie(
+        key="test_cookie",
+        value="test_value_12345",
+        httponly=True,
+        secure=is_secure,
+        samesite="lax",
+        max_age=3600,
+        path="/",
+    )
+    
+    # Also set access_token as a test
+    response.set_cookie(
+        key="test_access_token",
+        value="test_jwt_token_12345",
+        httponly=True,
+        secure=is_secure,
+        samesite="lax",
+        max_age=3600,
+        path="/",
+    )
+    
+    return response
+
+
+@router.get("/debug/cookie-redirect-test", tags=["Public"])
+async def debug_cookie_redirect_test(request: Request):
+    """
+    Debug endpoint to test cookie setting on RedirectResponse (like OAuth callback).
+    Sets a cookie and redirects to /debug/cookie-read to test if cookie persists.
+    """
+    is_secure = _is_secure_request(request)
+    logger.debug(
+        "Cookie redirect test: Setting test_access_token cookie: secure=%s, max_age=3600, path=/",
+        is_secure,
+    )
+    
+    response = RedirectResponse(url="/debug/cookie-read", status_code=status.HTTP_302_FOUND)
+    response.set_cookie(
+        key="test_access_token",
+        value="test_jwt_from_redirect_12345",
+        httponly=True,
+        secure=is_secure,
+        samesite="lax",
+        max_age=3600,
+        path="/",
+    )
+    
+    logger.debug("Cookie redirect test: Cookie set, redirecting to /debug/cookie-read")
+    return response
+
+
+@router.get("/debug/cookie-read", tags=["Public"])
+async def debug_cookie_read(request: Request):
+    """
+    Debug endpoint to read cookies after they've been set.
+    Call /debug/cookie-test first, then this endpoint to see if cookies persist.
+    """
+    all_cookies = dict(request.cookies)
+    return {
+        "cookies_present": list(all_cookies.keys()),
+        "test_cookie": request.cookies.get("test_cookie"),
+        "test_access_token": request.cookies.get("test_access_token"),
+        "access_token": request.cookies.get("access_token"),
+        "csrf_token": request.cookies.get("csrf_token"),
+        "all_cookies": all_cookies,
+    }
+
+
+@router.get("/debug/oauth-callback-test", tags=["Public"])
+async def debug_oauth_callback_test(request: Request):
+    """
+    Debug endpoint to test OAuth callback cookie setting.
+    Simulates what happens in the OAuth callback to see if cookies are being set correctly.
+    """
+    from .auth import generate_jwt_token
+    from .config import settings
+    
+    test_user_id = "debug_test_user"
+    test_email = "debug@example.com"
+    jwt_token = generate_jwt_token(user_id=test_user_id, email=test_email)
+    
+    is_secure = _is_secure_request(request)
+    max_age_seconds = settings.jwt_expiration_hours * 3600
+    
+    debug_info = {
+        "request_info": {
+            "scheme": request.url.scheme,
+            "host": request.headers.get("host"),
+            "is_secure": is_secure,
+            "jwt_use_cookies": settings.jwt_use_cookies,
+            "jwt_expiration_hours": settings.jwt_expiration_hours,
+            "max_age_seconds": max_age_seconds,
+        },
+        "cookie_settings": {
+            "key": "access_token",
+            "httponly": True,
+            "secure": is_secure,
+            "samesite": "lax",
+            "max_age": max_age_seconds,
+            "path": "/",
+        },
+        "token_info": {
+            "length": len(jwt_token),
+            "preview": jwt_token[:50] + "...",
+        },
+        "current_cookies": dict(request.cookies),
+    }
+    
+    # Create a redirect response like the OAuth callback does
+    response = RedirectResponse(url="/dashboard", status_code=status.HTTP_302_FOUND)
+    response.set_cookie(
+        key="access_token",
+        value=jwt_token,
+        httponly=True,
+        secure=is_secure,
+        samesite="lax",
+        max_age=max_age_seconds,
+        path="/",
+    )
+    
+    # Capture Set-Cookie headers
+    set_cookie_headers = [v for k, v in response.headers.items() if k.lower() == "set-cookie"]
+    debug_info["response_headers"] = {
+        "set_cookie_headers": set_cookie_headers,
+        "location": response.headers.get("location"),
+        "status_code": response.status_code,
+    }
+    
+    # Return debug info as JSON instead of redirect for debugging
+    return JSONResponse(content=debug_info)
+
+
+@router.get("/debug/oauth-callback-simulate", tags=["Public"])
+async def debug_oauth_callback_simulate(request: Request):
+    """
+    Debug endpoint that actually performs a redirect with cookie (like real OAuth callback).
+    Use this to test if cookies persist through redirects in your browser.
+    """
+    from .auth import generate_jwt_token
+    from .config import settings
+    
+    test_user_id = "simulated_oauth_user"
+    test_email = "simulated@example.com"
+    jwt_token = generate_jwt_token(user_id=test_user_id, email=test_email)
+    
+    is_secure = _is_secure_request(request)
+    max_age_seconds = settings.jwt_expiration_hours * 3600
+    
+    logger.info(
+        "Simulated OAuth callback: Setting access_token cookie: secure=%s, max_age=%d, jwt_length=%d",
+        is_secure,
+        max_age_seconds,
+        len(jwt_token),
+    )
+    
+    # Actually redirect like the real OAuth callback
+    response = RedirectResponse(url="/dashboard", status_code=status.HTTP_302_FOUND)
+    response.set_cookie(
+        key="access_token",
+        value=jwt_token,
+        httponly=True,
+        secure=is_secure,
+        samesite="lax",
+        max_age=max_age_seconds,
+        path="/",
+    )
+    
+    # Log headers for debugging
+    set_cookie_headers = [v for k, v in response.headers.items() if k.lower() == "set-cookie"]
+    logger.info("Simulated OAuth callback: Set-Cookie headers: %s", set_cookie_headers)
+    
+    return response
+
+
+@router.get("/debug/auto-login", tags=["Public"])
+async def debug_auto_login(request: Request):
+    """
+    Auto-login using stored refresh token - generates JWT and sets cookie.
+    Uses the refresh token from .env to get user info and create a session.
+    This allows testing without going through OAuth flow each time.
+    
+    Usage:
+    curl -v -L -c cookies.txt http://localhost:8787/debug/auto-login
+    curl -b cookies.txt http://localhost:8787/dashboard
+    """
+    from .auth import generate_jwt_token
+    from .config import settings
+    from .simple_http import AsyncSimpleClient
+    
+    # Use refresh token to get user info
+    refresh_token = "REMOVED_REFRESH_TOKEN"
+    client_id = settings.google_client_id
+    client_secret = settings.google_client_secret
+    
+    if not refresh_token or not client_id or not client_secret:
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Refresh token or client credentials not configured"}
+        )
+    
+    try:
+        # Refresh the access token
+        async with AsyncSimpleClient(timeout=10.0) as client:
+            response = await client.post(
+                "https://oauth2.googleapis.com/token",
+                data={
+                    "refresh_token": refresh_token,
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "grant_type": "refresh_token",
+                }
+            )
+            if response.status_code != 200:
+                return JSONResponse(
+                    status_code=500,
+                    content={"error": f"Token refresh failed: {response.status_code}", "details": response.text[:200]}
+                )
+            token_data = response.json()
+            access_token = token_data.get("access_token")
+            
+            # Get user info from Google
+            userinfo_response = await client.get(
+                "https://www.googleapis.com/oauth2/v2/userinfo",
+                headers={"Authorization": f"Bearer {access_token}"}
+            )
+            if userinfo_response.status_code != 200:
+                return JSONResponse(
+                    status_code=500,
+                    content={"error": f"Userinfo failed: {userinfo_response.status_code}"}
+                )
+            userinfo = userinfo_response.json()
+            
+            google_id = userinfo.get("id")
+            email = userinfo.get("email", f"google_user_{google_id}@accounts.google.com")
+            
+            if not google_id:
+                return JSONResponse(
+                    status_code=500,
+                    content={"error": "No Google ID in userinfo response"}
+                )
+            
+            user_id = f"google_{google_id}"
+            jwt_token = generate_jwt_token(user_id=user_id, google_id=google_id, email=email)
+            
+            is_secure = _is_secure_request(request)
+            max_age_seconds = settings.jwt_expiration_hours * 3600
+            
+            logger.info(
+                "Auto-login: Setting access_token cookie: secure=%s, max_age=%d, jwt_length=%d, user_id=%s, email=%s",
+                is_secure,
+                max_age_seconds,
+                len(jwt_token),
+                user_id,
+                email,
+            )
+            
+            # Set cookie and redirect
+            response = RedirectResponse(url="/dashboard", status_code=status.HTTP_302_FOUND)
+            response.set_cookie(
+                key="access_token",
+                value=jwt_token,
+                httponly=True,
+                secure=is_secure,
+                samesite="lax",
+                max_age=max_age_seconds,
+                path="/",
+            )
+            
+            set_cookie_headers = [v for k, v in response.headers.items() if k.lower() == "set-cookie"]
+            logger.info("Auto-login: Set-Cookie headers: %s", set_cookie_headers)
+            
+            return response
+            
+    except Exception as exc:
+        logger.exception("Auto-login failed")
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(exc), "error_type": type(exc).__name__}
+        )
+
+
+@router.get("/debug/simulate-oauth-callback", tags=["Public"])
+async def debug_simulate_oauth_callback(request: Request, user_id: Optional[str] = None, email: Optional[str] = None):
+    """
+    Simulate OAuth callback flow - sets access_token cookie and redirects to dashboard.
+    This allows testing cookie behavior without going through actual OAuth flow.
+    
+    Query params:
+    - user_id: User ID (default: test_user_123)
+    - email: Email address (default: test@example.com)
+    
+    Usage:
+    curl -v -L -c cookies.txt http://localhost:8787/debug/simulate-oauth-callback
+    curl -b cookies.txt http://localhost:8787/dashboard
+    """
+    from .auth import generate_jwt_token
+    from .config import settings
+    
+    test_user_id = user_id or "test_user_123"
+    test_email = email or "test@example.com"
+    jwt_token = generate_jwt_token(user_id=test_user_id, email=test_email)
+    
+    is_secure = _is_secure_request(request)
+    max_age_seconds = settings.jwt_expiration_hours * 3600
+    
+    logger.info(
+        "Simulated OAuth callback: Setting access_token cookie: secure=%s, max_age=%d, jwt_length=%d, user_id=%s",
+        is_secure,
+        max_age_seconds,
+        len(jwt_token),
+        test_user_id,
+    )
+    
+    # Exact same flow as real OAuth callback
+    response = RedirectResponse(url="/dashboard", status_code=status.HTTP_302_FOUND)
+    response.set_cookie(
+        key="access_token",
+        value=jwt_token,
+        httponly=True,
+        secure=is_secure,
+        samesite="lax",
+        max_age=max_age_seconds,
+        path="/",
+    )
+    
+    # Log headers for debugging
+    set_cookie_headers = [v for k, v in response.headers.items() if k.lower() == "set-cookie"]
+    logger.info("Simulated OAuth callback: Set-Cookie headers: %s", set_cookie_headers)
+    logger.info("Simulated OAuth callback: All response headers: %s", dict(response.headers))
+    
+    return response
+
+
+@router.get("/debug/oauth-callback-debug", tags=["Public"])
+async def debug_oauth_callback_debug(request: Request):
+    """
+    Debug endpoint to check what happens during OAuth callback.
+    This endpoint can be used to test cookie setting behavior.
+    """
+    from .auth import generate_jwt_token
+    from .config import settings
+    
+    # Simulate what happens in OAuth callback
+    test_user_id = "debug_oauth_user"
+    test_email = "debug_oauth@example.com"
+    jwt_token = generate_jwt_token(user_id=test_user_id, email=test_email)
+    
+    is_secure = _is_secure_request(request)
+    max_age_seconds = settings.jwt_expiration_hours * 3600
+    
+    debug_info = {
+        "step": "before_cookie_set",
+        "request": {
+            "scheme": request.url.scheme,
+            "host": request.headers.get("host"),
+            "cookies_received": dict(request.cookies),
+        },
+        "settings": {
+            "jwt_use_cookies": settings.jwt_use_cookies,
+            "is_secure": is_secure,
+            "max_age_seconds": max_age_seconds,
+        },
+        "token": {
+            "length": len(jwt_token),
+            "preview": jwt_token[:30] + "...",
+        },
+    }
+    
+    if settings.jwt_use_cookies:
+        # Try to set cookie
+        try:
+            response = RedirectResponse(url="/debug/cookie-read", status_code=status.HTTP_302_FOUND)
+            response.set_cookie(
+                key="access_token",
+                value=jwt_token,
+                httponly=True,
+                secure=is_secure,
+                samesite="lax",
+                max_age=max_age_seconds,
+                path="/",
+            )
+            
+            set_cookie_headers = [v for k, v in response.headers.items() if k.lower() == "set-cookie"]
+            debug_info["step"] = "after_cookie_set"
+            debug_info["response"] = {
+                "status_code": response.status_code,
+                "location": response.headers.get("location"),
+                "set_cookie_headers": set_cookie_headers,
+                "all_headers": dict(response.headers),
+            }
+            debug_info["cookie_set_success"] = any("access_token" in h for h in set_cookie_headers)
+            
+            # Actually perform redirect so user can see if cookie persists
+            return response
+        except Exception as exc:
+            debug_info["error"] = {
+                "message": str(exc),
+                "type": type(exc).__name__,
+            }
+            debug_info["cookie_set_success"] = False
+            return JSONResponse(content=debug_info, status_code=500)
+    else:
+        debug_info["cookie_set_success"] = False
+        debug_info["reason"] = "jwt_use_cookies is False"
+        return JSONResponse(content=debug_info)
+
+
+@router.get("/debug/check-auth-config", tags=["Public"])
+async def debug_check_auth_config():
+    """
+    Debug endpoint to check authentication configuration.
+    Shows JWT settings, cookie settings, and OAuth configuration.
+    """
+    from .config import settings
+    
+    return {
+        "jwt_settings": {
+            "jwt_use_cookies": settings.jwt_use_cookies,
+            "jwt_expiration_hours": settings.jwt_expiration_hours,
+            "jwt_algorithm": settings.jwt_algorithm,
+            "jwt_secret_key_present": bool(settings.jwt_secret_key),
+            "jwt_secret_key_length": len(settings.jwt_secret_key) if settings.jwt_secret_key else 0,
+        },
+        "oauth_settings": {
+            "github_client_id_present": bool(settings.github_client_id),
+            "google_client_id_present": bool(settings.google_client_id),
+            "google_client_secret_present": bool(settings.google_client_secret),
+        },
+        "cookie_settings": {
+            "session_cookie_name": settings.session_cookie_name,
+            "session_ttl_hours": settings.session_ttl_hours,
+        },
+        "environment": {
+            "environment": settings.environment,
+            "debug": settings.debug,
+            "base_url": settings.base_url,
+        },
+        "diagnosis": {
+            "cookie_should_be_set": settings.jwt_use_cookies,
+            "if_cookies_disabled": "Cookies are disabled - tokens will be returned in JSON response body instead",
+            "if_cookies_enabled": "Cookies should be set in OAuth callback responses",
+        }
+    }
+
+
+@router.get("/debug/generate-test-token", tags=["Public"])
+async def debug_generate_test_token(user_id: Optional[str] = None, email: Optional[str] = None):
+    """
+    Debug endpoint to generate a test JWT token for testing authentication.
+    
+    Query params:
+    - user_id: User ID (default: test_user_123)
+    - email: Email address (default: test@example.com)
+    
+    Returns a JWT token that can be used as access_token cookie.
+    """
+    from .auth import generate_jwt_token
+    
+    test_user_id = user_id or "test_user_123"
+    test_email = email or "test@example.com"
+    
+    token = generate_jwt_token(
+        user_id=test_user_id,
+        email=test_email,
+        google_id=f"test_google_{test_user_id}"
+    )
+    
+    return {
+        "token": token,
+        "user_id": test_user_id,
+        "email": test_email,
+        "instructions": {
+            "curl_test": f'curl -H "Cookie: access_token={token}" http://localhost:8787/dashboard',
+            "browser": "Set access_token cookie in browser DevTools with this token value",
+            "note": "This is a test token - use OAuth login for real authentication"
+        }
+    }
+
+
+@router.post("/debug/google-token", tags=["Public"])
+async def debug_google_token(request: Request):
+    """
+    Debug endpoint to test Google OAuth token functionality.
+    
+    Accepts a Google OAuth token JSON in the request body and tests:
+    - Token validity
+    - Token expiry
+    - Google Drive API access
+    - Simple Drive API call (list root folder)
+    
+    Example request body:
+    {
+        "token": "ya29.a0...",
+        "refresh_token": "1//0g...",
+        "expiry": "2025-11-13T06:56:46.688068Z",
+        "scopes": ["https://www.googleapis.com/auth/drive"]
+    }
+    """
+    from datetime import datetime, timezone
+    from .simple_http import AsyncSimpleClient, HTTPStatusError, RequestError
+    from core.google_clients import GoogleDriveClient, OAuthToken
+    
+    results = {
+        "success": False,
+        "token_provided": False,
+        "token_info": {},
+        "token_validation": {},
+        "drive_api_test": {},
+        "errors": [],
+    }
+    
+    try:
+        # Parse request body
+        try:
+            body = await request.json()
+        except Exception as exc:
+            results["errors"].append(f"Failed to parse JSON body: {str(exc)}")
+            return results
+        
+        # Extract token info
+        access_token = body.get("token") or body.get("access_token")
+        refresh_token = body.get("refresh_token")
+        expiry_str = body.get("expiry")
+        scopes = body.get("scopes", [])
+        client_id = body.get("client_id")
+        client_secret = body.get("client_secret")
+        
+        if not access_token:
+            results["errors"].append("No access_token or token provided in request body")
+            return results
+        
+        results["token_provided"] = True
+        results["token_info"] = {
+            "has_access_token": bool(access_token),
+            "has_refresh_token": bool(refresh_token),
+            "expiry": expiry_str,
+            "scopes": scopes,
+            "token_length": len(access_token),
+            "token_preview": access_token[:20] + "..." if len(access_token) > 20 else access_token,
+        }
+        
+        # Parse expiry
+        expiry = None
+        if expiry_str:
+            try:
+                expiry = datetime.fromisoformat(expiry_str.replace("Z", "+00:00"))
+                if expiry.tzinfo is None:
+                    expiry = expiry.replace(tzinfo=timezone.utc)
+            except Exception as exc:
+                results["errors"].append(f"Failed to parse expiry: {str(exc)}")
+        
+        # Check if token is expired
+        now = datetime.now(timezone.utc)
+        is_expired = False
+        expires_in_seconds = None
+        if expiry:
+            expires_in_seconds = (expiry - now).total_seconds()
+            is_expired = expires_in_seconds < 0
+        
+        results["token_validation"] = {
+            "has_expiry": expiry is not None,
+            "expiry_datetime": expiry.isoformat() if expiry else None,
+            "current_datetime": now.isoformat(),
+            "is_expired": is_expired,
+            "expires_in_seconds": expires_in_seconds,
+            "expires_in_minutes": round(expires_in_seconds / 60, 2) if expires_in_seconds else None,
+        }
+        
+        # Test token with Google OAuth2 tokeninfo endpoint
+        tokeninfo_result = {}
+        try:
+            async with AsyncSimpleClient(timeout=10.0) as client:
+                response = await client.get(
+                    "https://www.googleapis.com/oauth2/v2/tokeninfo",
+                    params={"access_token": access_token}
+                )
+                if response.status_code == 200:
+                    tokeninfo_data = response.json()
+                    tokeninfo_result = {
+                        "valid": True,
+                        "issued_to": tokeninfo_data.get("issued_to"),
+                        "audience": tokeninfo_data.get("audience"),
+                        "user_id": tokeninfo_data.get("user_id"),
+                        "scope": tokeninfo_data.get("scope"),
+                        "expires_in": tokeninfo_data.get("expires_in"),
+                        "email": tokeninfo_data.get("email"),
+                        "verified_email": tokeninfo_data.get("verified_email"),
+                    }
+                else:
+                    tokeninfo_result = {
+                        "valid": False,
+                        "status_code": response.status_code,
+                        "error": response.text[:200] if response.text else "Unknown error",
+                    }
+        except Exception as exc:
+            tokeninfo_result = {
+                "valid": False,
+                "error": str(exc),
+                "error_type": type(exc).__name__,
+            }
+        
+        results["token_validation"]["tokeninfo"] = tokeninfo_result
+        
+        # Test Google Drive API access
+        drive_test_result = {}
+        try:
+            # Create OAuthToken object
+            oauth_token = OAuthToken(
+                access_token=access_token,
+                refresh_token=refresh_token,
+                expiry=expiry,
+                token_type="Bearer",
+            )
+            
+            # Create Drive client
+            drive_client = GoogleDriveClient(oauth_token)
+            
+            # Test 1: List root folder (simple API call)
+            try:
+                root_files = drive_client.list_folder_files("root", fields="files(id, name, mimeType)")
+                drive_test_result["list_root_folder"] = {
+                    "success": True,
+                    "file_count": len(root_files.get("files", [])),
+                    "files": root_files.get("files", [])[:5],  # First 5 files
+                    "has_next_page": bool(root_files.get("nextPageToken")),
+                }
+            except Exception as exc:
+                drive_test_result["list_root_folder"] = {
+                    "success": False,
+                    "error": str(exc),
+                    "error_type": type(exc).__name__,
+                }
+            
+            # Test 2: Get about info (user info)
+            try:
+                async with AsyncSimpleClient(timeout=10.0) as client:
+                    response = await client.get(
+                        "https://www.googleapis.com/drive/v3/about",
+                        headers={"Authorization": f"Bearer {access_token}"},
+                        params={"fields": "user,storageQuota"}
+                    )
+                    if response.status_code == 200:
+                        about_data = response.json()
+                        drive_test_result["about"] = {
+                            "success": True,
+                            "user": about_data.get("user", {}),
+                            "storage_quota": about_data.get("storageQuota", {}),
+                        }
+                    else:
+                        drive_test_result["about"] = {
+                            "success": False,
+                            "status_code": response.status_code,
+                            "error": response.text[:200] if response.text else "Unknown error",
+                        }
+            except Exception as exc:
+                drive_test_result["about"] = {
+                    "success": False,
+                    "error": str(exc),
+                    "error_type": type(exc).__name__,
+                }
+            
+        except Exception as exc:
+            drive_test_result = {
+                "error": str(exc),
+                "error_type": type(exc).__name__,
+            }
+        
+        results["drive_api_test"] = drive_test_result
+        
+        # Test token refresh if refresh_token is provided
+        refresh_test_result = {}
+        if refresh_token and client_id and client_secret:
+            try:
+                async with AsyncSimpleClient(timeout=10.0) as client:
+                    response = await client.post(
+                        "https://oauth2.googleapis.com/token",
+                        data={
+                            "refresh_token": refresh_token,
+                            "client_id": client_id,
+                            "client_secret": client_secret,
+                            "grant_type": "refresh_token",
+                        }
+                    )
+                    if response.status_code == 200:
+                        refresh_data = response.json()
+                        refresh_test_result = {
+                            "success": True,
+                            "new_access_token_length": len(refresh_data.get("access_token", "")),
+                            "expires_in": refresh_data.get("expires_in"),
+                            "token_type": refresh_data.get("token_type"),
+                        }
+                    else:
+                        refresh_test_result = {
+                            "success": False,
+                            "status_code": response.status_code,
+                            "error": response.text[:200] if response.text else "Unknown error",
+                        }
+            except Exception as exc:
+                refresh_test_result = {
+                    "success": False,
+                    "error": str(exc),
+                    "error_type": type(exc).__name__,
+                }
+            results["token_refresh_test"] = refresh_test_result
+        
+        results["success"] = True
+        
+    except Exception as exc:
+        results["errors"].append(f"Unexpected error: {str(exc)}")
+        results["error_type"] = type(exc).__name__
+    
+    return results
+
+
 @router.get("/debug/auth-state", tags=["Public"])
 async def debug_auth_state(request: Request):
     """
@@ -654,6 +1386,80 @@ async def google_login_start_post(request: Request, csrf_token: str = Form(...))
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Google OAuth not configured") from exc
 
 
+@router.get("/auth/set-cookie", tags=["Authentication"])
+async def set_auth_cookie(
+    session_id: str,
+    redirect: str = "/dashboard", 
+    request: Request = None
+):
+    """
+    Dedicated endpoint to set the access_token cookie.
+    This is called after OAuth callback to set the cookie on a same-site request.
+    
+    Receives session_id which contains the JWT token in the session's extra field.
+    """
+    from .auth import verify_jwt_token
+    from .config import settings
+    from .database import get_user_session, delete_user_session
+    import json
+    
+    if not session_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="session_id parameter required")
+    
+    # Get token from session
+    db = ensure_db()
+    session = await get_user_session(db, session_id)
+    if not session:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Session not found or expired")
+    
+    extra = json.loads(session.get("extra", "{}")) if isinstance(session.get("extra"), str) else (session.get("extra") or {})
+    jwt_token = extra.get("jwt_token")
+    
+    if not jwt_token:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="JWT token not found in session")
+    
+    # Delete the temp session after retrieving token
+    await delete_user_session(db, session_id)
+    logger.info("set_auth_cookie: Retrieved token from session %s", session_id)
+    
+    # Verify the token is valid before setting cookie
+    try:
+        payload = verify_jwt_token(jwt_token)
+        if not payload:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid token")
+    except Exception as exc:
+        logger.warning("set_auth_cookie: Invalid token provided: %s", exc)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid token") from exc
+    
+    is_secure = _is_secure_request(request)
+    max_age_seconds = settings.jwt_expiration_hours * 3600
+    
+    logger.info(
+        "set_auth_cookie: Setting access_token cookie: secure=%s, max_age=%d, redirect=%s, method=%s",
+        is_secure,
+        max_age_seconds,
+        redirect,
+        "session" if session_id else "query_string",
+    )
+    
+    # Set cookie and redirect
+    response = RedirectResponse(url=redirect, status_code=status.HTTP_302_FOUND)
+    response.set_cookie(
+        key="access_token",
+        value=jwt_token,
+        httponly=True,
+        secure=is_secure,
+        samesite="lax",  # Will work since this is same-site navigation
+        max_age=max_age_seconds,
+        path="/",
+    )
+    
+    set_cookie_headers = [v for k, v in response.headers.items() if k.lower() == "set-cookie"]
+    logger.info("set_auth_cookie: Set-Cookie headers: %s", set_cookie_headers)
+    
+    return response
+
+
 @router.get("/auth/github/callback", tags=["Authentication"])
 async def github_callback(code: str, state: str, request: Request):
     stored_state = request.cookies.get(COOKIE_OAUTH_STATE)
@@ -693,6 +1499,12 @@ async def github_callback(code: str, state: str, request: Request):
         
         user_id = f"github_{github_id}"
         from .auth import generate_jwt_token
+        from .database import create_user
+        
+        # Create or update user in database (required for foreign key constraint in user_sessions)
+        db = ensure_db()
+        await create_user(db, user_id, github_id=github_id, email=email)
+        
         jwt_token = generate_jwt_token(user_id, github_id=github_id, email=email)
         user = {"user_id": user_id, "email": email, "github_id": github_id}
         user_response = {"user_id": user_id, "email": email, "github_id": github_id}
@@ -700,22 +1512,43 @@ async def github_callback(code: str, state: str, request: Request):
         is_secure = _is_secure_request(request)
         if settings.jwt_use_cookies:
             max_age_seconds = settings.jwt_expiration_hours * 3600
-            logger.debug(
-                "GitHub OAuth: Setting access_token cookie: secure=%s, max_age=%d, path=/, jwt_length=%d, user_id=%s",
+            logger.info(
+                "GitHub OAuth: Setting access_token cookie: secure=%s, max_age=%d, path=/, jwt_length=%d, user_id=%s, scheme=%s, host=%s",
                 is_secure,
                 max_age_seconds,
                 len(jwt_token),
                 user_id,
+                request.url.scheme,
+                request.headers.get("host"),
             )
-            response = RedirectResponse(url="/dashboard", status_code=status.HTTP_302_FOUND)
-            response.set_cookie(
-                key="access_token",
-                value=jwt_token,
-                httponly=True,
-                secure=is_secure,
-                samesite="lax",
-                max_age=max_age_seconds,
-                path="/",
+            # Use sessions: create session with JWT in extra, then redirect to set-cookie endpoint
+            # This uses existing session infrastructure - no query string fallback
+            session_id = secrets.token_urlsafe(32)
+            expires_at = datetime.now(timezone.utc) + timedelta(minutes=5)  # Short-lived temp session
+            await create_user_session(
+                db,
+                session_id,
+                user_id,
+                expires_at,
+                ip_address=(request.client.host if request.client else None),
+                user_agent=request.headers.get("user-agent"),
+                extra={"jwt_token": jwt_token, "temp": True, "provider": "github"},
+            )
+            # Redirect to set-cookie endpoint with session_id
+            cookie_set_url = f"/auth/set-cookie?session_id={session_id}&redirect=/dashboard"
+            response = RedirectResponse(url=cookie_set_url, status_code=status.HTTP_302_FOUND)
+            logger.info("GitHub OAuth: Created temp session %s, redirecting to set-cookie", session_id)
+            # Log the actual Set-Cookie header to verify it's being set
+            set_cookie_headers = [v for k, v in response.headers.items() if k.lower() == "set-cookie"]
+            logger.info(
+                "GitHub OAuth: Response Set-Cookie headers (count=%d): %s",
+                len(set_cookie_headers),
+                set_cookie_headers,
+            )
+            # Also log all response headers for debugging
+            logger.debug(
+                "GitHub OAuth: All response headers: %s",
+                dict(response.headers),
             )
             # Session cookies disabled - SessionMiddleware is not enabled
             # await _issue_session_cookie(
@@ -726,7 +1559,18 @@ async def github_callback(code: str, state: str, request: Request):
             #     is_secure=is_secure,
             #     provider="github",
             # )
+            # Delete OAuth state cookie AFTER setting access_token cookie
+            # This ensures access_token cookie is set first
+            logger.info("GitHub OAuth: Deleting OAuth state cookie")
             response.delete_cookie(key=COOKIE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
+            
+            # Log final headers before returning
+            final_set_cookie_headers = [v for k, v in response.headers.items() if k.lower() == "set-cookie"]
+            logger.info(
+                "GitHub OAuth: Final Set-Cookie headers after state deletion (count=%d): %s",
+                len(final_set_cookie_headers),
+                final_set_cookie_headers,
+            )
             return response
         else:
             response = JSONResponse(content={"access_token": jwt_token, "token_type": "bearer", "user": user_response})
@@ -790,6 +1634,12 @@ async def google_login_callback(code: str, state: str, request: Request):
             email = f"google_user_{google_id}@accounts.google.com"
         
         user_id = f"google_{google_id}"
+        from .database import create_user
+        
+        # Create or update user in database (required for foreign key constraint in user_sessions)
+        db = ensure_db()
+        await create_user(db, user_id, google_id=google_id, email=email)
+        
         jwt_token = generate_jwt_token(user_id, google_id=google_id, email=email)
         user = {"user_id": user_id, "email": email, "google_id": google_id}
         user_response = {
@@ -799,41 +1649,92 @@ async def google_login_callback(code: str, state: str, request: Request):
         }
 
         is_secure = _is_secure_request(request)
+        logger.info(
+            "Google OAuth callback: jwt_use_cookies=%s, is_secure=%s, user_id=%s, email=%s",
+            settings.jwt_use_cookies,
+            is_secure,
+            user_id,
+            email,
+        )
         if settings.jwt_use_cookies:
             max_age_seconds = settings.jwt_expiration_hours * 3600
-            logger.debug(
-                "Google OAuth: Setting access_token cookie: secure=%s, max_age=%d, path=/, jwt_length=%d, user_id=%s",
+            logger.info(
+                "Google OAuth: Setting access_token cookie: secure=%s, max_age=%d, path=/, jwt_length=%d, user_id=%s, scheme=%s, host=%s",
                 is_secure,
                 max_age_seconds,
                 len(jwt_token),
                 user_id,
+                request.url.scheme,
+                request.headers.get("host"),
             )
-            response = RedirectResponse(url="/dashboard", status_code=status.HTTP_302_FOUND)
-            response.set_cookie(
-                key="access_token",
-                value=jwt_token,
-                httponly=True,
-                secure=is_secure,
-                samesite="lax",
-                max_age=max_age_seconds,
-                path="/",
-            )
-            # Session cookies disabled - SessionMiddleware is not enabled
-            # await _issue_session_cookie(
-            #     response,
-            #     request,
-            #     db,
-            #     user["user_id"],
-            #     is_secure=is_secure,
-            #     provider="google",
-            # )
-            response.delete_cookie(key=COOKIE_GOOGLE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
-            return response
+            try:
+                # Use sessions: create session with JWT in extra, then redirect to set-cookie endpoint
+                # This uses existing session infrastructure - no query string fallback
+                session_id = secrets.token_urlsafe(32)
+                expires_at = datetime.now(timezone.utc) + timedelta(minutes=5)  # Short-lived temp session
+                await create_user_session(
+                    db,
+                    session_id,
+                    user_id,
+                    expires_at,
+                    ip_address=(request.client.host if request.client else None),
+                    user_agent=request.headers.get("user-agent"),
+                    extra={"jwt_token": jwt_token, "temp": True, "provider": "google"},
+                )
+                # Redirect to set-cookie endpoint with session_id
+                cookie_set_url = f"/auth/set-cookie?session_id={session_id}&redirect=/dashboard"
+                response = RedirectResponse(url=cookie_set_url, status_code=status.HTTP_302_FOUND)
+                logger.info("Google OAuth: Created temp session %s, redirecting to set-cookie", session_id)
+                # Log the actual Set-Cookie header to verify it's being set
+                set_cookie_headers = [v for k, v in response.headers.items() if k.lower() == "set-cookie"]
+                logger.info(
+                    "Google OAuth: Response Set-Cookie headers (count=%d): %s",
+                    len(set_cookie_headers),
+                    set_cookie_headers,
+                )
+                # Verify cookie is actually in headers
+                if not set_cookie_headers or not any("access_token" in h for h in set_cookie_headers):
+                    logger.error(
+                        "Google OAuth: WARNING - access_token cookie NOT found in Set-Cookie headers! Headers: %s",
+                        dict(response.headers),
+                    )
+                # Also log all response headers for debugging
+                logger.debug(
+                    "Google OAuth: All response headers: %s",
+                    dict(response.headers),
+                )
+                # Session cookies disabled - SessionMiddleware is not enabled
+                # await _issue_session_cookie(
+                #     response,
+                #     request,
+                #     db,
+                #     user["user_id"],
+                #     is_secure=is_secure,
+                #     provider="google",
+                # )
+                response.delete_cookie(key=COOKIE_GOOGLE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
+                logger.info("Google OAuth: Returning redirect response with access_token cookie")
+                return response
+            except Exception as cookie_exc:
+                logger.error(
+                    "Google OAuth: Failed to set access_token cookie: %s",
+                    cookie_exc,
+                    exc_info=True,
+                )
+                # Still try to return response even if cookie setting failed
+                response = RedirectResponse(url="/dashboard", status_code=status.HTTP_302_FOUND)
+                response.delete_cookie(key=COOKIE_GOOGLE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
+                return response
         else:
             response = JSONResponse(content={"access_token": jwt_token, "token_type": "bearer", "user": user_response})
             response.delete_cookie(key=COOKIE_GOOGLE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
             return response
     except (ValueError, AuthenticationError) as exc:
+        logger.error(
+            "Google login callback failed: %s",
+            exc,
+            exc_info=True,
+        )
         # Expected auth errors: clear state cookie and return safe message
         logger.warning("Google callback failed: %s", exc)
         is_secure = _is_secure_request(request)

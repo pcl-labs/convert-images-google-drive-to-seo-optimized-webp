@@ -1063,17 +1063,69 @@ async def dashboard(request: Request, page: int = 1):
     # Debug: Check what cookies are present
     cookies_present = list(request.cookies.keys())
     access_token_cookie = request.cookies.get("access_token")
+    auth_header = request.headers.get("Authorization", "")
+    has_bearer_token = auth_header.startswith("Bearer ")
+    
     logger.debug(
-        "Dashboard: cookies=%s, access_token_present=%s, access_token_length=%s, request.state.user=%s",
+        "Dashboard: cookies=%s, access_token_present=%s, access_token_length=%s, request.state.user=%s, has_bearer_token=%s",
         cookies_present,
         access_token_cookie is not None,
         len(access_token_cookie) if access_token_cookie else 0,
         getattr(request.state, "user", None) is not None,
+        has_bearer_token,
     )
     
     user = getattr(request.state, "user", None)
     if not user:
-        return PlainTextResponse("Hello! No auth (this is expected without token)")
+        # Provide detailed debugging info
+        debug_info = {
+            "message": "No authentication found",
+            "cookies_present": cookies_present,
+            "access_token_cookie": {
+                "present": access_token_cookie is not None,
+                "length": len(access_token_cookie) if access_token_cookie else 0,
+            },
+            "authorization_header": {
+                "present": bool(auth_header),
+                "has_bearer": has_bearer_token,
+            },
+            "request_state": {
+                "user_present": False,
+                "user_id_present": hasattr(request.state, "user_id"),
+            },
+            "how_to_authenticate": {
+                "github": "/auth/github/start",
+                "google": "/auth/google/login/start",
+                "note": "After OAuth login, you'll be redirected here with an access_token cookie",
+            },
+        }
+        
+        # Try to verify token if present
+        token_to_verify = access_token_cookie
+        if not token_to_verify and has_bearer_token:
+            token_to_verify = auth_header[7:].strip()
+        
+        if token_to_verify:
+            try:
+                from .auth import verify_jwt_token
+                payload = verify_jwt_token(token_to_verify)
+                debug_info["token_verification"] = {
+                    "valid": True,
+                    "user_id": payload.get("user_id"),
+                    "email": payload.get("email"),
+                    "exp": payload.get("exp"),
+                }
+                debug_info["message"] = "Token found and valid, but request.state.user not set (middleware issue?)"
+            except Exception as exc:
+                debug_info["token_verification"] = {
+                    "valid": False,
+                    "error": str(exc),
+                    "error_type": type(exc).__name__,
+                }
+                debug_info["message"] = f"Token found but invalid: {str(exc)}"
+        
+        return JSONResponse(content=debug_info, status_code=200)
+    
     return PlainTextResponse(f"Hello {user.get('email', user.get('user_id', 'user'))}! Auth is working. User ID: {user.get('user_id')}")
 
 
