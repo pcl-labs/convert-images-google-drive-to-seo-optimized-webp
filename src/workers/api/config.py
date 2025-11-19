@@ -112,6 +112,7 @@ class Settings:
     queue: Optional[Any] = None
     dlq: Optional[Any] = None
     kv_namespace: Optional[Any] = None
+    assets: Optional[Any] = None  # Cloudflare Assets binding for static files
 
     use_inline_queue: bool = True
     cloudflare_account_id: Optional[str] = None

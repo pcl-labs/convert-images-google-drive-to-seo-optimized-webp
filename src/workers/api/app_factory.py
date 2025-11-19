@@ -19,7 +19,6 @@ from typing import Optional, Set, Awaitable
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from .static_loader import mount_static_files
 
@@ -202,7 +201,11 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
 
     # Mount static files using package-based loader that works in both
     # local dev and Cloudflare Workers environments
-    mount_static_files(app, static_dir_setting=active_settings.static_files_dir)
+    mount_static_files(
+        app, 
+        static_dir_setting=active_settings.static_files_dir,
+        assets_binding=active_settings.assets
+    )
 
     from .web import router as web_router
     from .public import router as public_router

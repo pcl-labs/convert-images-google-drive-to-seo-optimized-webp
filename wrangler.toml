@@ -69,6 +69,13 @@ binding = "DLQ"  # Must match WORKER_DLQ_BINDING in src/workers/runtime.py
 #
 # See docs/CLOUDFLARE_WORKERS.md for complete setup instructions.
 
+# Static assets binding
+# This tells Wrangler to bundle all files from src/workers/static
+# and make them accessible via env.ASSETS.fetch() in the Worker
+[assets]
+directory = "src/workers/static"
+binding = "ASSETS"
+
 # Routes (optional - for custom domain)
 # Uncomment and configure if you want to use a custom domain:
 # routes = [

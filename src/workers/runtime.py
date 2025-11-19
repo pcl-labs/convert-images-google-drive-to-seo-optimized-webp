@@ -22,6 +22,7 @@ WORKER_DB_BINDING = "DB"
 WORKER_QUEUE_BINDING = "JOB_QUEUE"
 WORKER_DLQ_BINDING = "DLQ"
 WORKER_KV_BINDING = "KV"
+WORKER_ASSETS_BINDING = "ASSETS"
 
 _ENV_LOCK = threading.Lock()
 _KEY_PATTERN = re.compile(r"^[A-Z0-9_]+$")
@@ -136,6 +137,8 @@ def apply_worker_env(env: Any) -> Settings:
             worker_kwargs["dlq"] = getattr(env, WORKER_DLQ_BINDING)
         if hasattr(env, WORKER_KV_BINDING):
             worker_kwargs["kv_namespace"] = getattr(env, WORKER_KV_BINDING)
+        if hasattr(env, WORKER_ASSETS_BINDING):
+            worker_kwargs["assets"] = getattr(env, WORKER_ASSETS_BINDING)
 
     # Import here (after os.environ is set) to avoid config.py evaluating
     # Settings.from_env() before Worker secrets are available
