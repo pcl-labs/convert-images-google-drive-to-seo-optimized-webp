@@ -1,6 +1,6 @@
 # Icon Usage Guide
 
-We use Heroicons with a custom macro system. Icons are defined in `templates/components/elements/icon.html`.
+We use Heroicons with a custom macro system. Icons are defined in `src/workers/templates/components/elements/icon.html`.
 
 ## How to Add Icons
 
@@ -8,7 +8,7 @@ We use Heroicons with a custom macro system. Icons are defined in `templates/com
 2. Find the icon you need (e.g., "bars-3" for menu)
 3. Click on the icon to view the SVG code
 4. Copy the `<path>` element content (or the entire path data)
-5. Paste it into the corresponding section in `templates/components/elements/icon.html`
+5. Paste it into the corresponding section in `src/workers/templates/components/elements/icon.html`
 
 ## Usage Examples
 

@@ -35,7 +35,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-TEMPLATES_DIR = ROOT / "templates"
+TEMPLATES_DIR = ROOT / "src" / "workers" / "templates"
 ASSETS_DIR = ROOT / "assets"
 
 CLASS_RE = re.compile(r'class\s*=\s*"([^"]+)"')
@@ -763,7 +763,7 @@ def render_markdown(report: dict) -> str:
     lines.append("- Replace arbitrary Tailwind values with token-based classes where possible.")
     lines.append("- Eliminate inline style attributes and <style> tags in templates.")
     lines.append("- Normalize spacing and radius scale usage; prefer small set (md, lg).")
-    lines.append("- Keep components under templates/components/elements; avoid inline component patterns in pages.")
+    lines.append("- Keep components under src/workers/templates/components/elements; avoid inline component patterns in pages.")
 
     return "\n".join(lines)
 

@@ -10,6 +10,7 @@ import logging
 import json
 import secrets
 import hmac
+from jinja2 import Environment, PackageLoader
 
 from .models import (
     OptimizeDocumentRequest,
@@ -125,16 +126,15 @@ def _validate_csrf(request: Request, form_token: Optional[str]) -> None:
 
 router = APIRouter()
 
-# Templates are at project root, not in src/workers
-# Calculate path relative to project root (go up from src/workers/api/web.py -> project root)
-# __file__ is src/workers/api/web.py, so:
-# - dirname once: src/workers/api
-# - dirname twice: src/workers  
-# - dirname three times: src
-# - dirname four times: project root
-_project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-TEMPLATES_DIR = os.path.join(_project_root, "templates")
-templates = Jinja2Templates(directory=TEMPLATES_DIR)
+# Templates are now packaged in src/workers/templates/
+# Use PackageLoader to load templates from the package, which works in both
+# local dev and Cloudflare Workers (Pyodide) environments
+jinja_env = Environment(
+    loader=PackageLoader("workers", "templates"),
+    autoescape=True,
+    auto_reload=False,  # Disable auto-reload in production
+)
+templates = Jinja2Templates(env=jinja_env)
 
 base_url_value = (settings.base_url or "").strip()
 templates.env.globals["base_url"] = base_url_value.rstrip("/") if base_url_value else ""

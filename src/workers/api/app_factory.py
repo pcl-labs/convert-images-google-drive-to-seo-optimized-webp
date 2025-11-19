@@ -21,6 +21,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
+from .static_loader import mount_static_files
 
 from .config import Settings, settings as global_settings
 from .cloudflare_queue import QueueProducer
@@ -198,14 +199,9 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
 
     app.state.register_background_task = register_background_task
 
-    static_dir_setting = Path(active_settings.static_files_dir).expanduser()
-    if not static_dir_setting.is_absolute():
-        static_dir_setting = Path.cwd() / static_dir_setting
-    static_dir = static_dir_setting.resolve()
-    if static_dir.exists():
-        app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
-    else:
-        app_logger.warning("Static directory '%s' not found; skipping static mount", static_dir)
+    # Mount static files using package-based loader that works in both
+    # local dev and Cloudflare Workers environments
+    mount_static_files(app, static_dir_setting=active_settings.static_files_dir)
 
     from .web import router as web_router
     from .public import router as public_router
