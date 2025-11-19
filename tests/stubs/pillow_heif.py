@@ -13,3 +13,4 @@ def register_heif_opener(
 ) -> None:  # pragma: no cover - helper only
     """Lightweight stub matching the upstream signature."""
     return None
+

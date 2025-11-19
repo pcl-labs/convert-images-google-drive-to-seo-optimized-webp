@@ -54,7 +54,7 @@ def mount_static_files(app, static_dir_setting: Optional[str] = None, assets_bin
     if assets_binding:
         logger.info("Using Cloudflare Assets binding for static files")
     
-    @app.get("/static/{path:path}")
+    @app.get("/static/{path:path}", name="static")
     async def serve_static(path: str, request: Request):
         # basic security
         if ".." in path:

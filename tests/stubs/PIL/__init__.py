@@ -20,3 +20,4 @@ class _ImageModule:
 
 
 Image = _ImageModule()
+

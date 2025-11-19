@@ -122,3 +122,4 @@ if not (_is_pytest or _is_dev):  # pragma: no cover - sanity guard
     raise RuntimeError(
         "jwt stub is for testing/development only and must not be used in production. Install PyJWT for real JWT support."
     )
+

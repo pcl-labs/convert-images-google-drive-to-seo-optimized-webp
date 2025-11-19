@@ -143,12 +143,35 @@ def apply_worker_env(env: Any) -> Settings:
     # Import here (after os.environ is set) to avoid config.py evaluating
     # Settings.from_env() before Worker secrets are available
     from api.config import Settings, replace_settings
+    import logging
+    
+    logger = logging.getLogger(__name__)
     
     # Instantiate a new Settings to evaluate BaseSettings sources with the
     # freshly injected os.environ values, then mutate the global instance.
-    new_settings = Settings.from_env(**worker_kwargs)
-    replace_settings(new_settings)
-    return new_settings
+    try:
+        new_settings = Settings.from_env(**worker_kwargs)
+        replace_settings(new_settings)
+        return new_settings
+    except ValueError as exc:
+        # Settings validation failed (e.g., missing JWT_SECRET_KEY)
+        # Log with clear details about what's missing
+        logger.error(
+            "Settings validation failed: %s. "
+            "This usually means a required environment variable or secret is missing. "
+            "Check that all required secrets are set via 'wrangler secret put' or environment variables.",
+            exc
+        )
+        # Re-raise so the error is caught early rather than as a generic 500 later
+        raise
+    except Exception as exc:
+        # Catch any other unexpected errors during settings initialization
+        logger.error(
+            "Unexpected error during settings initialization: %s",
+            exc,
+            exc_info=True
+        )
+        raise
 
 
 __all__ = ["apply_worker_env"]

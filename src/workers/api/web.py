@@ -139,8 +139,60 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 base_url_value = (settings.base_url or "").strip()
 templates.env.globals["base_url"] = base_url_value.rstrip("/") if base_url_value else ""
 
+# Explicitly register url_for as a global function for template use
+# This ensures url_for is available even if Starlette's automatic injection
+# doesn't work reliably in the Cloudflare Worker runtime
+from jinja2 import pass_context
+
+@pass_context
+def _url_for(context, name: str, **path_params: str) -> str:
+    """Jinja helper for generating URLs using FastAPI's url_for.
+    
+    Templates call this as: {{ url_for('static', path='css/app.css') }}
+    which maps to request.url_for('static', path='css/app.css')
+    
+    The 'request' object is extracted from the template context automatically.
+    """
+    request = context.get('request')
+    if request is None:
+        raise RuntimeError("'request' not found in template context. Ensure 'request' is passed to TemplateResponse.")
+    return request.url_for(name, **path_params)
+
+templates.env.globals["url_for"] = _url_for
+
 # Register Jinja filter once (after templates is initialized)
 templates.env.filters["status_label"] = _status_label
+
+# Verify critical templates can be loaded (diagnostic check)
+# This helps catch template packaging/bundling issues early
+def _verify_templates_available():
+    """Verify that critical templates can be loaded.
+    
+    This is a lightweight sanity check to catch template packaging issues.
+    We don't fail startup if this fails, but we log clearly so issues are visible.
+    """
+    critical_templates = ["home.html", "base_public.html"]
+    missing = []
+    for template_name in critical_templates:
+        try:
+            templates.get_template(template_name)
+        except Exception as exc:
+            missing.append(f"{template_name}: {exc}")
+            logger.warning("Template %s not available: %s", template_name, exc)
+    
+    if missing:
+        logger.error(
+            "Template loading check failed. Missing or inaccessible templates: %s. "
+            "This may indicate a packaging/bundling issue in the Worker environment. "
+            "TEMPLATES_DIR=%s",
+            ", ".join(missing),
+            TEMPLATES_DIR
+        )
+    else:
+        logger.debug("Template loading check passed: all critical templates available")
+
+# Run check once at module import (after templates is initialized)
+_verify_templates_available()
 
 # Track background tasks to avoid premature garbage collection
 BACKGROUND_TASKS: set[asyncio.Task] = set()

@@ -21,6 +21,22 @@ import json
 
 logger = logging.getLogger(__name__)
 
+# Public routes that should not require DB access for basic rendering
+# These routes should degrade gracefully if DB is unavailable
+_PUBLIC_ROUTES = {"/", "/health", "/login", "/signup", "/styleguide", "/docs", "/redoc", "/openapi.json"}
+
+
+def _is_public_route(request: Request) -> bool:
+    """Check if a request is for a public route that should work without DB.
+    
+    Public routes are those that should render successfully even if the database
+    is temporarily unavailable. This allows the homepage and health checks to
+    work even during DB outages.
+    """
+    path = request.url.path
+    # Exact match or starts with /static/
+    return path in _PUBLIC_ROUTES or path.startswith("/static/")
+
 
 class RequestIDMiddleware(BaseHTTPMiddleware):
     """Add request ID to each request."""
@@ -94,10 +110,22 @@ class SessionMiddleware(BaseHTTPMiddleware):
         should_clear_cookie = False
         db = None
         lookup_failed = False
+        is_public = _is_public_route(request)
+        
         if session_id:
             try:
                 db = ensure_db()
                 session = await get_user_session(db, session_id)
+            except HTTPException as exc:
+                # For public routes, don't fail the request if DB is unavailable
+                # Just treat it as no session and continue
+                if is_public and exc.status_code == 500:
+                    logger.debug("SessionMiddleware: DB unavailable for public route %s, treating as no session", request.url.path)
+                    session = None
+                    lookup_failed = True
+                else:
+                    # For protected routes, re-raise the exception
+                    raise
             except Exception as exc:  # pragma: no cover - defensive logging
                 logger.debug("SessionMiddleware failed to load session: %s", exc)
                 session = None
@@ -177,11 +205,19 @@ class FlashMiddleware(BaseHTTPMiddleware):
                         # Clear flash messages after reading
                         extra_dict.pop("flash_messages", None)
                         # Update session to clear flash
+                        # For public routes, skip DB update if DB is unavailable
                         try:
                             db = ensure_db()
                             await touch_user_session(db, session_id, extra=extra_dict)
                             # Update in-memory session
                             session["extra"] = json.dumps(extra_dict) if isinstance(extra_dict, dict) else extra_dict
+                        except HTTPException as exc:
+                            # For public routes, don't fail if DB is unavailable
+                            is_public = _is_public_route(request)
+                            if is_public and exc.status_code == 500:
+                                logger.debug("FlashMiddleware: DB unavailable for public route, skipping flash clear")
+                            else:
+                                raise
                         except Exception as exc:
                             logger.debug("Failed to clear flash messages from session: %s", exc)
                 except (json.JSONDecodeError, TypeError, AttributeError) as exc:

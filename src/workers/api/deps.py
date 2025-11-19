@@ -30,6 +30,12 @@ def set_queue_producer(q: QueueProducer) -> None:
 
 
 def ensure_db() -> Database:
+    """Get database instance, initializing lazily if needed.
+    
+    Raises HTTPException(500) if database cannot be initialized.
+    This is appropriate for routes that require DB access, but middleware
+    should catch this for public routes that can degrade gracefully.
+    """
     if _db_instance is None:
         try:
             with _db_lock:
