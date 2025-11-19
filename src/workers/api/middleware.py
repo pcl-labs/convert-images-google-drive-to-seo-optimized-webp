@@ -17,6 +17,7 @@ from .exceptions import RateLimitError
 from .app_logging import set_request_id
 from .deps import ensure_db
 from .database import get_user_by_id, get_user_session, touch_user_session, delete_user_session
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -143,6 +144,50 @@ class SessionMiddleware(BaseHTTPMiddleware):
                 httponly=True,
                 secure=self._is_secure_request(request),
             )
+        return response
+
+
+class FlashMiddleware(BaseHTTPMiddleware):
+    """Read flash messages from session and expose to templates.
+    
+    Flash messages are stored in session.extra as a JSON array.
+    They are read once per request and cleared after reading.
+    Flash messages are exposed via request.state.flash_messages for template access.
+    """
+    
+    async def dispatch(self, request: Request, call_next: Callable):
+        # Initialize empty flash messages
+        request.state.flash_messages = []
+        
+        # Read flash messages from session if available
+        session = getattr(request.state, "session", None)
+        session_id = getattr(request.state, "session_id", None)
+        if session and session_id:
+            extra = session.get("extra")
+            if extra:
+                try:
+                    if isinstance(extra, str):
+                        extra_dict = json.loads(extra)
+                    else:
+                        extra_dict = extra
+                    
+                    flash_queue = extra_dict.get("flash_messages", [])
+                    if flash_queue and isinstance(flash_queue, list):
+                        request.state.flash_messages = flash_queue
+                        # Clear flash messages after reading
+                        extra_dict.pop("flash_messages", None)
+                        # Update session to clear flash
+                        try:
+                            db = ensure_db()
+                            await touch_user_session(db, session_id, extra=extra_dict)
+                            # Update in-memory session
+                            session["extra"] = json.dumps(extra_dict) if isinstance(extra_dict, dict) else extra_dict
+                        except Exception as exc:
+                            logger.debug("Failed to clear flash messages from session: %s", exc)
+                except (json.JSONDecodeError, TypeError, AttributeError) as exc:
+                    logger.debug("Failed to parse session extra for flash messages: %s", exc)
+        
+        response = await call_next(request)
         return response
 
 

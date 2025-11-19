@@ -6,10 +6,10 @@
 
 {% set header_actions %}
   <div class="flex w-full flex-col gap-2 sm:flex-row sm:justify-end">
-    <form hx-post="/dashboard/jobs/{{ job.id }}/retry" hx-headers='{"X-CSRF-Token":"{{ csrf_token }}"}' hx-swap="none" hx-on:htmx:afterOnLoad="window.dispatchEvent(new CustomEvent('toast',{detail:{type:'success',text:'Job retried'}}))">
+    <form hx-post="/dashboard/jobs/{{ job.id }}/retry" hx-headers='{"X-CSRF-Token":"{{ csrf_token }}"}' hx-swap="none">
       {{ button('Retry','secondary', extra_classes='w-full sm:w-auto') }}
     </form>
-    <form hx-delete="/dashboard/jobs/{{ job.id }}" hx-headers='{"X-CSRF-Token":"{{ csrf_token }}"}' hx-swap="none" hx-on:htmx:afterOnLoad="window.dispatchEvent(new CustomEvent('toast',{detail:{type:'success',text:'Job cancelled'}}))">
+    <form hx-delete="/dashboard/jobs/{{ job.id }}" hx-headers='{"X-CSRF-Token":"{{ csrf_token }}"}' hx-swap="none">
       {{ button('Cancel','destructive', extra_classes='w-full sm:w-auto') }}
     </form>
   </div>

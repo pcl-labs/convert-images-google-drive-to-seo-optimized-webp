@@ -105,6 +105,10 @@ if(!window.__youtubeIngestInit){
     }
   };
   document.addEventListener('alpine:init', () => {
+    // NOTE: This Alpine component handles both UI state and SSE connection logic.
+    // Ideally, SSE connection management would be extracted to a separate module,
+    // with Alpine only managing UI state (loading, events display, form submission).
+    // For now, this is acceptable as the SSE logic is contained within methods.
     Alpine.data('youtubeIngestPanel', (config) => ({
       jobId: config.jobId || null,
       documentId: config.documentId || null,

@@ -29,6 +29,7 @@ from .database import Database, ensure_notifications_schema, ensure_sessions_sch
 from .exceptions import APIException
 from .app_logging import setup_logging, get_logger, get_request_id
 from .middleware import (
+    FlashMiddleware,
     AuthCookieMiddleware,
     CORSMiddleware,
     RateLimitMiddleware,
@@ -242,6 +243,7 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
     app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(AuthCookieMiddleware)
     app.add_middleware(SessionMiddleware)
+    app.add_middleware(FlashMiddleware)
     app.add_middleware(
         RateLimitMiddleware,
         max_per_minute=active_settings.rate_limit_per_minute,

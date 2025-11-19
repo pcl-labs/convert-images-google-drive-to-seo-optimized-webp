@@ -1,6 +1,22 @@
 <div
   x-data="{
     toasts: [],
+    init() {
+      // Initialize toasts from server-provided flash messages
+      {% set flash_msgs = request.state.flash_messages if request.state is defined and request.state.flash_messages else [] %}
+      {% if flash_msgs %}
+      const serverFlash = {{ flash_msgs | tojson }};
+      if (Array.isArray(serverFlash)) {
+        serverFlash.forEach(msg => {
+          this.push({
+            type: msg.type || 'info',
+            text: msg.text || 'Notification',
+            href: msg.href || null,
+          });
+        });
+      }
+      {% endif %}
+    },
     push(detail) {
       const payload = detail || {};
       const id = (window.crypto && window.crypto.randomUUID ? window.crypto.randomUUID() : (Date.now().toString(36) + Math.random().toString(36).slice(2)));

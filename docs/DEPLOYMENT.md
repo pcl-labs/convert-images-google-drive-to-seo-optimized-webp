@@ -142,6 +142,44 @@ pytest --cov=. tests/
 - Monitor queue: Cloudflare Dashboard > Workers > Queues
 - Database metrics: Cloudflare Dashboard > D1
 
+## Frontend Patterns
+
+### Toast Notifications (Flash Messages)
+
+Toasts are now **server-driven via flash messages**; Alpine only handles display and animation.
+
+- **Backend**: Use `add_flash(request, message, category="info")` in route handlers to set flash messages
+- **Storage**: Flash messages are stored in session.extra and automatically cleared after being read once
+- **Display**: The toast component (`templates/components/overlays/toast.html`) initializes from server-provided `flash_messages` on page load
+- **Alpine Role**: Alpine manages UI state only (visibility, auto-dismiss, animation) - not when toasts should exist
+
+Example:
+```python
+from .flash import add_flash
+
+await add_flash(request, "Job retried", category="success")
+return RedirectResponse(url="/dashboard/jobs", status_code=303)
+```
+
+### Alpine.js Usage
+
+Alpine is used **purely for UI behaviors** (modals, drawers, toasts, dropdowns), not business logic.
+
+- **UI-only**: Alpine handles open/close states, animations, form toggles
+- **Business logic**: Lives in the backend (server-rendered HTML, HTMX partial loads)
+- **Exception**: The YouTube ingest panel currently mixes UI and SSE connection logic; this is acceptable for now but could be further simplified
+
+### SSE (Server-Sent Events)
+
+SSE endpoints `/api/stream` and `/api/pipeline_stream` work on Cloudflare Workers but may have timeout limitations.
+
+- **Current status**: Works with Cloudflare Workers ASGI adapter
+- **Implementation**: Uses async generators with polling (5s for notifications, 2s for pipeline events)
+- **Limitations**: Long-running connections may hit Worker timeout limits (30s default, 300s max)
+- **Monitoring**: Monitor timeout behavior in production; may need polling fallback for very long connections
+
+See `src/workers/api/notifications_stream.py` and `src/workers/api/pipeline_stream.py` for implementation details.
+
 ## Troubleshooting
 
 ### Database Connection Issues

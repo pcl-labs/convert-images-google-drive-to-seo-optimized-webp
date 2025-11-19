@@ -14,8 +14,8 @@
         <div class="space-y-3 surface rounded-lg p-4">
           {{ alert('success' if level=='success' else ('error' if level=='error' else 'info'), n.text) }}
           <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-end">
-            {{ button('Seen', variant='ghost', attrs='hx-post="/api/notifications/' ~ n.id ~ '/seen" hx-headers=\'{"X-CSRF-Token":"{{ csrf_token }}"}\' hx-swap="none" hx-on:htmx:afterOnLoad="window.dispatchEvent(new CustomEvent(\'toast\',{detail:{type:\'info\',text:\'Marked seen\'}}))"', with_spinner=True) }}
-            {{ button('Dismiss', variant='ghost', attrs='hx-post="/api/notifications/' ~ n.id ~ '/dismiss" hx-headers=\'{"X-CSRF-Token":"{{ csrf_token }}"}\' hx-swap="none" hx-on:htmx:afterOnLoad="window.dispatchEvent(new CustomEvent(\'toast\',{detail:{type:\'info\',text:\'Dismissed\'}}))"', with_spinner=True) }}
+            {{ button('Seen', variant='ghost', attrs='hx-post="/api/notifications/' ~ n.id ~ '/seen" hx-headers=\'{"X-CSRF-Token":"{{ csrf_token }}"}\' hx-swap="none"', with_spinner=True) }}
+            {{ button('Dismiss', variant='ghost', attrs='hx-post="/api/notifications/' ~ n.id ~ '/dismiss" hx-headers=\'{"X-CSRF-Token":"{{ csrf_token }}"}\' hx-swap="none"', with_spinner=True) }}
           </div>
         </div>
       {% endfor %}

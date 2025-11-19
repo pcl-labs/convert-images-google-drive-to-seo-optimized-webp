@@ -98,14 +98,14 @@
             variant='ghost',
             with_spinner=True,
             extra_classes='text-contentMuted hover:text-content w-full sm:w-auto',
-            attrs='hx-post="/dashboard/jobs/' ~ job.id ~ '/retry" hx-headers="{&quot;X-CSRF-Token&quot;:&quot;{{ csrf_token }}&quot;}" hx-swap="none" hx-on:htmx:afterOnLoad="window.dispatchEvent(new CustomEvent(\'toast\',{detail:{type:\'success\',text:\'Job retried\'}}))" hx-on:htmx:responseError="window.dispatchEvent(new CustomEvent(\'toast\',{detail:{type:\'error\',text:\'Retry failed\'}}))"'
+            attrs='hx-post="/dashboard/jobs/' ~ job.id ~ '/retry" hx-headers="{&quot;X-CSRF-Token&quot;:&quot;{{ csrf_token }}&quot;}" hx-swap="none" hx-on:htmx:responseError="window.dispatchEvent(new CustomEvent(\'toast\',{detail:{type:\'error\',text:\'Retry failed\'}}))"'
           ) }}
           {{ button(
             'Cancel',
             variant='ghost',
             with_spinner=True,
             extra_classes='text-destructive hover:text-destructive/80 w-full sm:w-auto',
-            attrs='hx-delete="/dashboard/jobs/' ~ job.id ~ '" hx-headers="{&quot;X-CSRF-Token&quot;:&quot;{{ csrf_token }}&quot;}" hx-swap="none" hx-on:htmx:afterOnLoad="window.dispatchEvent(new CustomEvent(\'toast\',{detail:{type:\'success\',text:\'Job cancelled\'}}))" hx-on:htmx:responseError="window.dispatchEvent(new CustomEvent(\'toast\',{detail:{type:\'error\',text:\'Cancel failed\'}}))"'
+            attrs='hx-delete="/dashboard/jobs/' ~ job.id ~ '" hx-headers="{&quot;X-CSRF-Token&quot;:&quot;{{ csrf_token }}&quot;}" hx-swap="none" hx-on:htmx:responseError="window.dispatchEvent(new CustomEvent(\'toast\',{detail:{type:\'error\',text:\'Cancel failed\'}}))"'
           ) }}
         </div>
       </article>

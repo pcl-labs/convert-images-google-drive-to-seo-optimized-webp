@@ -63,6 +63,7 @@ from .config import settings
 from .notifications import notify_job, notify_activity
 from .notifications_stream import notifications_stream_response
 from .pipeline_stream import pipeline_stream_response
+from .flash import add_flash
 from .constants import COOKIE_OAUTH_STATE, COOKIE_GOOGLE_OAUTH_STATE
 from .utils import normalize_ui_status
 from src.workers.core.constants import GOOGLE_SCOPE_DRIVE, GOOGLE_SCOPE_YOUTUBE, GOOGLE_SCOPE_GMAIL, GOOGLE_INTEGRATION_SCOPES
@@ -892,7 +893,10 @@ async def api_mark_seen(notification_id: str, request: Request, user: dict = Dep
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
     db = ensure_db()
     await mark_notification_seen(db, user["user_id"], notification_id)
-    return {"ok": True}
+    
+    # Set flash message and redirect
+    await add_flash(request, "Marked seen", category="info")
+    return RedirectResponse(url="/dashboard/activity", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.post("/api/notifications/{notification_id}/dismiss")
@@ -904,7 +908,10 @@ async def api_dismiss(notification_id: str, request: Request, user: dict = Depen
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
     db = ensure_db()
     await dismiss_notification(db, user["user_id"], notification_id)
-    return {"ok": True}
+    
+    # Set flash message and redirect
+    await add_flash(request, "Dismissed", category="info")
+    return RedirectResponse(url="/dashboard/activity", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.get("/api/stream")
@@ -1769,7 +1776,14 @@ async def retry_job(job_id: str, request: Request, user: dict = Depends(get_curr
         await notify_job(db, user_id=user["user_id"], job_id=job_id, level="info", text=f"Job {job_id} retried")
     except Exception:
         pass
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    
+    # Set flash message and redirect
+    await add_flash(request, "Job retried", category="success")
+    if _is_htmx(request):
+        # For HTMX, redirect to jobs page
+        return RedirectResponse(url="/dashboard/jobs", status_code=status.HTTP_303_SEE_OTHER)
+    # For regular requests, redirect to job detail
+    return RedirectResponse(url=f"/dashboard/jobs/{job_id}", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.delete("/dashboard/jobs/{job_id}")
@@ -1798,7 +1812,14 @@ async def cancel_job_html(job_id: str, request: Request, user: dict = Depends(ge
         await notify_job(db, user_id=user["user_id"], job_id=job_id, level="error", text=f"Job {job_id} cancelled")
     except Exception:
         pass
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    
+    # Set flash message and redirect
+    await add_flash(request, "Job cancelled", category="success")
+    if _is_htmx(request):
+        # For HTMX, redirect to jobs page
+        return RedirectResponse(url="/dashboard/jobs", status_code=status.HTTP_303_SEE_OTHER)
+    # For regular requests, redirect to job detail
+    return RedirectResponse(url=f"/dashboard/jobs/{job_id}", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.post("/dashboard/integrations/{service}/connect")
