@@ -274,6 +274,13 @@ class AuthCookieMiddleware(BaseHTTPMiddleware):
                                 # Provider IDs remain best-effort; don't force a DB hit just for them.
                                 github_id = github_id or stored.get("github_id")
                                 google_id = google_id or stored.get("google_id")
+                    except HTTPException as exc:
+                        # DB initialization failure: log warning and continue without DB enrichment
+                        # The JWT token may still have email, or user will get 401 on protected routes
+                        if exc.status_code == 500:
+                            logger.warning("AuthCookieMiddleware: DB unavailable, cannot hydrate user from DB - continuing with JWT claims only")
+                        else:
+                            raise
                     except Exception as exc:
                         logger.debug("AuthCookieMiddleware: failed to fetch user profile: %s", exc)
                 request.state.user = {

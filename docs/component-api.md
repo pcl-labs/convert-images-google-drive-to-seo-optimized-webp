@@ -367,7 +367,7 @@ The dropdown uses Alpine.js for state management. The trigger should call `toggl
 
 ## Design Tokens
 
-All components use semantic design tokens defined in `assets/css/input.css`. These tokens can be updated in one place to change the entire theme.
+All components use semantic design tokens defined in `assets/css/tailwind.css`. These tokens can be updated in one place to change the entire theme.
 
 ### Token Format: RGB for Opacity Support
 
@@ -379,7 +379,7 @@ Example:
 
 ### Color Tokens
 
-All colors are defined as RGB values in `assets/css/input.css`. The semantic tokens stay the same, but their values change based
+All colors are defined as RGB values in `assets/css/tailwind.css`. The semantic tokens stay the same, but their values change based
 on whether the document root is in light mode (`:root`) or dark mode (`.dark`).
 
 **Google Light Theme (`:root`)**
@@ -428,7 +428,7 @@ on whether the document root is in light mode (`:root`) or dark mode (`.dark`).
 
 **Semantic Utility Classes:**
 - Direct utility classes like `.surface` and `.surface-muted` are available for use in templates
-- These are defined in `@layer components` in `assets/css/input.css`
+- These are defined in `@layer components` in `assets/css/tailwind.css`
 
 **Examples:**
 ```html

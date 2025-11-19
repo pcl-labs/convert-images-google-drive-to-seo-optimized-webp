@@ -403,7 +403,17 @@ async def github_callback(code: str, state: str, request: Request):
         logger.warning("OAuth state verification failed - possible CSRF attack")
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid state parameter - possible CSRF attack")
 
-    db = ensure_db()
+    # Handle DB initialization failures gracefully for public OAuth callback
+    try:
+        db = ensure_db()
+    except HTTPException as exc:
+        if exc.status_code == 500:
+            logger.error("GitHub OAuth callback: Database unavailable - cannot complete authentication")
+            is_secure = _is_secure_request(request)
+            response = RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
+            response.delete_cookie(key=COOKIE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
+            return response
+        raise
 
     try:
         jwt_token, user = await authenticate_github(db, code)
@@ -448,7 +458,17 @@ async def google_login_callback(code: str, state: str, request: Request):
         logger.warning("Google login state verification failed - possible CSRF attack")
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid state parameter - possible CSRF attack")
 
-    db = ensure_db()
+    # Handle DB initialization failures gracefully for public OAuth callback
+    try:
+        db = ensure_db()
+    except HTTPException as exc:
+        if exc.status_code == 500:
+            logger.error("Google login callback: Database unavailable - cannot complete authentication")
+            is_secure = _is_secure_request(request)
+            response = RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
+            response.delete_cookie(key=COOKIE_GOOGLE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
+            return response
+        raise
 
     try:
         redirect_uri = _google_login_redirect_uri(request)

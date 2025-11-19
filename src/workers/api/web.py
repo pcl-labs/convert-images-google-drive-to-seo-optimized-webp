@@ -1056,8 +1056,17 @@ async def styleguide(request: Request):
 
 @router.get("/dashboard", response_class=HTMLResponse)
 async def dashboard(request: Request, page: int = 1, user: dict = Depends(get_current_user)):
-    
-    db = ensure_db()
+    # Handle DB initialization failures with explicit 503 for protected routes
+    try:
+        db = ensure_db()
+    except HTTPException as exc:
+        if exc.status_code == 500:
+            logger.error("Dashboard: Database unavailable")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Service temporarily unavailable"
+            ) from exc
+        raise
     jobs_list, total = await list_jobs(db, user["user_id"], page=page, page_size=10, status=None)
     stats = await get_job_stats(db, user["user_id"])  # { total, completed, failed, pending, processing }
     csrf = _get_csrf_token(request)
@@ -1121,7 +1130,17 @@ def _is_htmx(request: Request) -> bool:
 
 @router.get("/dashboard/documents", response_class=HTMLResponse)
 async def documents_page(request: Request, page: int = 1, user: dict = Depends(get_current_user)):
-    db = ensure_db()
+    # Handle DB initialization failures with explicit 503 for protected routes
+    try:
+        db = ensure_db()
+    except HTTPException as exc:
+        if exc.status_code == 500:
+            logger.error("Documents page: Database unavailable")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Service temporarily unavailable"
+            ) from exc
+        raise
     csrf = _get_csrf_token(request)
     documents, total = await _load_document_views(db, user["user_id"], page=page, page_size=20)
     google_tokens = await list_google_tokens(db, user["user_id"])  # type: ignore
@@ -1598,7 +1617,17 @@ async def job_detail_partial(job_id: str, request: Request, user: dict = Depends
 
 @router.get("/dashboard/jobs", response_class=HTMLResponse)
 async def jobs_page(request: Request, user: dict = Depends(get_current_user), page: int = 1, status: Optional[str] = None):
-    db = ensure_db()
+    # Handle DB initialization failures with explicit 503 for protected routes
+    try:
+        db = ensure_db()
+    except HTTPException as exc:
+        if exc.status_code == 500:
+            logger.error("Jobs page: Database unavailable")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Service temporarily unavailable"
+            ) from exc
+        raise
     csrf = _get_csrf_token(request)
     status_filter = None
     if status:

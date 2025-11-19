@@ -11,7 +11,7 @@ DEFAULT_MAX_SIZE_KB = 300
 FAIL_LOG_PATH = "failures.log"
 TEMP_DIR = "temp_download"
 OUTPUT_DIR_PREFIX = "optimized_"
-ALT_TEXT_MAP = "alt_text_map.json"
+ALT_TEXT_MAP = "data/alt_text_map.json"
 
 # Google API scopes per integration
 GOOGLE_SCOPE_DRIVE = "https://www.googleapis.com/auth/drive"

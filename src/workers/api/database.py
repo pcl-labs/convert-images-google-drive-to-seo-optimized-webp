@@ -38,7 +38,7 @@ class Database:
         self._sqlite_path: Optional[str] = None
         if not self.db:
             # Local fallback: initialize SQLite in repo directory
-            db_path = os.environ.get("LOCAL_SQLITE_PATH", os.path.join(os.getcwd(), "dev.db"))
+            db_path = os.environ.get("LOCAL_SQLITE_PATH", os.path.join(os.getcwd(), "data", "dev.db"))
             self._sqlite_path = db_path
             try:
                 # Apply migrations once at startup using a temporary connection

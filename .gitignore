@@ -9,6 +9,7 @@ __pycache__/
 *.so
 .Python
 build/
+.build/
 develop-eggs/
 dist/
 downloads/
@@ -56,6 +57,9 @@ yarn-error.log*
 ehthumbs.db
 Thumbs.db
 
+# Cache directories
+.cache/
+
 # Logs
 *.log
 failures.log
@@ -68,7 +72,7 @@ optimized_*/
 
 # Cache files
 cache.json
-alt_text_map.json
+data/alt_text_map.json
 
 # Environment variables
 .env
@@ -83,9 +87,9 @@ alt_text_map.json
 /static/css/app.css
 
 # Local SQLite database
-dev.db
-.queue.json
-.queue.json.lock
+data/dev.db
+data/.queue.json
+data/.queue.json.lock
 
 # Cloudflare Workers build artifacts
 .wrangler/
