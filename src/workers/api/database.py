@@ -27,6 +27,115 @@ TERMINAL_JOB_STATES = {
 }
 
 
+def _jsproxy_to_dict(obj: Any) -> Dict[str, Any]:
+    """Convert a JsProxy object (from D1/Pyodide) to a Python dict.
+    
+    D1 query results are returned as JsProxy objects which can't be directly
+    converted with dict(). This function handles the conversion by accessing
+    properties directly.
+    """
+    if obj is None:
+        return {}
+    
+    # JsProxy internal properties to exclude
+    JS_PROXY_INTERNALS = {'js_id', 'typeof', '__class__', '__dict__', '__module__'}
+    
+    # Check if it's a JsProxy (from pyodide.ffi)
+    try:
+        from pyodide.ffi import JsProxy
+        if isinstance(obj, JsProxy):
+            # JsProxy objects can be accessed like dicts, but we need to iterate
+            # over their keys to convert to Python dict
+            result = {}
+            # Try to get keys - JsProxy objects may have keys() method or be iterable
+            try:
+                # Try accessing as dict-like object
+                if hasattr(obj, 'keys'):
+                    for key in obj.keys():
+                        key_str = str(key)
+                        # Skip JsProxy internal properties
+                        if key_str not in JS_PROXY_INTERNALS:
+                            result[key_str] = obj[key]
+                elif hasattr(obj, '__iter__'):
+                    # If it's iterable, try to convert each item
+                    for key in obj:
+                        key_str = str(key)
+                        if key_str not in JS_PROXY_INTERNALS:
+                            result[key_str] = obj[key]
+                else:
+                    # Fallback: try to access common properties
+                    # D1 results typically have column names as attributes
+                    # Try to get all attributes
+                    for attr in dir(obj):
+                        if not attr.startswith('_') and attr not in JS_PROXY_INTERNALS:
+                            try:
+                                value = getattr(obj, attr)
+                                # Skip methods
+                                if not callable(value):
+                                    result[attr] = value
+                            except Exception:
+                                pass
+            except Exception as e:
+                logger.debug(f"Error converting JsProxy to dict: {e}")
+                # Last resort: try direct dict conversion
+                try:
+                    converted = dict(obj)
+                    # Filter out internals
+                    return {k: v for k, v in converted.items() if k not in JS_PROXY_INTERNALS}
+                except Exception:
+                    return {}
+            return result
+    except ImportError:
+        # pyodide not available (e.g., in tests), try regular dict conversion
+        pass
+    
+    # Not a JsProxy or pyodide not available, try regular conversion
+    if isinstance(obj, dict):
+        return obj
+    try:
+        return dict(obj)
+    except (TypeError, ValueError):
+        return {}
+
+
+def _jsproxy_to_list(obj: Any) -> List[Any]:
+    """Convert a JsProxy array or list to a Python list.
+    
+    D1 query results from .all() return a result object with a .results property
+    that contains an array of JsProxy objects.
+    """
+    if obj is None:
+        return []
+    
+    # Check if it has a .results property (D1 result object)
+    if hasattr(obj, 'results'):
+        obj = obj.results
+    
+    # Check if it's a JsProxy array
+    try:
+        from pyodide.ffi import JsProxy
+        if isinstance(obj, JsProxy):
+            # Convert JsProxy array to Python list
+            try:
+                return [_jsproxy_to_dict(item) if hasattr(item, 'keys') or isinstance(item, JsProxy) else item for item in obj]
+            except Exception:
+                # Fallback: try to convert directly
+                try:
+                    return list(obj)
+                except Exception:
+                    return []
+    except ImportError:
+        pass
+    
+    # Not a JsProxy, try regular conversion
+    if isinstance(obj, list):
+        return obj
+    try:
+        return list(obj)
+    except (TypeError, ValueError):
+        return []
+
+
 class Database:
     """Database wrapper for D1 operations with SQLite fallback."""
     
@@ -1707,6 +1816,486 @@ async def ensure_sessions_schema(db: Database) -> None:
         ),
     ]
     await db.batch(stmts)
+
+
+async def ensure_full_schema(db: Database) -> None:
+    """Apply the full database schema from migrations/schema.sql to D1.
+    
+    This function applies all tables, indexes, and triggers defined in the schema.
+    All statements use IF NOT EXISTS, so it's safe to run multiple times.
+    """
+    logger.info("Applying full database schema to D1")
+    
+    # Split schema into individual statements and execute them
+    # We'll apply the schema in logical groups to handle dependencies
+    
+    # Core tables first (users must exist before others due to foreign keys)
+    core_tables = [
+        (
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                user_id TEXT PRIMARY KEY,
+                github_id TEXT UNIQUE,
+                google_id TEXT UNIQUE,
+                email TEXT NOT NULL UNIQUE,
+                preferences TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            """,
+            (),
+        ),
+        ("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email)", ()),
+        ("CREATE INDEX IF NOT EXISTS idx_users_github_id ON users(github_id)", ()),
+        ("CREATE INDEX IF NOT EXISTS idx_users_google_id ON users(google_id)", ()),
+    ]
+    
+    # API keys table
+    api_keys_tables = [
+        (
+            """
+            CREATE TABLE IF NOT EXISTS api_keys (
+                key_hash TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                last_used TEXT,
+                salt TEXT,
+                iterations INTEGER,
+                lookup_hash TEXT,
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+            )
+            """,
+            (),
+        ),
+        ("CREATE INDEX IF NOT EXISTS idx_api_keys_user_id ON api_keys(user_id)", ()),
+        ("CREATE INDEX IF NOT EXISTS idx_api_keys_lookup_hash ON api_keys(lookup_hash)", ()),
+    ]
+    
+    # Jobs table
+    jobs_tables = [
+        (
+            """
+            CREATE TABLE IF NOT EXISTS jobs (
+                job_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'completed', 'failed', 'cancelled')),
+                progress TEXT NOT NULL DEFAULT '{}',
+                drive_folder TEXT,
+                extensions TEXT,
+                job_type TEXT NOT NULL DEFAULT 'optimize_drive',
+                document_id TEXT,
+                output TEXT,
+                payload TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                completed_at TEXT,
+                error TEXT,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                next_attempt_at TEXT,
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+                FOREIGN KEY (document_id) REFERENCES documents(document_id)
+            )
+            """,
+            (),
+        ),
+        ("CREATE INDEX IF NOT EXISTS idx_jobs_user_id ON jobs(user_id)", ()),
+        ("CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status)", ()),
+        ("CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at DESC)", ()),
+        ("CREATE INDEX IF NOT EXISTS idx_jobs_status_next_attempt ON jobs(status, next_attempt_at)", ()),
+        ("CREATE INDEX IF NOT EXISTS idx_jobs_job_type ON jobs(job_type)", ()),
+        ("CREATE INDEX IF NOT EXISTS idx_jobs_document_id ON jobs(document_id)", ()),
+    ]
+    
+    # Jobs triggers
+    jobs_triggers = [
+        (
+            """
+            CREATE TRIGGER IF NOT EXISTS check_job_status 
+            BEFORE INSERT ON jobs
+            WHEN NEW.status NOT IN ('pending', 'processing', 'completed', 'failed', 'cancelled')
+            BEGIN
+                SELECT RAISE(ABORT, 'Invalid status value. Must be one of: pending, processing, completed, failed, cancelled');
+            END
+            """,
+            (),
+        ),
+        (
+            """
+            CREATE TRIGGER IF NOT EXISTS check_job_status_update
+            BEFORE UPDATE ON jobs
+            WHEN NEW.status NOT IN ('pending', 'processing', 'completed', 'failed', 'cancelled')
+            BEGIN
+                SELECT RAISE(ABORT, 'Invalid status value. Must be one of: pending, processing, completed, failed, cancelled');
+            END
+            """,
+            (),
+        ),
+    ]
+    
+    # Google integration tokens
+    google_tokens_tables = [
+        (
+            """
+            CREATE TABLE IF NOT EXISTS google_integration_tokens (
+                token_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                integration TEXT NOT NULL,
+                access_token TEXT,
+                refresh_token TEXT,
+                expiry TEXT,
+                token_type TEXT,
+                scopes TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(user_id, integration),
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+            )
+            """,
+            (),
+        ),
+    ]
+    
+    # Documents table (needed before document_versions)
+    documents_tables = [
+        (
+            """
+            CREATE TABLE IF NOT EXISTS documents (
+                document_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                source_ref TEXT,
+                raw_text TEXT,
+                metadata TEXT,
+                content_format TEXT,
+                frontmatter TEXT,
+                latest_version_id TEXT,
+                drive_folder_id TEXT,
+                drive_drafts_folder_id TEXT,
+                drive_media_folder_id TEXT,
+                drive_published_folder_id TEXT,
+                drive_file_id TEXT,
+                drive_revision_id TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+            )
+            """,
+            (),
+        ),
+        ("CREATE INDEX IF NOT EXISTS idx_documents_user ON documents(user_id, created_at DESC)", ()),
+        ("CREATE INDEX IF NOT EXISTS idx_documents_source ON documents(source_type, source_ref)", ()),
+    ]
+    
+    # Document versions
+    document_versions_tables = [
+        (
+            """
+            CREATE TABLE IF NOT EXISTS document_versions (
+                version_id TEXT PRIMARY KEY,
+                document_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                version INTEGER NOT NULL,
+                content_format TEXT NOT NULL,
+                frontmatter TEXT,
+                body_mdx TEXT,
+                body_html TEXT,
+                outline TEXT,
+                chapters TEXT,
+                sections TEXT,
+                assets TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (document_id) REFERENCES documents(document_id) ON DELETE CASCADE,
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+                UNIQUE(document_id, version)
+            )
+            """,
+            (),
+        ),
+        ("CREATE INDEX IF NOT EXISTS idx_document_versions_document ON document_versions(document_id, version DESC)", ()),
+        ("CREATE UNIQUE INDEX IF NOT EXISTS unique_document_version ON document_versions(document_id, version)", ()),
+    ]
+    
+    # Document exports
+    document_exports_tables = [
+        (
+            """
+            CREATE TABLE IF NOT EXISTS document_exports (
+                export_id TEXT PRIMARY KEY,
+                document_id TEXT NOT NULL,
+                version_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                target TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued','pending','processing','completed','failed','cancelled')),
+                payload TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (document_id) REFERENCES documents(document_id) ON DELETE CASCADE,
+                FOREIGN KEY (version_id) REFERENCES document_versions(version_id) ON DELETE CASCADE,
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+            )
+            """,
+            (),
+        ),
+        ("CREATE INDEX IF NOT EXISTS idx_document_exports_document ON document_exports(document_id, created_at DESC)", ()),
+    ]
+    
+    # Document exports triggers
+    document_exports_triggers = [
+        (
+            """
+            CREATE TRIGGER IF NOT EXISTS check_document_export_status 
+            BEFORE INSERT ON document_exports
+            WHEN NEW.status NOT IN ('queued','pending','processing','completed','failed','cancelled')
+            BEGIN
+                SELECT RAISE(ABORT, 'Invalid status value for document_exports.');
+            END
+            """,
+            (),
+        ),
+        (
+            """
+            CREATE TRIGGER IF NOT EXISTS check_document_export_status_update
+            BEFORE UPDATE ON document_exports
+            WHEN NEW.status NOT IN ('queued','pending','processing','completed','failed','cancelled')
+            BEGIN
+                SELECT RAISE(ABORT, 'Invalid status value for document_exports.');
+            END
+            """,
+            (),
+        ),
+        (
+            """
+            CREATE TRIGGER IF NOT EXISTS document_exports_set_updated_at
+            AFTER UPDATE ON document_exports
+            WHEN NEW.updated_at = OLD.updated_at
+            BEGIN
+                UPDATE document_exports SET updated_at = datetime('now') WHERE export_id = OLD.export_id;
+            END
+            """,
+            (),
+        ),
+    ]
+    
+    # Pipeline events
+    pipeline_events_tables = [
+        (
+            """
+            CREATE TABLE IF NOT EXISTS pipeline_events (
+                sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_id TEXT NOT NULL UNIQUE,
+                user_id TEXT NOT NULL,
+                job_id TEXT,
+                event_type TEXT NOT NULL,
+                stage TEXT,
+                status TEXT,
+                message TEXT,
+                data TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+                FOREIGN KEY (job_id) REFERENCES jobs(job_id) ON DELETE CASCADE
+            )
+            """,
+            (),
+        ),
+        ("CREATE INDEX IF NOT EXISTS idx_pipeline_events_user ON pipeline_events(user_id, created_at DESC)", ()),
+        ("CREATE INDEX IF NOT EXISTS idx_pipeline_events_job ON pipeline_events(job_id, sequence DESC)", ()),
+    ]
+    
+    # Pipeline events triggers
+    pipeline_events_triggers = [
+        (
+            """
+            CREATE TRIGGER IF NOT EXISTS check_pipeline_event_type
+            BEFORE INSERT ON pipeline_events
+            WHEN NEW.event_type NOT IN (
+                'ingest_youtube',
+                'drive_workspace',
+                'drive_sync',
+                'optimize_drive',
+                'ingest_drive',
+                'generate_blog',
+                'outline.generate',
+                'chapters.organize',
+                'blog.compose'
+            )
+            BEGIN
+                SELECT RAISE(ABORT, 'Invalid event_type value for pipeline_events.');
+            END
+            """,
+            (),
+        ),
+        (
+            """
+            CREATE TRIGGER IF NOT EXISTS check_pipeline_event_type_update
+            BEFORE UPDATE ON pipeline_events
+            WHEN NEW.event_type NOT IN (
+                'ingest_youtube',
+                'drive_workspace',
+                'drive_sync',
+                'optimize_drive',
+                'ingest_drive',
+                'generate_blog',
+                'outline.generate',
+                'chapters.organize',
+                'blog.compose'
+            )
+            BEGIN
+                SELECT RAISE(ABORT, 'Invalid event_type value for pipeline_events.');
+            END
+            """,
+            (),
+        ),
+    ]
+    
+    # Drive workspaces
+    drive_workspaces_tables = [
+        (
+            """
+            CREATE TABLE IF NOT EXISTS drive_workspaces (
+                user_id TEXT PRIMARY KEY,
+                root_folder_id TEXT NOT NULL,
+                drafts_folder_id TEXT NOT NULL,
+                published_folder_id TEXT NOT NULL,
+                metadata TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+            )
+            """,
+            (),
+        ),
+    ]
+    
+    # Drive watches
+    drive_watches_tables = [
+        (
+            """
+            CREATE TABLE IF NOT EXISTS drive_watches (
+                watch_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                document_id TEXT NOT NULL,
+                drive_file_id TEXT NOT NULL,
+                channel_id TEXT NOT NULL,
+                resource_id TEXT NOT NULL,
+                resource_uri TEXT,
+                expires_at TEXT,
+                state TEXT NOT NULL DEFAULT 'active',
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+                FOREIGN KEY (document_id) REFERENCES documents(document_id) ON DELETE CASCADE,
+                UNIQUE(document_id),
+                UNIQUE(channel_id)
+            )
+            """,
+            (),
+        ),
+        ("CREATE INDEX IF NOT EXISTS idx_drive_watches_user ON drive_watches(user_id)", ()),
+        ("CREATE INDEX IF NOT EXISTS idx_drive_watches_expires_at ON drive_watches(expires_at)", ()),
+    ]
+    
+    # Drive watches triggers
+    drive_watches_triggers = [
+        (
+            """
+            CREATE TRIGGER IF NOT EXISTS drive_watches_set_updated_at
+            AFTER UPDATE ON drive_watches
+            WHEN NEW.updated_at = OLD.updated_at
+            BEGIN
+                UPDATE drive_watches SET updated_at = datetime('now') WHERE watch_id = OLD.watch_id;
+            END
+            """,
+            (),
+        ),
+    ]
+    
+    # Usage events
+    usage_events_tables = [
+        (
+            """
+            CREATE TABLE IF NOT EXISTS usage_events (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                job_id TEXT NOT NULL,
+                event_type TEXT NOT NULL CHECK (event_type IN ('download','transcribe','persist','outline','chapters','compose')),
+                metrics TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+                FOREIGN KEY (job_id) REFERENCES jobs(job_id) ON DELETE CASCADE
+            )
+            """,
+            (),
+        ),
+        ("CREATE INDEX IF NOT EXISTS idx_usage_events_user_created ON usage_events(user_id, created_at DESC)", ()),
+        ("CREATE INDEX IF NOT EXISTS idx_usage_events_job ON usage_events(job_id, created_at DESC)", ()),
+    ]
+    
+    # Step invocations
+    step_invocations_tables = [
+        (
+            """
+            CREATE TABLE IF NOT EXISTS step_invocations (
+                idempotency_key TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                step_type TEXT NOT NULL,
+                request_hash TEXT NOT NULL,
+                response_body TEXT NOT NULL,
+                status_code INTEGER NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (idempotency_key, user_id)
+            )
+            """,
+            (),
+        ),
+        ("CREATE INDEX IF NOT EXISTS idx_step_invocations_user ON step_invocations(user_id, created_at DESC)", ()),
+        ("CREATE INDEX IF NOT EXISTS idx_step_invocations_user_hash ON step_invocations(user_id, request_hash)", ()),
+    ]
+    
+    # Apply schema in dependency order
+    try:
+        await db.batch(core_tables)
+        logger.info("Applied core tables (users)")
+        
+        await db.batch(api_keys_tables)
+        logger.info("Applied api_keys table")
+        
+        await db.batch(documents_tables)
+        logger.info("Applied documents table")
+        
+        await db.batch(document_versions_tables)
+        logger.info("Applied document_versions table")
+        
+        await db.batch(document_exports_tables)
+        await db.batch(document_exports_triggers)
+        logger.info("Applied document_exports table and triggers")
+        
+        await db.batch(jobs_tables)
+        await db.batch(jobs_triggers)
+        logger.info("Applied jobs table and triggers")
+        
+        await db.batch(pipeline_events_tables)
+        await db.batch(pipeline_events_triggers)
+        logger.info("Applied pipeline_events table and triggers")
+        
+        await db.batch(google_tokens_tables)
+        logger.info("Applied google_integration_tokens table")
+        
+        await db.batch(drive_workspaces_tables)
+        logger.info("Applied drive_workspaces table")
+        
+        await db.batch(drive_watches_tables)
+        await db.batch(drive_watches_triggers)
+        logger.info("Applied drive_watches table and triggers")
+        
+        await db.batch(usage_events_tables)
+        logger.info("Applied usage_events table")
+        
+        await db.batch(step_invocations_tables)
+        logger.info("Applied step_invocations table")
+        
+        logger.info("Full database schema applied successfully")
+    except Exception as e:
+        logger.error(f"Error applying full schema: {e}", exc_info=True)
+        raise DatabaseError(f"Failed to apply database schema: {str(e)}")
 
 
 async def emit_event(db: Database, evt_id: str, type_: str, aggregate_type: str, aggregate_id: str, payload: dict | None) -> None:

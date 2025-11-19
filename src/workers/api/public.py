@@ -257,6 +257,197 @@ async def test_fetch(url: Optional[str] = None, method: Optional[str] = None):
     }
 
 
+@router.get("/debug/db-test", tags=["Public"])
+async def debug_db_test():
+    """
+    Debug endpoint to test database access and basic operations.
+    Tests D1 connection, schema, and simple queries.
+    """
+    results = {
+        "d1_binding_available": False,
+        "ensure_db_success": False,
+        "db_error": None,
+        "test_queries": {},
+    }
+    
+    # Check if D1 binding is available through settings
+    try:
+        from .config import settings
+        if settings.d1_database:
+            results["d1_binding_available"] = True
+            results["d1_binding_type"] = str(type(settings.d1_database))
+        else:
+            results["d1_binding_available"] = False
+            results["d1_binding_error"] = "d1_database is None in settings"
+    except Exception as exc:
+        results["d1_binding_error"] = str(exc)
+        results["d1_binding_error_type"] = type(exc).__name__
+    
+    # Test ensure_db()
+    try:
+        db = ensure_db()
+        results["ensure_db_success"] = True
+        results["db_type"] = str(type(db))
+        
+        # Import helper functions for JsProxy conversion
+        from .database import _jsproxy_to_dict, _jsproxy_to_list
+        
+        # Test a simple query
+        try:
+            # Try to query a system table or simple SELECT
+            result = await db.execute("SELECT 1 as test")
+            result_dict = _jsproxy_to_dict(result) if result else None
+            results["test_queries"]["select_one"] = {
+                "success": True,
+                "result": result_dict,
+            }
+        except Exception as exc:
+            results["test_queries"]["select_one"] = {
+                "success": False,
+                "error": str(exc),
+            }
+        
+        # Test if users table exists
+        try:
+            result = await db.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='users'"
+            )
+            results["test_queries"]["users_table_exists"] = {
+                "success": True,
+                "exists": result is not None,
+            }
+        except Exception as exc:
+            results["test_queries"]["users_table_exists"] = {
+                "success": False,
+                "error": str(exc),
+            }
+        
+        # Test listing tables
+        try:
+            tables = await db.execute_all(
+                "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+            )
+            # Convert JsProxy results to Python list
+            tables_list = _jsproxy_to_list(tables)
+            # Extract table names
+            table_names = []
+            for t in tables_list:
+                if isinstance(t, dict):
+                    table_names.append(t.get("name", ""))
+                else:
+                    # Try to convert if it's still a JsProxy
+                    t_dict = _jsproxy_to_dict(t)
+                    table_names.append(t_dict.get("name", ""))
+            results["test_queries"]["list_tables"] = {
+                "success": True,
+                "tables": table_names,
+            }
+        except Exception as exc:
+            results["test_queries"]["list_tables"] = {
+                "success": False,
+                "error": str(exc),
+            }
+            
+    except Exception as exc:
+        results["ensure_db_success"] = False
+        results["db_error"] = str(exc)
+        results["db_error_type"] = type(exc).__name__
+    
+    return results
+
+
+@router.post("/debug/migrate-db", tags=["Public"])
+async def debug_migrate_db():
+    """
+    Debug endpoint to manually trigger database migration.
+    Applies the full schema from migrations/schema.sql to D1.
+    """
+    try:
+        from .deps import ensure_db
+        from .database import ensure_full_schema
+        
+        db = ensure_db()
+        await ensure_full_schema(db)
+        
+        # Verify migration by listing tables
+        from .database import _jsproxy_to_list
+        tables = await db.execute_all(
+            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+        )
+        tables_list = _jsproxy_to_list(tables)
+        table_names = []
+        for t in tables_list:
+            if isinstance(t, dict):
+                table_names.append(t.get("name", ""))
+            else:
+                from .database import _jsproxy_to_dict
+                t_dict = _jsproxy_to_dict(t)
+                table_names.append(t_dict.get("name", ""))
+        
+        return {
+            "success": True,
+            "message": "Database migration completed successfully",
+            "tables": table_names,
+            "table_count": len(table_names)
+        }
+    except Exception as exc:
+        return {
+            "success": False,
+            "error": str(exc),
+            "error_type": type(exc).__name__
+        }
+
+
+@router.get("/debug/auth-state", tags=["Public"])
+async def debug_auth_state(request: Request):
+    """
+    Debug endpoint to check authentication state and cookies.
+    Shows what cookies are present, what the middleware sees, and JWT token details.
+    """
+    all_cookies = dict(request.cookies)
+    access_token = request.cookies.get("access_token")
+    user = getattr(request.state, "user", None)
+    
+    # Try to decode the token if present
+    token_info = None
+    if access_token:
+        try:
+            from .auth import verify_jwt_token
+            payload = verify_jwt_token(access_token)
+            token_info = {
+                "valid": True,
+                "user_id": payload.get("user_id"),
+                "email": payload.get("email"),
+                "github_id": payload.get("github_id"),
+                "google_id": payload.get("google_id"),
+                "exp": payload.get("exp"),
+            }
+        except Exception as exc:
+            token_info = {
+                "valid": False,
+                "error": str(exc),
+            }
+    
+    return {
+        "cookies_present": list(all_cookies.keys()),
+        "access_token": {
+            "present": access_token is not None,
+            "length": len(access_token) if access_token else 0,
+            "preview": access_token[:50] + "..." if access_token and len(access_token) > 50 else access_token,
+        },
+        "request_state": {
+            "user_present": user is not None,
+            "user": user if user else None,
+        },
+        "token_info": token_info,
+        "headers": {
+            "host": request.headers.get("host"),
+            "user_agent": request.headers.get("user-agent"),
+            "referer": request.headers.get("referer"),
+        },
+    }
+
+
 def _parse_channel_expiration(raw: Optional[str]) -> Optional[str]:
     if not raw:
         return None
@@ -509,6 +700,13 @@ async def github_callback(code: str, state: str, request: Request):
         is_secure = _is_secure_request(request)
         if settings.jwt_use_cookies:
             max_age_seconds = settings.jwt_expiration_hours * 3600
+            logger.debug(
+                "GitHub OAuth: Setting access_token cookie: secure=%s, max_age=%d, path=/, jwt_length=%d, user_id=%s",
+                is_secure,
+                max_age_seconds,
+                len(jwt_token),
+                user_id,
+            )
             response = RedirectResponse(url="/dashboard", status_code=status.HTTP_302_FOUND)
             response.set_cookie(
                 key="access_token",
@@ -603,6 +801,13 @@ async def google_login_callback(code: str, state: str, request: Request):
         is_secure = _is_secure_request(request)
         if settings.jwt_use_cookies:
             max_age_seconds = settings.jwt_expiration_hours * 3600
+            logger.debug(
+                "Google OAuth: Setting access_token cookie: secure=%s, max_age=%d, path=/, jwt_length=%d, user_id=%s",
+                is_secure,
+                max_age_seconds,
+                len(jwt_token),
+                user_id,
+            )
             response = RedirectResponse(url="/dashboard", status_code=status.HTTP_302_FOUND)
             response.set_cookie(
                 key="access_token",

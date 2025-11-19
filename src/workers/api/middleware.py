@@ -218,10 +218,16 @@ class AuthCookieMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: Callable):
         # Try cookie first, then Authorization header
         token = request.cookies.get("access_token")
+        logger.debug(
+            "AuthCookieMiddleware: Checking for token - cookie_present=%s, cookie_length=%s",
+            token is not None,
+            len(token) if token else 0,
+        )
         if not token:
             auth_header = request.headers.get("Authorization", "")
             if auth_header.startswith("Bearer "):
                 token = auth_header[7:].strip()
+                logger.debug("AuthCookieMiddleware: Found token in Authorization header")
         if token:
             try:
                 payload = verify_jwt_token(token)
@@ -276,7 +282,13 @@ class AuthCookieMiddleware(BaseHTTPMiddleware):
                 }
                 if user_id:
                     request.state.user_id = user_id
-            except Exception:
+                logger.debug(
+                    "AuthCookieMiddleware: Successfully set request.state.user: user_id=%s, email=%s",
+                    user_id,
+                    email,
+                )
+            except Exception as exc:
+                logger.debug("AuthCookieMiddleware: Failed to verify token: %s", exc, exc_info=True)
                 # Invalid token: ensure no stale user state leaks into request
                 if hasattr(request.state, "user"):
                     try:

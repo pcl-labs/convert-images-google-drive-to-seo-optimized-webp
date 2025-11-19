@@ -24,7 +24,7 @@ from .static_loader import mount_static_files
 
 from .config import Settings, settings as global_settings
 from .cloudflare_queue import QueueProducer
-from .database import Database, ensure_notifications_schema, ensure_sessions_schema
+from .database import Database, ensure_notifications_schema, ensure_sessions_schema, ensure_full_schema
 from .exceptions import APIException
 from .app_logging import setup_logging, get_logger, get_request_id
 from .middleware import (
@@ -79,8 +79,11 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
             app_logger.info("Notifications schema ensured")
             await ensure_sessions_schema(db_instance)
             app_logger.info("Session schema ensured")
+            # Apply full schema to ensure all tables exist
+            await ensure_full_schema(db_instance)
+            app_logger.info("Full database schema ensured")
         except Exception as exc:  # pragma: no cover - defensive logging path
-            app_logger.warning("Failed ensuring notifications schema: %s", exc)
+            app_logger.warning("Failed ensuring database schema: %s", exc)
 
         queue_producer = QueueProducer(queue=active_settings.queue, dlq=active_settings.dlq)
         queue_mode = "inline" if active_settings.use_inline_queue else (

@@ -1057,82 +1057,24 @@ async def styleguide(request: Request):
 @router.get("/dashboard", response_class=HTMLResponse)
 async def dashboard(request: Request, page: int = 1):
     """
-    Dashboard endpoint - simplified to verify authentication is working.
-    
-    TODO: Re-implement full dashboard with:
-    - Job listing and stats
-    - Integration status
-    - Template rendering
-    - Database queries via ensure_db()
+    Simplified dashboard endpoint to verify authentication is working.
+    Shows user info if authenticated, or "No auth" if not.
     """
+    # Debug: Check what cookies are present
+    cookies_present = list(request.cookies.keys())
+    access_token_cookie = request.cookies.get("access_token")
+    logger.debug(
+        "Dashboard: cookies=%s, access_token_present=%s, access_token_length=%s, request.state.user=%s",
+        cookies_present,
+        access_token_cookie is not None,
+        len(access_token_cookie) if access_token_cookie else 0,
+        getattr(request.state, "user", None) is not None,
+    )
+    
     user = getattr(request.state, "user", None)
     if not user:
         return PlainTextResponse("Hello! No auth (this is expected without token)")
     return PlainTextResponse(f"Hello {user.get('email', user.get('user_id', 'user'))}! Auth is working. User ID: {user.get('user_id')}")
-    
-    # Full dashboard implementation (to be restored):
-    # try:
-    #     db = ensure_db()
-    # except Exception as exc:
-    #     logger.error("Dashboard: Database unavailable: %s", exc)
-    #     raise HTTPException(
-    #         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-    #         detail="Service temporarily unavailable - database not configured"
-    #     )
-    # jobs_list, total = await list_jobs(db, user["user_id"], page=page, page_size=10, status=None)
-    # stats = await get_job_stats(db, user["user_id"])
-    # csrf = _get_csrf_token(request)
-    # google_tokens = await list_google_tokens(db, user["user_id"])
-    # token_map = {str(row.get("integration")).lower(): row for row in (google_tokens or []) if row.get("integration")}
-    # drive_connected = "drive" in token_map
-    # youtube_connected = "youtube" in token_map
-    # 
-    # # Transform jobs for dashboard table
-    # def to_view(j):
-    #     status = j.get("status", "queued")
-    #     jt = (j.get("job_type") or "optimize_drive")
-    #     return {
-    #         "id": j.get("job_id"),
-    #         "document_id": j.get("document_id"),
-    #         "kind": KIND_MAP.get(jt, jt.replace("_", " ").title()),
-    #         "status": status,
-    #         "status_label": _status_label(status),
-    #         "created_at": j.get("created_at"),
-    #     }
-    # 
-    # recent_youtube_job = await latest_job_by_type(db, user["user_id"], "ingest_youtube")
-    # recent_youtube_events: List[Dict[str, Any]] = []
-    # if recent_youtube_job:
-    #     recent_youtube_events = await list_pipeline_events(
-    #         db,
-    #         user["user_id"],
-    #         job_id=recent_youtube_job.get("job_id"),
-    #         limit=25,
-    #     )
-    # 
-    # context = {
-    #     "request": request,
-    #     "user": user,
-    #     "jobs": [to_view(j) for j in jobs_list],
-    #     "stats": {
-    #         "queued": stats.get("pending", 0),
-    #         "running": stats.get("processing", 0),
-    #         "completed": stats.get("completed", 0),
-    #     },
-    #     "csrf_token": csrf,
-    #     "page_title": "Dashboard",
-    #     "drive_connected": drive_connected,
-    #     "youtube_connected": youtube_connected,
-    #     "ingest_job": recent_youtube_job,
-    #     "ingest_events": recent_youtube_events,
-    #     "content_schema_choices": CONTENT_SCHEMA_CHOICES,
-    # }
-    # resp = templates.TemplateResponse("dashboard/index.html", context)
-    # if not request.cookies.get("csrf_token"):
-    #     # Set secure cookies only in production or when the request is over HTTPS
-    #     is_secure = _is_secure_request(request, settings)
-    #     resp.set_cookie("csrf_token", csrf, httponly=True, samesite="lax", secure=is_secure)
-    # return resp
 
 
 def _is_htmx(request: Request) -> bool:
