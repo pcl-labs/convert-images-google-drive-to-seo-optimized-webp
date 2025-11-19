@@ -32,21 +32,13 @@ class Database:
     
     def __init__(self, db=None):
         """Initialize database connection.
-        If Cloudflare D1 binding is unavailable, use a local SQLite database for development.
+        In Cloudflare Workers, D1 binding is required - no SQLite fallback.
         """
         self.db = db or settings.d1_database
         self._sqlite_path: Optional[str] = None
         if not self.db:
-            # Local fallback: initialize SQLite in repo directory
-            db_path = os.environ.get("LOCAL_SQLITE_PATH", os.path.join(os.getcwd(), "data", "dev.db"))
-            self._sqlite_path = db_path
-            try:
-                # Apply migrations once at startup using a temporary connection
-                self._apply_sqlite_migrations()
-                logger.info(f"Initialized local SQLite database at {db_path}")
-            except Exception as e:
-                logger.error(f"Failed to initialize local SQLite database: {e}", exc_info=True)
-                raise DatabaseError("Database not initialized") from e
+            # No fallback in Workers - D1 is required
+            raise DatabaseError("D1 database binding not available - required in Cloudflare Workers")
     
     def _apply_sqlite_migrations(self) -> None:
         """Apply migrations from migrations/schema.sql to local SQLite using a temp connection."""

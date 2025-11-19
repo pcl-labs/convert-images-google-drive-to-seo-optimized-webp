@@ -116,18 +116,10 @@ class SessionMiddleware(BaseHTTPMiddleware):
             try:
                 db = ensure_db()
                 session = await get_user_session(db, session_id)
-            except HTTPException as exc:
-                # For public routes, don't fail the request if DB is unavailable
-                # Just treat it as no session and continue
-                if is_public and exc.status_code == 500:
-                    logger.debug("SessionMiddleware: DB unavailable for public route %s, treating as no session", request.url.path)
-                    session = None
-                    lookup_failed = True
-                else:
-                    # For protected routes, re-raise the exception
-                    raise
-            except Exception as exc:  # pragma: no cover - defensive logging
-                logger.debug("SessionMiddleware failed to load session: %s", exc)
+            except Exception as exc:
+                # DB unavailable or session lookup failed - treat as no session
+                # Don't fail the request, just continue without session
+                logger.debug("SessionMiddleware: DB unavailable or session lookup failed for %s: %s", request.url.path, exc)
                 session = None
                 lookup_failed = True
             now = datetime.now(timezone.utc)
@@ -205,21 +197,14 @@ class FlashMiddleware(BaseHTTPMiddleware):
                         # Clear flash messages after reading
                         extra_dict.pop("flash_messages", None)
                         # Update session to clear flash
-                        # For public routes, skip DB update if DB is unavailable
                         try:
                             db = ensure_db()
                             await touch_user_session(db, session_id, extra=extra_dict)
                             # Update in-memory session
                             session["extra"] = json.dumps(extra_dict) if isinstance(extra_dict, dict) else extra_dict
-                        except HTTPException as exc:
-                            # For public routes, don't fail if DB is unavailable
-                            is_public = _is_public_route(request)
-                            if is_public and exc.status_code == 500:
-                                logger.debug("FlashMiddleware: DB unavailable for public route, skipping flash clear")
-                            else:
-                                raise
                         except Exception as exc:
-                            logger.debug("Failed to clear flash messages from session: %s", exc)
+                            # DB unavailable - skip flash clear, don't fail request
+                            logger.debug("FlashMiddleware: DB unavailable, skipping flash clear: %s", exc)
                 except (json.JSONDecodeError, TypeError, AttributeError) as exc:
                     logger.debug("Failed to parse session extra for flash messages: %s", exc)
         
@@ -274,15 +259,9 @@ class AuthCookieMiddleware(BaseHTTPMiddleware):
                                 # Provider IDs remain best-effort; don't force a DB hit just for them.
                                 github_id = github_id or stored.get("github_id")
                                 google_id = google_id or stored.get("google_id")
-                    except HTTPException as exc:
-                        # DB initialization failure: log warning and continue without DB enrichment
-                        # The JWT token may still have email, or user will get 401 on protected routes
-                        if exc.status_code == 500:
-                            logger.warning("AuthCookieMiddleware: DB unavailable, cannot hydrate user from DB - continuing with JWT claims only")
-                        else:
-                            raise
                     except Exception as exc:
-                        logger.debug("AuthCookieMiddleware: failed to fetch user profile: %s", exc)
+                        # DB unavailable - continue without DB enrichment, don't fail request
+                        logger.debug("AuthCookieMiddleware: DB unavailable, cannot hydrate user from DB - continuing with JWT claims only: %s", exc)
                 request.state.user = {
                     "user_id": user_id,
                     "email": email,

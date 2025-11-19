@@ -1,4 +1,4 @@
-"""Minimal HTTP client helpers built on urllib for environments without httpx."""
+"""Minimal HTTP client helpers built on fetch (Workers) or urllib (local dev)."""
 from __future__ import annotations
 
 import asyncio
@@ -8,6 +8,13 @@ from typing import Any, Dict, Iterable, Mapping, MutableMapping, Optional, Union
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urljoin
 from urllib.request import Request, urlopen
+
+# Import fetch from Cloudflare Workers (js module)
+# This is the same fetch API that works for static assets
+try:
+    from js import fetch as _worker_fetch
+except ImportError:
+    _worker_fetch = None
 
 
 class RequestError(Exception):
@@ -131,9 +138,89 @@ def request(
         raise RequestError(str(exc)) from exc
 
 
-async def async_request(**kwargs: Any) -> SimpleResponse:
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, lambda: request(**kwargs))
+async def _fetch_request(
+    method: str,
+    url: str,
+    *,
+    headers: HeadersType = None,
+    params: ParamsType = None,
+    data: DataType = None,
+    json_body: Optional[Any] = None,
+    timeout: float = 10.0,
+) -> SimpleResponse:
+    """Perform an async HTTP request using fetch API (Cloudflare Workers)."""
+    if _worker_fetch is None:
+        raise RuntimeError("fetch API not available - this code requires Cloudflare Workers runtime")
+    
+    # Build URL with params
+    full_url = _build_url(url, params)
+    
+    # Prepare headers
+    request_headers: Dict[str, str] = dict(headers or {})
+    
+    # Prepare body
+    body = _prepare_body(data, json_body, request_headers)
+    
+    # Create Request object for fetch
+    # In Cloudflare Workers, fetch accepts a Request object or URL string
+    fetch_options = {
+        "method": method.upper(),
+        "headers": request_headers,
+    }
+    if body is not None:
+        fetch_options["body"] = body
+    
+    # Call fetch (it's async in Workers)
+    response = await _worker_fetch(full_url, **fetch_options)
+    
+    # Extract response data
+    status = response.status
+    
+    # Convert Headers object to dict
+    # Cloudflare Workers fetch response.headers is a Headers object
+    # Headers object supports keys() and get() methods
+    response_headers = {}
+    for key in response.headers.keys():
+        value = response.headers.get(key)
+        if value:
+            response_headers[key.lower()] = value
+    
+    # Read response body - same approach as static_loader.py
+    # response.bytes() returns bytes directly in Cloudflare Workers
+    content = await response.bytes()
+    if not isinstance(content, bytes):
+        content = bytes(content)
+    
+    return SimpleResponse(status, response_headers, content, full_url)
+
+
+async def async_request(
+    method: str,
+    url: str,
+    *,
+    headers: HeadersType = None,
+    params: ParamsType = None,
+    data: DataType = None,
+    json: Optional[Any] = None,
+    timeout: float = 10.0,
+    **kwargs: Any
+) -> SimpleResponse:
+    """Perform an async HTTP request using fetch API (Cloudflare Workers)."""
+    if _worker_fetch is None:
+        raise RuntimeError(
+            "fetch API not available. This code requires Cloudflare Workers runtime. "
+            "For local development, use a different HTTP client or run via 'wrangler dev'."
+        )
+    
+    return await _fetch_request(
+        method=method,
+        url=url,
+        headers=headers,
+        params=params,
+        data=data,
+        json_body=json,
+        timeout=timeout,
+    )
 
 
 class AsyncSimpleClient:

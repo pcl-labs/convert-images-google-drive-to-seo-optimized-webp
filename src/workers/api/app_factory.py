@@ -265,11 +265,12 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
     app.add_middleware(AuthCookieMiddleware)
     app.add_middleware(SessionMiddleware)
     app.add_middleware(FlashMiddleware)
-    app.add_middleware(
-        RateLimitMiddleware,
-        max_per_minute=active_settings.rate_limit_per_minute,
-        max_per_hour=active_settings.rate_limit_per_hour,
-    )
+    # Temporarily disabled RateLimitMiddleware - may cause issues with time.monotonic() in Workers
+    # app.add_middleware(
+    #     RateLimitMiddleware,
+    #     max_per_minute=active_settings.rate_limit_per_minute,
+    #     max_per_hour=active_settings.rate_limit_per_hour,
+    # )
     app.add_middleware(
         CORSMiddleware,
         allow_origins=active_settings.cors_origins,

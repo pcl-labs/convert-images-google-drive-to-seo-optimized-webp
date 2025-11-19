@@ -908,23 +908,8 @@ async def get_current_user_info(user: dict = Depends(get_current_user)):
         except Exception:
             created_at_dt = None
     if created_at_dt is None:
-        # Fetch canonical value from DB if not present/parsable in request state
-        try:
-            db = ensure_db()
-            stored = await get_user_by_id(db, user["user_id"])  # type: ignore
-            stored_created = stored.get("created_at") if stored else None
-            if isinstance(stored_created, datetime):
-                created_at_dt = stored_created if stored_created.tzinfo else stored_created.replace(tzinfo=timezone.utc)
-            elif isinstance(stored_created, str) and stored_created:
-                try:
-                    dt2 = datetime.fromisoformat(stored_created)
-                    created_at_dt = dt2 if dt2.tzinfo else dt2.replace(tzinfo=timezone.utc)
-                except Exception:
-                    created_at_dt = None
-        except Exception:
-            created_at_dt = None
-        if created_at_dt is None:
-            created_at_dt = datetime.now(timezone.utc)
+        # Use current time if DB unavailable - don't fail request
+        created_at_dt = datetime.now(timezone.utc)
     return UserResponse(
         user_id=user["user_id"],
         github_id=user.get("github_id"),

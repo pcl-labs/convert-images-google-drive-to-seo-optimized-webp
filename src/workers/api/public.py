@@ -18,6 +18,7 @@ from .database import create_job_extended, get_drive_watch_by_channel
 from .models import JobType
 from .drive_watch import build_channel_token, mark_watch_stopped, update_watch_expiration
 from .notifications import notify_activity
+from .simple_http import AsyncSimpleClient, HTTPStatusError, RequestError
 
 router = APIRouter()
 
@@ -188,6 +189,69 @@ async def root():
             "docs": "/docs",
         },
     }
+
+
+@router.get("/test/fetch", tags=["Public"])
+async def test_fetch(url: Optional[str] = None, method: Optional[str] = None):
+    """
+    Test endpoint to verify fetch API works via simple_http.
+    Fetches a URL and returns the response status and headers.
+    
+    Query params:
+    - url: URL to fetch (default: https://httpbin.org/get)
+    - method: HTTP method (default: GET)
+    """
+    test_url = url or "https://httpbin.org/get"
+    http_method = (method or "GET").upper()
+    
+    try:
+        async with AsyncSimpleClient(timeout=10.0) as client:
+            if http_method == "POST":
+                response = await client.post(test_url)
+            elif http_method == "PUT":
+                response = await client.put(test_url)
+            elif http_method == "DELETE":
+                response = await client.delete(test_url)
+            else:
+                response = await client.get(test_url)
+            
+            # Safely get text preview
+            try:
+                body_preview = response.text[:200] if len(response.text) > 200 else response.text
+            except Exception:
+                body_preview = f"<binary data, {len(response.content)} bytes>"
+            
+            return {
+                "success": True,
+                "url": test_url,
+                "status_code": response.status_code,
+                "headers": dict(response.headers),
+                "body_preview": body_preview,
+                "body_length": len(response.content),
+                "fetch_method": "js.fetch (via AsyncSimpleClient)",
+            }
+    except HTTPStatusError as exc:
+        return {
+            "success": False,
+            "url": test_url,
+            "error": "HTTPStatusError",
+            "status_code": exc.response.status_code,
+            "message": str(exc),
+        }
+    except RequestError as exc:
+        return {
+            "success": False,
+            "url": test_url,
+            "error": "RequestError",
+            "message": str(exc),
+        }
+    except Exception as exc:
+        return {
+            "success": False,
+            "url": test_url,
+            "error": type(exc).__name__,
+            "message": str(exc),
+        }
 
 
 def _parse_channel_expiration(raw: Optional[str]) -> Optional[str]:

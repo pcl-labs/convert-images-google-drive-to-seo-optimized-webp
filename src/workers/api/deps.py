@@ -3,30 +3,25 @@ from fastapi import Request, HTTPException, status
 from datetime import datetime
 import json
 import logging
-import threading
 
 from .database import Database
 from .cloudflare_queue import QueueProducer
 
 # Internal state set by main.lifespan
+# Note: No locks needed in Cloudflare Workers - each isolate is single-threaded
 _db_instance: Optional[Database] = None
 _queue_producer: Optional[QueueProducer] = None
-_db_lock = threading.RLock()
-_queue_lock = threading.Lock()
-_services_lock = threading.Lock()
 logger = logging.getLogger(__name__)
 
 
 def set_db_instance(db: Database) -> None:
     global _db_instance
-    with _db_lock:
-        _db_instance = db
+    _db_instance = db
 
 
 def set_queue_producer(q: QueueProducer) -> None:
     global _queue_producer
-    with _queue_lock:
-        _queue_producer = q
+    _queue_producer = q
 
 
 def ensure_db() -> Database:
@@ -35,35 +30,34 @@ def ensure_db() -> Database:
     Raises HTTPException(500) if database cannot be initialized.
     This is appropriate for routes that require DB access, but middleware
     should catch this for public routes that can degrade gracefully.
+    
+    Note: No locks needed in Cloudflare Workers - each isolate is single-threaded.
     """
     if _db_instance is None:
-        try:
-            with _db_lock:
-                if _db_instance is None:
-                    set_db_instance(Database())
-                    logger.warning("Database lazily initialized outside lifespan; consider calling set_db_instance during startup.")
-        except Exception as exc:
-            logger.error("Failed to initialize database: %s", exc, exc_info=True)
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to initialize database",
-            )
+        if _db_instance is None:
+            try:
+                set_db_instance(Database())
+                logger.warning("Database lazily initialized outside lifespan; consider calling set_db_instance during startup.")
+            except Exception as exc:
+                logger.error("Failed to initialize database: %s", exc, exc_info=True)
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Failed to initialize database",
+                )
     return _db_instance
 
 
 def get_queue_producer() -> Optional[QueueProducer]:
-    with _queue_lock:
-        return _queue_producer
+    return _queue_producer
 
 
 def ensure_services() -> Tuple[Database, QueueProducer]:
-    with _services_lock:
-        if _db_instance is None or _queue_producer is None:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Service not fully initialized",
-            )
-        return _db_instance, _queue_producer
+    if _db_instance is None or _queue_producer is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Service not fully initialized",
+        )
+    return _db_instance, _queue_producer
 
 
 def get_current_user(request: Request) -> dict:

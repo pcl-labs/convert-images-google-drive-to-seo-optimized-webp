@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import threading
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -190,7 +189,33 @@ class Settings:
     def from_env(cls, **overrides: Any) -> "Settings":
         dotenv_values: Dict[str, str] = {}
         if os.getenv("PYTEST_DISABLE_DOTENV") != "1":
-            dotenv_values = _load_dotenv(Path(".env"))
+            # Try to find .env file relative to repo root
+            # In wrangler dev, working directory might be different, so try multiple paths
+            env_paths = [
+                Path(".env"),  # Current directory
+                Path(__file__).parent.parent.parent.parent / ".env",  # From config.py: src/workers/api/config.py -> repo root
+            ]
+            # Also try from main.py location if available
+            try:
+                import sys
+                for module_name, module in sys.modules.items():
+                    if hasattr(module, '__file__') and module.__file__:
+                        main_path = Path(module.__file__)
+                        if 'main.py' in str(main_path) or 'workers' in str(main_path):
+                            repo_root = main_path.parent.parent.parent
+                            env_paths.append(repo_root / ".env")
+                            break
+            except Exception:
+                pass
+            
+            for env_path in env_paths:
+                if env_path.exists():
+                    dotenv_values = _load_dotenv(env_path)
+                    if dotenv_values:
+                        import logging
+                        logger = logging.getLogger(__name__)
+                        logger.debug(f"Loaded .env from {env_path} ({len(dotenv_values)} variables)")
+                    break
         data: Dict[str, Any] = {}
         for field_info in fields(cls):
             name = field_info.name
@@ -207,12 +232,12 @@ class Settings:
 
 def replace_settings(new_settings: Settings) -> Settings:
     field_names = {info.name for info in fields(Settings)}
-    with _settings_lock:
-        for name in field_names:
-            if hasattr(new_settings, name):
-                setattr(settings, name, getattr(new_settings, name))
+    # No lock needed - Workers are single-threaded per isolate
+    for name in field_names:
+        if hasattr(new_settings, name):
+            setattr(settings, name, getattr(new_settings, name))
     return settings
 
 
-_settings_lock = threading.Lock()
+# Note: No locks needed in Cloudflare Workers - each isolate is single-threaded
 settings = Settings.from_env()

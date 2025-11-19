@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import os
 import re
-import threading
 from typing import Any, Dict
 
 # Import Settings/replace_settings inside apply_worker_env() to avoid
@@ -24,7 +23,7 @@ WORKER_DLQ_BINDING = "DLQ"
 WORKER_KV_BINDING = "KV"
 WORKER_ASSETS_BINDING = "ASSETS"
 
-_ENV_LOCK = threading.Lock()
+# Note: No locks needed in Cloudflare Workers - each isolate is single-threaded
 _KEY_PATTERN = re.compile(r"^[A-Z0-9_]+$")
 _MAX_VALUE_LENGTH = 4096
 
@@ -88,6 +87,9 @@ def apply_worker_env(env: Any) -> Settings:
     Convert Cloudflare Worker env bindings into our Settings object and
     update the shared module-level settings in-place.
     """
+    # Note: fetch API is automatically detected in api.simple_http via js.fetch
+    # No setup needed - simple_http will use fetch if available, urllib otherwise
+    
     string_env = _string_bindings_from_env(env)
     allowed = {
         "ENVIRONMENT",
@@ -123,9 +125,9 @@ def apply_worker_env(env: Any) -> Settings:
                 continue
             sanitized[key] = value
 
-    with _ENV_LOCK:
-        for key, value in sanitized.items():
-            os.environ[key] = value
+    # No lock needed - Workers are single-threaded per isolate
+    for key, value in sanitized.items():
+        os.environ[key] = value
 
     worker_kwargs = {}
     if env is not None:
