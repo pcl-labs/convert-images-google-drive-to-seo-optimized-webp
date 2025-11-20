@@ -247,10 +247,6 @@
               }));
             });
           }
-          
-          // Start polling when DOM is ready (temporarily disabled)
-          
-          // Pause polling when tab is hidden, resume when visible (temporarily disabled)
           document.addEventListener('visibilitychange', () => {
             if (document.hidden) {
               if (pollTimer) {
