@@ -156,8 +156,28 @@ def _url_for(context, name: str, **path_params: str) -> str:
     """
     request = context.get('request')
     if request is None:
+        logger.error("url_for called without 'request' in template context")
         raise RuntimeError("'request' not found in template context. Ensure 'request' is passed to TemplateResponse.")
-    return request.url_for(name, **path_params)
+    
+    try:
+        return request.url_for(name, **path_params)
+    except Exception as exc:
+        # Log the error for debugging
+        logger.error(
+            "url_for failed: name=%s, path_params=%s, error=%s, error_type=%s",
+            name,
+            path_params,
+            str(exc),
+            type(exc).__name__,
+            exc_info=True,
+        )
+        # For static files, fallback to a simple path construction
+        if name == "static" and "path" in path_params:
+            fallback_path = f"/static/{path_params['path']}"
+            logger.warning("Using fallback path for static file: %s", fallback_path)
+            return fallback_path
+        # Re-raise for other cases
+        raise
 
 templates.env.globals["url_for"] = _url_for
 
@@ -1036,9 +1056,22 @@ async def logout(request: Request, csrf_token: str = Form(...)) -> RedirectRespo
 
 @router.get("/", response_class=HTMLResponse)
 async def home(request: Request):
-    if getattr(request.state, "user", None):
-        return RedirectResponse(url="/dashboard", status_code=status.HTTP_302_FOUND)
-    return templates.TemplateResponse("home.html", {"request": request})
+    try:
+        if getattr(request.state, "user", None):
+            return RedirectResponse(url="/dashboard", status_code=status.HTTP_302_FOUND)
+        return templates.TemplateResponse("home.html", {"request": request})
+    except Exception as exc:
+        logger.error(
+            "Error rendering home page: %s, error_type=%s",
+            str(exc),
+            type(exc).__name__,
+            exc_info=True,
+        )
+        # Return a simple error page instead of letting the exception propagate
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error rendering page: {str(exc)}"
+        ) from exc
 
 
 @router.get("/login", response_class=HTMLResponse)

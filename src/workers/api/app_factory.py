@@ -53,6 +53,14 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
     log_level = "INFO" if not active_settings.debug else "DEBUG"
     setup_logging(level=log_level, use_json=True)
     app_logger = get_logger(__name__)
+    
+    # Log startup info for debugging
+    app_logger.info(
+        "Starting application: environment=%s, debug=%s, log_level=%s",
+        active_settings.environment,
+        active_settings.debug,
+        log_level,
+    )
 
     # Store references on the closure so each application instance keeps its
     # own Database / Queue state. This prevents Worker environments from
@@ -82,8 +90,15 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
             # Apply full schema to ensure all tables exist
             await ensure_full_schema(db_instance)
             app_logger.info("Full database schema ensured")
-        except Exception as exc:  # pragma: no cover - defensive logging path
-            app_logger.warning("Failed ensuring database schema: %s", exc)
+        except Exception as exc:  # pragma: no cover - fail fast on schema errors
+            app_logger.error(
+                "Failed ensuring database schema: %s, error_type=%s",
+                str(exc),
+                type(exc).__name__,
+                exc_info=True,
+            )
+            # Fail fast - re-raise exception to stop startup
+            raise
 
         queue_producer = QueueProducer(queue=active_settings.queue, dlq=active_settings.dlq)
         queue_mode = "inline" if active_settings.use_inline_queue else (
@@ -236,6 +251,45 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
         """
         return RedirectResponse(url="/static/favicon.ico")
 
+    # Register exception handlers - Exception first (catch-all), then APIException (more specific)
+    # FastAPI processes handlers in reverse registration order, so Exception handler will catch
+    # everything except APIException (which gets re-raised)
+    @app.exception_handler(Exception)
+    async def global_exception_handler(request, exc):  # pragma: no cover - FastAPI wiring
+        """Catch all unhandled exceptions and log them.
+        
+        This handler logs all exceptions for debugging, especially useful in Cloudflare Workers
+        where logs are visible in Wrangler output and the Cloudflare dashboard.
+        """
+        # Re-raise APIException to use its specific handler
+        if isinstance(exc, APIException):
+            raise
+        
+        request_id = get_request_id()
+        app_logger.error(
+            "Unhandled exception: path=%s, method=%s, error=%s, error_type=%s",
+            request.url.path,
+            request.method,
+            str(exc),
+            type(exc).__name__,
+            exc_info=True,
+            extra={
+                "request_id": request_id,
+                "path": request.url.path,
+                "method": request.method,
+                "error_type": type(exc).__name__,
+            },
+        )
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": "Internal server error",
+                "detail": str(exc) if active_settings.debug else "An error occurred",
+                "error_type": type(exc).__name__,
+                "request_id": request_id,
+            }
+        )
+    
     @app.exception_handler(APIException)
     async def api_exception_handler(request, exc):  # pragma: no cover - FastAPI wiring
         extra = {"request_id": get_request_id()}
@@ -250,24 +304,6 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
         return JSONResponse(
             status_code=exc.status_code,
             content={"detail": exc.detail, "request_id": extra["request_id"]},
-        )
-
-    @app.exception_handler(Exception)
-    async def global_exception_handler(request, exc):  # pragma: no cover - FastAPI wiring
-        """Catch all unhandled exceptions and log them."""
-        request_id = get_request_id()
-        app_logger.error(
-            "Unhandled exception",
-            exc_info=True,
-            extra={
-                "request_id": request_id,
-                "path": request.url.path,
-                "method": request.method,
-            },
-        )
-        return JSONResponse(
-            status_code=500,
-            content={"detail": "Internal Server Error", "request_id": request_id},
         )
 
     # Shared middleware stack for local + Worker runtimes.

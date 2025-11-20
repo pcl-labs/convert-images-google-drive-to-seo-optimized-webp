@@ -36,6 +36,7 @@
             }
           },
           openModal(){
+            this.open = true;  // Set Alpine state first so conditionals work
             this.prevEl = document.activeElement;
             if(document.body){ document.body.style.overflow = 'hidden'; }
             this.$nextTick(() => {

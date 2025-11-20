@@ -1556,6 +1556,9 @@ async def set_auth_cookie(
     This is called after OAuth callback to set the cookie on a same-site request.
     
     Receives session_id which contains the JWT token in the session's extra field.
+    
+    Security: Validates redirect parameter to prevent open redirect attacks.
+    Only relative paths (starting with "/") are allowed.
     """
     from .auth import verify_jwt_token
     from .config import settings
@@ -1564,6 +1567,16 @@ async def set_auth_cookie(
     
     if not session_id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="session_id parameter required")
+    
+    # Validate redirect to prevent open redirect attacks
+    # Only allow relative paths (starting with "/") and reject protocol-relative URLs ("//")
+    if not redirect.startswith("/"):
+        logger.warning("set_auth_cookie: Rejected non-relative redirect: %s", redirect)
+        redirect = "/dashboard"
+    if redirect.startswith("//"):
+        # URLs like "//evil.com" are protocol-relative and could redirect externally
+        logger.warning("set_auth_cookie: Rejected protocol-relative redirect: %s", redirect)
+        redirect = "/dashboard"
     
     # Get token from session
     db = ensure_db()
@@ -1673,7 +1686,6 @@ async def github_callback(code: str, state: str, request: Request):
         actual_email = created_user.get("email") or email
         
         jwt_token = generate_jwt_token(actual_user_id, github_id=actual_github_id, email=actual_email)
-        user = {"user_id": actual_user_id, "email": actual_email, "github_id": actual_github_id}
         user_response = {"user_id": actual_user_id, "email": actual_email, "github_id": actual_github_id}
 
         is_secure = is_secure_request(request)
@@ -1810,7 +1822,6 @@ async def google_login_callback(code: str, state: str, request: Request):
         actual_email = created_user.get("email") or email
         
         jwt_token = generate_jwt_token(actual_user_id, google_id=actual_google_id, email=actual_email)
-        user = {"user_id": actual_user_id, "email": actual_email, "google_id": actual_google_id}
         user_response = {
             "user_id": actual_user_id,
             "email": actual_email,
