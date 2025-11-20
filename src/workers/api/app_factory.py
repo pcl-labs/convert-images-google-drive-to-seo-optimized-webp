@@ -18,7 +18,7 @@ from contextlib import asynccontextmanager
 from typing import Optional, Set, Awaitable
 
 from fastapi import FastAPI
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from pathlib import Path
 from .static_loader import mount_static_files
 
@@ -225,6 +225,16 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
     app.include_router(documents_v1_router)
     app.include_router(jobs_v1_router)
     app.include_router(content_router)
+
+    @app.get("/favicon.ico", include_in_schema=False)
+    async def favicon():
+        """Serve favicon.ico from the static assets.
+
+        Browsers automatically request /favicon.ico even if not referenced in HTML.
+        Redirect to the static-served icon so this endpoint works in both local
+        development and the Cloudflare Workers static loader.
+        """
+        return RedirectResponse(url="/static/favicon.ico")
 
     @app.exception_handler(APIException)
     async def api_exception_handler(request, exc):  # pragma: no cover - FastAPI wiring

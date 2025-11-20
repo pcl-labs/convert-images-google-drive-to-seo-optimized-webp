@@ -184,7 +184,12 @@
           const maxDelay = 30000;
           
           function pollNotifications() {
-            const lastId = localStorage.getItem(NOTIFICATION_CURSOR_KEY);
+            let lastId = null;
+            try {
+              lastId = localStorage.getItem(NOTIFICATION_CURSOR_KEY);
+            } catch (err) {
+              if (console && console.warn) console.warn('Notification poll: localStorage.getItem failed', err);
+            }
             const url = lastId 
               ? `/api/notifications?after_id=${encodeURIComponent(lastId)}&limit=50`
               : `/api/notifications?limit=50`;
@@ -212,7 +217,11 @@
                 });
                 // Update cursor to most recent notification ID
                 if (newestId) {
-                  localStorage.setItem(NOTIFICATION_CURSOR_KEY, newestId);
+                  try {
+                    localStorage.setItem(NOTIFICATION_CURSOR_KEY, newestId);
+                  } catch (err) {
+                    if (console && console.warn) console.warn('Notification poll: localStorage.setItem failed', err);
+                  }
                 }
               }
               // Reset retry delay on success

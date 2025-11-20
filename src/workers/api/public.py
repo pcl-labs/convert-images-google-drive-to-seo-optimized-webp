@@ -62,7 +62,6 @@ def require_debug_mode(request: Request):
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Authentication required for debug endpoints"
             )
-        return user
     except HTTPException:
         raise
     except Exception:
@@ -1895,11 +1894,6 @@ async def google_login_callback(code: str, state: str, request: Request):
                 response = RedirectResponse(url="/login?error=cookie_failed", status_code=status.HTTP_302_FOUND)
                 response.delete_cookie(key=COOKIE_GOOGLE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
                 return response
-            
-            # Success path - clean up OAuth state and redirect
-            response.delete_cookie(key=COOKIE_GOOGLE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
-            logger.info("Google OAuth: Returning redirect response with access_token cookie")
-            return response
         else:
             response = JSONResponse(content={"access_token": jwt_token, "token_type": "bearer", "user": user_response})
             response.delete_cookie(key=COOKIE_GOOGLE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
