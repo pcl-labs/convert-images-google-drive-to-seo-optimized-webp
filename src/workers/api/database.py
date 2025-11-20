@@ -1,5 +1,6 @@
 """
-Database utilities for Cloudflare D1 with a local SQLite fallback for development.
+Database utilities for Cloudflare D1, with an explicit SQLite path only for tests
+or special local runs via the LOCAL_SQLITE_PATH environment variable.
 """
 
 import json
@@ -137,13 +138,18 @@ def _jsproxy_to_list(obj: Any) -> List[Any]:
 
 
 class Database:
-    """Database wrapper for D1 operations. SQLite only available for tests via LOCAL_SQLITE_PATH."""
+    """Database wrapper for D1 operations.
+    
+    In Cloudflare Workers, a D1 binding (env.DB) is required. SQLite is only
+    available when explicitly configured via the LOCAL_SQLITE_PATH environment
+    variable (primarily for tests and non-Workers tooling).
+    """
     
     def __init__(self, db=None):
         """Initialize database connection.
         - If D1 binding is provided (has 'prepare' method), use D1 (Cloudflare Workers).
-        - If LOCAL_SQLITE_PATH is explicitly set, use SQLite (for tests only).
-        - Otherwise, raise DatabaseError requiring D1 binding.
+        - If LOCAL_SQLITE_PATH is explicitly set, use SQLite (for tests or tools only).
+        - Otherwise, raise DatabaseError requiring a D1 binding.
         """
         self.db = db or settings.d1_database
         self._sqlite_path: Optional[str] = None
@@ -152,7 +158,7 @@ class Database:
         is_d1 = self.db and hasattr(self.db, "prepare")
         
         if not is_d1:
-            # No D1 binding - only allow SQLite if explicitly set (for tests)
+            # No D1 binding - only allow SQLite if explicitly set (for tests/tools)
             sqlite_path = os.environ.get("LOCAL_SQLITE_PATH")
             if sqlite_path:
                 # SQLite only allowed when explicitly set via LOCAL_SQLITE_PATH (for tests)

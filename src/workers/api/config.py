@@ -195,18 +195,6 @@ class Settings:
                 Path(".env"),  # Current directory
                 Path(__file__).parent.parent.parent.parent / ".env",  # From config.py: src/workers/api/config.py -> repo root
             ]
-            # Also try from main.py location if available
-            try:
-                import sys
-                for module_name, module in sys.modules.items():
-                    if hasattr(module, '__file__') and module.__file__:
-                        main_path = Path(module.__file__)
-                        if 'main.py' in str(main_path) or 'workers' in str(main_path):
-                            repo_root = main_path.parent.parent.parent
-                            env_paths.append(repo_root / ".env")
-                            break
-            except Exception:
-                pass
             
             for env_path in env_paths:
                 if env_path.exists():

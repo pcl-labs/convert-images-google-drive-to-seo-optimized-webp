@@ -218,7 +218,7 @@ def load_config():
 
 ## Database Access
 
-### ⚠️ **No SQLite Fallback - D1 Required**
+### ⚠️ **No SQLite Fallback in Workers - D1 Required**
 
 **Problem:** Workers don't support file system access, so SQLite (which uses files) cannot work as a fallback.
 
@@ -240,6 +240,11 @@ db = d1_database
 ```
 
 **Key Takeaway:** Always require D1 in Workers. Handle unavailability gracefully with proper error messages.
+
+SQLite is only supported when explicitly configured via the `LOCAL_SQLITE_PATH`
+environment variable (primarily for tests and non-Workers tooling). It is not
+available as a runtime fallback inside Cloudflare Workers, since Workers do not
+have filesystem access.
 
 ---
 

@@ -112,6 +112,12 @@ def apply_worker_env(env: Any) -> Settings:
         "CF_QUEUE_NAME",
         "CF_QUEUE_DLQ",
         "TRANSCRIPT_LANGS",
+        # OpenAI configuration (Workers-compatible)
+        "OPENAI_API_KEY",
+        "OPENAI_API_BASE",
+        "OPENAI_BLOG_MODEL",
+        "OPENAI_BLOG_TEMPERATURE",
+        "OPENAI_BLOG_MAX_OUTPUT_TOKENS",
     }
     protected = {"PATH", "HOME", "USER", "SHELL", "LD_LIBRARY_PATH", "PYTHONPATH"}
     sanitized: Dict[str, str] = {}
