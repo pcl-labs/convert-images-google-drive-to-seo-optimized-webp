@@ -1,0 +1,12 @@
+{% from 'components/layout/page.html' import page_container %}
+<div id="job-detail-root"
+     data-job-detail
+     data-job-id="{{ job.id }}"
+     hx-get="{{ request.url.path }}"
+     hx-target="#job-detail-root"
+     hx-swap="outerHTML"
+     hx-trigger="refreshJob">
+  {% call page_container() %}
+    {% include 'jobs/partials/detail_content.html' %}
+  {% endcall %}
+</div>

@@ -1,0 +1,49 @@
+<div
+  x-data="{
+    toasts: [],
+    push(detail) {
+      const payload = detail || {};
+      const id = (window.crypto && window.crypto.randomUUID ? window.crypto.randomUUID() : (Date.now().toString(36) + Math.random().toString(36).slice(2)));
+      const toast = {
+        id,
+        type: payload.type || payload.kind || 'info',
+        text: payload.text || payload.message || 'Notification',
+        href: payload.href || null,
+        timeout: typeof payload.timeout === 'number' ? payload.timeout : 5000,
+      };
+      this.toasts.push(toast);
+      setTimeout(() => { this.toasts = this.toasts.filter(t => t.id !== id); }, toast.timeout);
+    },
+    dismiss(id) {
+      this.toasts = this.toasts.filter(t => t.id !== id);
+    }
+  }"
+  x-on:toast.window="push($event.detail)"
+  class="fixed bottom-4 right-4 z-50 space-y-2"
+  role="status"
+  aria-live="polite"
+>
+  <template x-for="t in toasts" :key="t.id">
+    <div
+      class="w-80 rounded-lg border px-4 py-3 shadow-xl ring-1 ring-black/5 backdrop-blur bg-surface/95"
+      :class="{
+        'border-destructive/40 text-destructive': t.type === 'error',
+        'border-accent/40 text-accent': t.type === 'success',
+        'border-primary/40 text-primary': t.type !== 'error' && t.type !== 'success'
+      }"
+    >
+      <div class="flex items-start gap-3">
+        <div class="flex-1 space-y-1">
+          <p class="font-medium leading-snug" x-text="t.text"></p>
+          <template x-if="t.href && /^\\/.test(t.href)">
+            <a :href="t.href" class="text-xs uppercase tracking-wide text-contentMuted hover:text-primary">View details &rarr;</a>
+          </template>
+          <template x-if="t.href && /^https?:\\/\\//i.test(t.href)">
+            <a :href="t.href" class="text-xs uppercase tracking-wide text-contentMuted hover:text-primary" target="_blank" rel="noopener">Open link &rarr;</a>
+          </template>
+        </div>
+        <button type="button" class="text-contentMuted hover:text-content" aria-label="Close toast" @click="dismiss(t.id)">&#10005;</button>
+      </div>
+    </div>
+  </template>
+</div>

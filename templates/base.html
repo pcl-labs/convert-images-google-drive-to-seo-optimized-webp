@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Create SEO Ranking blogs from YouTube. Ship fast, flexible, and SEO-optimized blogs with AI assist out of box. Quill brings the best of the LLM ecosystem.">
+    <link rel="manifest" href="{{ url_for('static', path='site.webmanifest') }}">
+    <link rel="icon" href="{{ url_for('static', path='favicon/favicon-32x32.png') }}" sizes="32x32" type="image/png">
+    <link rel="icon" href="{{ url_for('static', path='favicon/favicon-16x16.png') }}" sizes="16x16" type="image/png">
+    <link rel="apple-touch-icon" href="{{ url_for('static', path='favicon/apple-touch-icon.png') }}" sizes="180x180">
+    <meta name="theme-color" content="#1a73e8">
+
+    <!-- Open Graph -->
+    <meta property="og:title" content="Quill">
+    <meta property="og:description" content="Create SEO Ranking blogs from YouTube. Ship fast, flexible, and SEO-optimized blogs with AI assist out of box. Quill brings the best of the LLM ecosystem.">
+    <meta property="og:type" content="website">
+    <meta property="og:image" content="{{ url_for('static', path='og/og-image.png') }}">
+    <meta property="og:url" content="{{ (base_url or (request.url.scheme ~ '://' ~ request.url.netloc)) }}">
+    <meta property="og:site_name" content="Quill">
+
+    <!-- Twitter -->
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="Quill">
+    <meta name="twitter:description" content="Create SEO Ranking blogs from YouTube. Ship fast, flexible, and SEO-optimized blogs with AI assist out of box. Quill brings the best of the LLM ecosystem.">
+    <meta name="twitter:image" content="{{ url_for('static', path='og/og-image.png') }}">
+    <title>{{ title or 'Quill' }}</title>
+    {% include 'components/scripts/theme.html' %}
+    <link rel="stylesheet" href="{{ url_for('static', path='css/app.css') }}">
+    <style>[x-cloak]{display:none !important;}</style>
+    <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+    <script>
+      window.__modalOpen = false;
+      window.addEventListener('open-drive-disconnect', function(){ window.__modalOpen = true; });
+      window.addEventListener('confirm-drive-disconnect', function(){ window.__modalOpen = false; });
+      window.addEventListener('close-drive-disconnect', function(){ window.__modalOpen = false; });
+
+      window.modalState = function(id){
+        return {
+          open: false,
+          prevEl: null,
+          titleId: `modal-title-${id}`,
+          trap(e){
+            if(!this.open) return;
+            const focusables = this.$root.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
+            const els = Array.from(focusables).filter(el => !el.hasAttribute('disabled') && el.offsetParent !== null);
+            if(!els.length) return;
+            const first = els[0];
+            const last = els[els.length - 1];
+            if(e.key === 'Tab'){
+              if(e.shiftKey && document.activeElement === first){ e.preventDefault(); last.focus(); }
+              else if(!e.shiftKey && document.activeElement === last){ e.preventDefault(); first.focus(); }
+            }
+          },
+          openModal(){
+            this.prevEl = document.activeElement;
+            if(document.body){ document.body.style.overflow = 'hidden'; }
+            this.$nextTick(() => {
+              const focusTarget = this.$root.querySelector('[data-autofocus]') || this.$root.querySelector('[role="dialog"]') || this.$root;
+              focusTarget && focusTarget.focus && focusTarget.focus();
+            });
+          },
+          closeModal(){
+            if(document.body){ document.body.style.overflow = ''; }
+            this.open = false;
+            this.prevEl && this.prevEl.focus && this.prevEl.focus();
+          }
+        };
+      };
+
+      document.addEventListener('DOMContentLoaded', () => {
+        const bodyEl = document.body;
+        if (bodyEl) {
+          bodyEl.addEventListener('htmx:error', function(){
+            window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', text: 'Request failed' } }));
+          });
+        }
+
+        // Notifications via SSE (replace polling)
+        try {
+          const TOAST_STORAGE_KEY = '__toast_history_v1';
+          const MAX_TOAST_HISTORY = 200;
+          window.__notifiedIds = new Set();
+
+          const pruneToastHistory = () => {
+            if (!window.__notifiedIds || window.__notifiedIds.size <= MAX_TOAST_HISTORY) {
+              return;
+            }
+            const removeCount = window.__notifiedIds.size - MAX_TOAST_HISTORY;
+            const iterator = window.__notifiedIds.values();
+            for (let i = 0; i < removeCount; i++) {
+              const next = iterator.next();
+              if (next.done) break;
+              window.__notifiedIds.delete(next.value);
+            }
+          };
+
+          const persistToastHistory = () => {
+            try {
+              if (!window.sessionStorage) return;
+              const keys = Array.from(window.__notifiedIds || []).slice(-MAX_TOAST_HISTORY);
+              window.sessionStorage.setItem(TOAST_STORAGE_KEY, JSON.stringify(keys));
+            } catch (err) {
+              if (console && console.warn) console.warn('Failed to persist toast history', err);
+            }
+          };
+
+          const loadToastHistory = () => {
+            let hydrated = false;
+            try {
+              if (!window.sessionStorage) return;
+              const raw = window.sessionStorage.getItem(TOAST_STORAGE_KEY);
+              if (!raw) return;
+              const parsed = JSON.parse(raw);
+              if (Array.isArray(parsed)) {
+                parsed.forEach((key) => {
+                  if (typeof key === 'string' && key) {
+                    window.__notifiedIds.add(key);
+                    hydrated = true;
+                  }
+                });
+              }
+              if (hydrated) {
+                pruneToastHistory();
+                persistToastHistory();
+              }
+            } catch (err) {
+              if (console && console.warn) console.warn('Failed to load toast history', err);
+            }
+          };
+
+          const rememberToastKey = (key) => {
+            if (!key) return;
+            window.__notifiedIds.add(key);
+            pruneToastHistory();
+            persistToastHistory();
+          };
+
+          loadToastHistory();
+          // simple fixed-size hash (FNV-1a 32-bit) for dedupe key
+          function hashKey(str){
+            let h = 0x811c9dc5;
+            for (let i = 0; i < str.length; i++) {
+              h ^= str.charCodeAt(i);
+              h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
+            }
+            return ('00000000' + h.toString(16)).slice(-8);
+          }
+          let retryDelay = 1000; // start 1s
+          const maxDelay = 30000; // cap at 30s
+          function openES(){
+            const es = new EventSource('/api/stream');
+            es.onopen = () => {
+              // reset backoff once the connection is successfully open
+              retryDelay = 1000;
+            };
+            es.onmessage = (evt) => {
+              try {
+                const msg = JSON.parse(evt.data || '{}');
+                if (msg && msg.type === 'notification.created' && msg.data) {
+                  const n = msg.data;
+                  const key = hashKey(`${n.id}:${n.level}:${n.text || ''}`);
+                  if (window.__notifiedIds.has(key)) return;
+                  rememberToastKey(key);
+                  const ctx = (typeof n.context === 'object' && n.context !== null) ? n.context : {};
+                  n.context = ctx;
+                  const type = n.level === 'error' ? 'error' : (n.level === 'success' ? 'success' : 'info');
+                  let href = ctx.href || null;
+                  if (!href){
+                    if (ctx.document_id){
+                      href = `/dashboard/documents/${ctx.document_id}`;
+                    } else if (ctx.job_id){
+                      href = `/dashboard/jobs/${ctx.job_id}`;
+                    }
+                  }
+                  window.dispatchEvent(new CustomEvent('toast', { detail: { type, text: n.text, href } }));
+                  window.dispatchEvent(new CustomEvent('notification:created', { detail: n }));
+                  if (ctx.document_id){
+                    window.dispatchEvent(new CustomEvent('document:activity', { detail: n }));
+                  }
+                  if (ctx.job_id){
+                    window.dispatchEvent(new CustomEvent('job:activity', { detail: n }));
+                  }
+                  const docEl = ctx.document_id ? document.querySelector(`[data-document-detail][data-document-id="${ctx.document_id}"]`) : null;
+                  if (docEl && window.htmx){
+                    htmx.trigger(docEl, 'refreshDocument');
+                  }
+                  const jobEl = ctx.job_id ? document.querySelector(`[data-job-detail][data-job-id="${ctx.job_id}"]`) : null;
+                  if (jobEl && window.htmx){
+                    htmx.trigger(jobEl, 'refreshJob');
+                  }
+                  const docPage = document.querySelector('[data-documents-page]');
+                  if (docPage && window.htmx){
+                    htmx.trigger(docPage, 'refreshDocuments');
+                  }
+                  const jobsPage = document.querySelector('[data-jobs-page]');
+                  if (jobsPage && window.htmx){
+                    htmx.trigger(jobsPage, 'refreshJobs');
+                  }
+                }
+              } catch (e) {
+                if (console && console.error) console.error('SSE onmessage error', e);
+              }
+            };
+            es.onerror = (e) => {
+              if (console && console.error) console.error('SSE connection error', e);
+              try { es.close(); } catch(_) {}
+              window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', text: 'Live updates disconnected, retrying...' } }));
+              window.__es = null;
+              setTimeout(() => {
+                retryDelay = Math.min(maxDelay, retryDelay * 2);
+                openES();
+              }, retryDelay);
+            };
+            window.__es = es;
+          }
+          openES();
+          // Close on unload to avoid leaked connections
+          window.addEventListener('beforeunload', () => { try { window.__es && window.__es.close(); } catch(_) {} });
+          window.addEventListener('unload', () => { try { window.__es && window.__es.close(); } catch(_) {} });
+        } catch (e) {
+          if (console && console.error) console.error('SSE init error', e);
+        }
+      });
+    </script>
+  </head>
+  <body>
+    <div class="min-h-screen bg-bg">
+      {% include 'components/layout/sidebar.html' %}
+      <div class="lg:pl-64 pt-14 lg:pt-0">
+        <main>
+          <div id="flash-area">{% block flash %}{% endblock %}</div>
+          {% block content %}{% endblock %}
+        </main>
+      </div>
+      {% include 'components/overlays/toast.html' %}
+    </div>
+    {% block scripts %}{% endblock %}
+  </body>
+</html>
