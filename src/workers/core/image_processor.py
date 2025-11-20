@@ -55,7 +55,7 @@ def extract_alt_text(filename):
     return name.replace('-', ' ').replace('_', ' ').replace('.', ' ').strip()
 
 
-def update_alt_text_map(webp_filename, alt_text, map_path='alt_text_map.json'):
+def update_alt_text_map(webp_filename, alt_text, map_path='data/alt_text_map.json'):
     """Update alt_text_map.json with new alt text."""
     if os.path.exists(map_path):
         try:
@@ -82,7 +82,7 @@ def update_alt_text_map(webp_filename, alt_text, map_path='alt_text_map.json'):
         raise
 
 
-def process_image(input_path, output_dir, overwrite=False, skip_existing=False, versioned=False, max_size_kb=DEFAULT_MAX_SIZE_KB, alt_text_map_path='alt_text_map.json', seo_prefix=None):
+def process_image(input_path, output_dir, overwrite=False, skip_existing=False, versioned=False, max_size_kb=DEFAULT_MAX_SIZE_KB, alt_text_map_path='data/alt_text_map.json', seo_prefix=None):
     """Resize, compress, and convert image to .webp in output_dir. Update alt text map. Handle conflict logic. Optionally prefix output filename with seo_prefix."""
     base = os.path.basename(input_path)
     name, _ = os.path.splitext(base)

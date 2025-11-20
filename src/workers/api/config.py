@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import threading
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -62,6 +61,26 @@ def _load_dotenv(path: Path) -> Dict[str, str]:
 
 @dataclass
 class Settings:
+    """
+    Application settings loaded from environment variables.
+    
+    This class works in both local development and Cloudflare Workers:
+    
+    **Local Development:**
+    - Reads from `.env` file (if present) and `os.environ`
+    - `d1_database` is typically None, causing Database() to fall back to SQLite
+    - `static_files_dir` can be set to a filesystem path for local dev
+    - `queue` and `dlq` are None when `USE_INLINE_QUEUE=true` (default)
+    
+    **Cloudflare Workers:**
+    - Reads from `os.environ` (populated by `wrangler.toml` vars + secrets)
+    - `d1_database` is set from `env.DB` binding via `runtime.apply_worker_env()`
+    - `static_files_dir` should be None (uses package-based loader)
+    - `queue` and `dlq` are set from `env.JOB_QUEUE` and `env.DLQ` bindings
+    
+    See `src/workers/runtime.py` for how Worker bindings are injected.
+    See `docs/CLOUDFLARE_WORKERS.md` for setup instructions.
+    """
     app_name: str = "Quill API"
     app_version: str = "1.0.0"
     environment: str = "development"
@@ -78,8 +97,6 @@ class Settings:
     jwt_expiration_hours: int = 24
     jwt_use_cookies: bool = True
 
-    encryption_key: Optional[str] = None
-
     api_key_length: int = 32
     pbkdf2_iterations: int = 600_000
 
@@ -94,6 +111,7 @@ class Settings:
     queue: Optional[Any] = None
     dlq: Optional[Any] = None
     kv_namespace: Optional[Any] = None
+    assets: Optional[Any] = None  # Cloudflare Assets binding for static files
 
     use_inline_queue: bool = True
     cloudflare_account_id: Optional[str] = None
@@ -111,7 +129,7 @@ class Settings:
     drive_webhook_url: Optional[str] = None
     drive_webhook_secret: Optional[str] = None
     drive_watch_renewal_window_minutes: int = 60
-    static_files_dir: str = "./static"
+    static_files_dir: Optional[str] = None
     openai_api_key: Optional[str] = None
     openai_api_base: Optional[str] = None
     # Default OpenAI blog model (GPT-5.1 is the current target model).
@@ -126,7 +144,12 @@ class Settings:
         self.jwt_use_cookies = _bool(self.jwt_use_cookies)
         self.use_inline_queue = _bool(self.use_inline_queue)
         self.enable_drive_pipeline = _bool(self.enable_drive_pipeline)
-        self.static_files_dir = str(self.static_files_dir or "./static")
+        # static_files_dir: None means use package-based loader (Worker-compatible)
+        # If set to a path, mount_static_files() will try filesystem first, then fall back to package
+        if self.static_files_dir:
+            self.static_files_dir = str(self.static_files_dir)
+        else:
+            self.static_files_dir = None
         self.rate_limit_per_minute = _int(self.rate_limit_per_minute, 60)
         self.rate_limit_per_hour = _int(self.rate_limit_per_hour, 1000)
         self.api_key_length = _int(self.api_key_length, 32)
@@ -152,8 +175,6 @@ class Settings:
         self.auto_generate_after_ingest = _bool(self.auto_generate_after_ingest)
         if not self.jwt_secret_key:
             raise ValueError("JWT_SECRET_KEY is required")
-        if self.environment == "production" and not self.encryption_key:
-            raise ValueError("ENCRYPTION_KEY is required in production")
         if self.environment == "production" and self.use_inline_queue:
             raise ValueError("USE_INLINE_QUEUE=true is not allowed in production")
         if not self.use_inline_queue:
@@ -168,7 +189,21 @@ class Settings:
     def from_env(cls, **overrides: Any) -> "Settings":
         dotenv_values: Dict[str, str] = {}
         if os.getenv("PYTEST_DISABLE_DOTENV") != "1":
-            dotenv_values = _load_dotenv(Path(".env"))
+            # Try to find .env file relative to repo root
+            # In wrangler dev, working directory might be different, so try multiple paths
+            env_paths = [
+                Path(".env"),  # Current directory
+                Path(__file__).parent.parent.parent.parent / ".env",  # From config.py: src/workers/api/config.py -> repo root
+            ]
+            
+            for env_path in env_paths:
+                if env_path.exists():
+                    dotenv_values = _load_dotenv(env_path)
+                    if dotenv_values:
+                        import logging
+                        logger = logging.getLogger(__name__)
+                        logger.debug(f"Loaded .env from {env_path} ({len(dotenv_values)} variables)")
+                    break
         data: Dict[str, Any] = {}
         for field_info in fields(cls):
             name = field_info.name
@@ -185,12 +220,12 @@ class Settings:
 
 def replace_settings(new_settings: Settings) -> Settings:
     field_names = {info.name for info in fields(Settings)}
-    with _settings_lock:
-        for name in field_names:
-            if hasattr(new_settings, name):
-                setattr(settings, name, getattr(new_settings, name))
+    # No lock needed - Workers are single-threaded per isolate
+    for name in field_names:
+        if hasattr(new_settings, name):
+            setattr(settings, name, getattr(new_settings, name))
     return settings
 
 
-_settings_lock = threading.Lock()
+# Note: No locks needed in Cloudflare Workers - each isolate is single-threaded
 settings = Settings.from_env()

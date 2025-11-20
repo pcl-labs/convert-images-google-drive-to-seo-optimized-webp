@@ -13,7 +13,7 @@ import logging
 import datetime
 from typing import Dict, Any, Optional, Protocol
 
-from simple_http import AsyncSimpleClient
+from .simple_http import AsyncSimpleClient
 
 from .config import settings
 
@@ -91,6 +91,48 @@ class QueueProducer:
         self._inline_mode = settings.use_inline_queue
         self._initialized = False
 
+    def _init_primary_queue(self) -> None:
+        """Initialize primary job queue from bindings or HTTP API if needed."""
+        if self._queue is not None:
+            return
+
+        if settings.queue is not None:
+            self._queue = settings.queue
+            logger.info("Using Cloudflare Workers queue binding")
+            return
+
+        if settings.cloudflare_api_token and settings.cf_queue_name:
+            if settings.cloudflare_account_id:
+                self._cf_queue_api = CloudflareQueueAPI(
+                    account_id=settings.cloudflare_account_id,
+                    api_token=settings.cloudflare_api_token,
+                    queue_name=settings.cf_queue_name,
+                )
+                logger.info("Initialized Cloudflare Queue API client")
+            else:
+                logger.warning("cloudflare_account_id missing; skipping CloudflareQueueAPI initialization")
+        else:
+            logger.warning("No queue binding/API configured; jobs will remain pending")
+
+    def _init_dlq(self) -> None:
+        """Initialize dead-letter queue from bindings or HTTP API if needed."""
+        if self._dlq is not None:
+            return
+
+        if settings.dlq is not None:
+            self._dlq = settings.dlq
+            return
+
+        if settings.cloudflare_api_token and settings.cf_queue_dlq:
+            if settings.cloudflare_account_id:
+                self._cf_dlq_api = CloudflareQueueAPI(
+                    account_id=settings.cloudflare_account_id,
+                    api_token=settings.cloudflare_api_token,
+                    queue_name=settings.cf_queue_dlq,
+                )
+            else:
+                logger.warning("cloudflare_account_id missing; skipping Cloudflare DLQ API initialization")
+
     def _initialize(self) -> None:
         if self._initialized:
             return
@@ -98,35 +140,8 @@ class QueueProducer:
         if self._inline_mode:
             logger.info("Queue producer running in inline mode (DB polling)")
         else:
-            if self._queue is None:
-                if settings.queue is not None:
-                    self._queue = settings.queue
-                    logger.info("Using Cloudflare Workers queue binding")
-                elif settings.cloudflare_api_token and settings.cf_queue_name:
-                    if settings.cloudflare_account_id:
-                        self._cf_queue_api = CloudflareQueueAPI(
-                            account_id=settings.cloudflare_account_id,
-                            api_token=settings.cloudflare_api_token,
-                            queue_name=settings.cf_queue_name,
-                        )
-                        logger.info("Initialized Cloudflare Queue API client")
-                    else:
-                        logger.warning("cloudflare_account_id missing; skipping CloudflareQueueAPI initialization")
-                else:
-                    logger.warning("No queue binding/API configured; jobs will remain pending")
-
-            if self._dlq is None:
-                if settings.dlq is not None:
-                    self._dlq = settings.dlq
-                elif settings.cloudflare_api_token and settings.cf_queue_dlq:
-                    if settings.cloudflare_account_id:
-                        self._cf_dlq_api = CloudflareQueueAPI(
-                            account_id=settings.cloudflare_account_id,
-                            api_token=settings.cloudflare_api_token,
-                            queue_name=settings.cf_queue_dlq,
-                        )
-                    else:
-                        logger.warning("cloudflare_account_id missing; skipping Cloudflare DLQ API initialization")
+            self._init_primary_queue()
+            self._init_dlq()
         self._initialized = True
 
     @property

@@ -1,6 +1,13 @@
 """
-Application factory for building the FastAPI app in both local (Uvicorn)
-and Cloudflare Worker environments.
+Application factory for building the FastAPI app.
+
+This factory is used in both environments:
+- Local Development: Called by src/workers/api/main.py, which is imported by
+  run_api.py (Uvicorn server). Uvicorn is NOT used in the Worker runtime.
+- Cloudflare Worker: Called by src/workers/main.py (WorkerEntrypoint), which
+  uses Cloudflare's built-in `asgi` module to handle requests without Uvicorn.
+
+The same FastAPI app instance works in both environments via the ASGI interface.
 """
 
 from __future__ import annotations
@@ -11,16 +18,17 @@ from contextlib import asynccontextmanager
 from typing import Optional, Set, Awaitable
 
 from fastapi import FastAPI
-from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse, RedirectResponse
 from pathlib import Path
+from .static_loader import mount_static_files
 
 from .config import Settings, settings as global_settings
 from .cloudflare_queue import QueueProducer
-from .database import Database, ensure_notifications_schema, ensure_sessions_schema
+from .database import Database, ensure_notifications_schema, ensure_sessions_schema, ensure_full_schema
 from .exceptions import APIException
 from .app_logging import setup_logging, get_logger, get_request_id
 from .middleware import (
+    FlashMiddleware,
     AuthCookieMiddleware,
     CORSMiddleware,
     RateLimitMiddleware,
@@ -45,6 +53,14 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
     log_level = "INFO" if not active_settings.debug else "DEBUG"
     setup_logging(level=log_level, use_json=True)
     app_logger = get_logger(__name__)
+    
+    # Log startup info for debugging
+    app_logger.info(
+        "Starting application: environment=%s, debug=%s, log_level=%s",
+        active_settings.environment,
+        active_settings.debug,
+        log_level,
+    )
 
     # Store references on the closure so each application instance keeps its
     # own Database / Queue state. This prevents Worker environments from
@@ -71,8 +87,18 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
             app_logger.info("Notifications schema ensured")
             await ensure_sessions_schema(db_instance)
             app_logger.info("Session schema ensured")
-        except Exception as exc:  # pragma: no cover - defensive logging path
-            app_logger.warning("Failed ensuring notifications schema: %s", exc)
+            # Apply full schema to ensure all tables exist
+            await ensure_full_schema(db_instance)
+            app_logger.info("Full database schema ensured")
+        except Exception as exc:  # pragma: no cover - fail fast on schema errors
+            app_logger.error(
+                "Failed ensuring database schema: %s, error_type=%s",
+                str(exc),
+                type(exc).__name__,
+                exc_info=True,
+            )
+            # Fail fast - re-raise exception to stop startup
+            raise
 
         queue_producer = QueueProducer(queue=active_settings.queue, dlq=active_settings.dlq)
         queue_mode = "inline" if active_settings.use_inline_queue else (
@@ -191,14 +217,13 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
 
     app.state.register_background_task = register_background_task
 
-    static_dir_setting = Path(active_settings.static_files_dir).expanduser()
-    if not static_dir_setting.is_absolute():
-        static_dir_setting = Path.cwd() / static_dir_setting
-    static_dir = static_dir_setting.resolve()
-    if static_dir.exists():
-        app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
-    else:
-        app_logger.warning("Static directory '%s' not found; skipping static mount", static_dir)
+    # Mount static files using package-based loader that works in both
+    # local dev and Cloudflare Workers environments
+    mount_static_files(
+        app, 
+        static_dir_setting=active_settings.static_files_dir,
+        assets_binding=active_settings.assets
+    )
 
     from .web import router as web_router
     from .public import router as public_router
@@ -216,6 +241,55 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
     app.include_router(jobs_v1_router)
     app.include_router(content_router)
 
+    @app.get("/favicon.ico", include_in_schema=False)
+    async def favicon():
+        """Serve favicon.ico from the static assets.
+
+        Browsers automatically request /favicon.ico even if not referenced in HTML.
+        Redirect to the static-served icon so this endpoint works in both local
+        development and the Cloudflare Workers static loader.
+        """
+        return RedirectResponse(url="/static/favicon.ico")
+
+    # Register exception handlers - Exception first (catch-all), then APIException (more specific)
+    # FastAPI processes handlers in reverse registration order, so Exception handler will catch
+    # everything except APIException (which gets re-raised)
+    @app.exception_handler(Exception)
+    async def global_exception_handler(request, exc):  # pragma: no cover - FastAPI wiring
+        """Catch all unhandled exceptions and log them.
+        
+        This handler logs all exceptions for debugging, especially useful in Cloudflare Workers
+        where logs are visible in Wrangler output and the Cloudflare dashboard.
+        """
+        # Re-raise APIException to use its specific handler
+        if isinstance(exc, APIException):
+            raise
+        
+        request_id = get_request_id()
+        app_logger.error(
+            "Unhandled exception: path=%s, method=%s, error=%s, error_type=%s",
+            request.url.path,
+            request.method,
+            str(exc),
+            type(exc).__name__,
+            exc_info=True,
+            extra={
+                "request_id": request_id,
+                "path": request.url.path,
+                "method": request.method,
+                "error_type": type(exc).__name__,
+            },
+        )
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": "Internal server error",
+                "detail": str(exc) if active_settings.debug else "An error occurred",
+                "error_type": type(exc).__name__,
+                "request_id": request_id,
+            }
+        )
+    
     @app.exception_handler(APIException)
     async def api_exception_handler(request, exc):  # pragma: no cover - FastAPI wiring
         extra = {"request_id": get_request_id()}
@@ -236,14 +310,21 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
     # Note: Middleware executes in REVERSE order of registration.
     # Register AuthCookieMiddleware before SessionMiddleware so SessionMiddleware executes first
     # (SessionMiddleware sets request.state.session_user_id, AuthCookieMiddleware reads it)
-    app.add_middleware(SecurityHeadersMiddleware)
+    # Re-enabling AuthCookieMiddleware - core auth functionality
     app.add_middleware(AuthCookieMiddleware)
+    # Re-enabling SessionMiddleware - D1 is now working
+    # Sessions are used for stateful tracking (notifications, activity) and can help with OAuth flows
     app.add_middleware(SessionMiddleware)
-    app.add_middleware(
-        RateLimitMiddleware,
-        max_per_minute=active_settings.rate_limit_per_minute,
-        max_per_hour=active_settings.rate_limit_per_hour,
-    )
+    # FlashMiddleware re-enabled - testing fix for ASGI errors (moved DB write to after call_next)
+    app.add_middleware(FlashMiddleware)
+    
+    # RateLimitMiddleware disabled - uses time.monotonic() and asyncio.Lock() which may not work correctly in Workers
+    # To re-enable: implement using Cloudflare KV or Workers KV for distributed rate limiting
+    # app.add_middleware(
+    #     RateLimitMiddleware,
+    #     max_per_minute=active_settings.rate_limit_per_minute,
+    #     max_per_hour=active_settings.rate_limit_per_hour,
+    # )
     app.add_middleware(
         CORSMiddleware,
         allow_origins=active_settings.cors_origins,

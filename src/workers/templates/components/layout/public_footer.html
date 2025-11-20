@@ -1,0 +1,10 @@
+{% macro public_footer() %}
+  <footer class="border-t border-border py-4 mt-10">
+    <div class="mx-auto max-w-5xl px-4 md:px-6 lg:px-8 flex flex-col md:flex-row items-center justify-between gap-2 text-xs text-contentMuted">
+      <span>© {{ (now().year if now is defined else 2025) }} Quill</span>
+      <div class="flex items-center gap-3">
+        <a href="/styleguide" class="hover:text-content">Styleguide</a>
+      </div>
+    </div>
+  </footer>
+{% endmacro %}

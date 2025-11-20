@@ -7,12 +7,11 @@ import logging
 import os
 import re
 import tempfile
-import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, Optional, Set, Tuple, overload, Literal
 
-from simple_http import HTTPStatusError, RequestError, SimpleClient
+from api.simple_http import HTTPStatusError, RequestError, SimpleClient
 
 from .google_clients import GoogleAPIError, GoogleDriveClient, OAuthToken
 from .constants import DEFAULT_EXTENSIONS
@@ -20,7 +19,7 @@ from .extension_utils import normalize_extensions
 
 # Import settings with try/except for CLI fallback compatibility
 try:
-    from ..api.config import settings
+    from api.config import settings
 except ImportError:
     # CLI fallback: settings may not be available in CLI context
     settings = None
@@ -30,8 +29,8 @@ logger = logging.getLogger(__name__)
 TOKEN_FILE = Path("token.json")
 TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
 
-# Thread lock for synchronizing token file access
-_token_lock = threading.Lock()
+# Note: No locks needed in Cloudflare Workers - each isolate is single-threaded
+# This is only used for CLI fallback token.json access
 
 
 def _parse_iso(value: Optional[str]) -> Optional[datetime]:
@@ -44,7 +43,7 @@ def _parse_iso(value: Optional[str]) -> Optional[datetime]:
 
 
 def _load_local_token() -> Dict[str, str]:
-    """Load token from file. Caller must hold _token_lock."""
+    """Load token from file."""
     if not TOKEN_FILE.exists():
         raise RuntimeError(
             "token.json not found. Link your Google Drive account via the web UI or copy an access token."
@@ -56,9 +55,7 @@ def _load_local_token() -> Dict[str, str]:
 
 
 def _refresh_local_token(token_info: Dict[str, str]) -> Dict[str, str]:
-    """Refresh token with thread-safe, atomic file writes and proper permissions.
-    
-    Caller must hold _token_lock for the file write operation.
+    """Refresh token with atomic file writes and proper permissions.
     
     Reads client_id/client_secret from environment/secrets (via settings) first,
     falling back to token_info for CLI compatibility.
@@ -107,7 +104,6 @@ def _refresh_local_token(token_info: Dict[str, str]) -> Dict[str, str]:
     token_info.setdefault("token_type", data.get("token_type", "Bearer"))
     
     # Atomic write with proper permissions (0o600 = owner read/write only)
-    # Note: When called from get_drive_service(), _token_lock is already held.
     # The write is atomic via tempfile + os.replace, ensuring no corruption on interruption.
     token_json = json.dumps(token_info, indent=2)
     token_bytes = token_json.encode("utf-8")
@@ -140,7 +136,7 @@ def _refresh_local_token(token_info: Dict[str, str]) -> Dict[str, str]:
 
 
 def get_drive_service(token: Optional[OAuthToken] = None) -> GoogleDriveClient:
-    """Get Drive service with thread-safe token loading and refresh.
+    """Get Drive service with token loading and refresh.
     
     Args:
         token: Optional OAuthToken to use. If provided, uses this token directly.
@@ -152,28 +148,28 @@ def get_drive_service(token: Optional[OAuthToken] = None) -> GoogleDriveClient:
     Note:
         In production/worker contexts, pass a token built from DB credentials.
         token.json is only used as a CLI fallback when token is not provided.
+        No locks needed in Cloudflare Workers - each isolate is single-threaded.
     """
     if token is not None:
         return GoogleDriveClient(token)
     
     # CLI fallback: load from token.json
-    # Use lock to prevent concurrent refresh attempts
-    with _token_lock:
-        token_info = _load_local_token()
+    # No lock needed - Workers are single-threaded per isolate
+    token_info = _load_local_token()
+    expiry = _parse_iso(token_info.get("expiry"))
+    if expiry and expiry <= datetime.now(timezone.utc) + timedelta(seconds=60):
+        token_info = _refresh_local_token(token_info)
         expiry = _parse_iso(token_info.get("expiry"))
-        if expiry and expiry <= datetime.now(timezone.utc) + timedelta(seconds=60):
-            token_info = _refresh_local_token(token_info)
-            expiry = _parse_iso(token_info.get("expiry"))
-        access_token = token_info.get("access_token") or token_info.get("token")
-        if not access_token:
-            raise RuntimeError("token.json is missing access_token")
-        token = OAuthToken(
-            access_token=access_token,
-            refresh_token=token_info.get("refresh_token"),
-            expiry=expiry,
-            token_type=token_info.get("token_type", "Bearer"),
-        )
-        return GoogleDriveClient(token)
+    access_token = token_info.get("access_token") or token_info.get("token")
+    if not access_token:
+        raise RuntimeError("token.json is missing access_token")
+    token = OAuthToken(
+        access_token=access_token,
+        refresh_token=token_info.get("refresh_token"),
+        expiry=expiry,
+        token_type=token_info.get("token_type", "Bearer"),
+    )
+    return GoogleDriveClient(token)
 
 
 def list_files_in_folder(drive_folder_id: str, service: Optional[GoogleDriveClient] = None) -> Set[str]:

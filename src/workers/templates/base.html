@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Create SEO Ranking blogs from YouTube. Ship fast, flexible, and SEO-optimized blogs with AI assist out of box. Quill brings the best of the LLM ecosystem.">
+    <meta name="theme-color" content="#1a73e8">
+
+    <title>{{ title or 'Quill' }}</title>
+    {% include 'components/scripts/theme.html' %}
+    <link rel="stylesheet" href="{{ url_for('static', path='css/app.css') }}">
+    <style>[x-cloak]{display:none !important;}</style>
+    <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+    <script>
+      window.__modalOpen = false;
+      window.addEventListener('open-drive-disconnect', function(){ window.__modalOpen = true; });
+      window.addEventListener('confirm-drive-disconnect', function(){ window.__modalOpen = false; });
+      window.addEventListener('close-drive-disconnect', function(){ window.__modalOpen = false; });
+
+      window.modalState = function(id){
+        return {
+          open: false,
+          prevEl: null,
+          titleId: `modal-title-${id}`,
+          trap(e){
+            if(!this.open) return;
+            const focusables = this.$root.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
+            const els = Array.from(focusables).filter(el => !el.hasAttribute('disabled') && el.offsetParent !== null);
+            if(!els.length) return;
+            const first = els[0];
+            const last = els[els.length - 1];
+            if(e.key === 'Tab'){
+              if(e.shiftKey && document.activeElement === first){ e.preventDefault(); last.focus(); }
+              else if(!e.shiftKey && document.activeElement === last){ e.preventDefault(); first.focus(); }
+            }
+          },
+          openModal(){
+            this.open = true;  // Set Alpine state first so conditionals work
+            this.prevEl = document.activeElement;
+            if(document.body){ document.body.style.overflow = 'hidden'; }
+            this.$nextTick(() => {
+              const focusTarget = this.$root.querySelector('[data-autofocus]') || this.$root.querySelector('[role="dialog"]') || this.$root;
+              focusTarget && focusTarget.focus && focusTarget.focus();
+            });
+          },
+          closeModal(){
+            if(document.body){ document.body.style.overflow = ''; }
+            this.open = false;
+            this.prevEl && this.prevEl.focus && this.prevEl.focus();
+          }
+        };
+      };
+
+      document.addEventListener('DOMContentLoaded', () => {
+        const bodyEl = document.body;
+        if (bodyEl) {
+          bodyEl.addEventListener('htmx:error', function(){
+            window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', text: 'Request failed' } }));
+          });
+        }
+
+        // HTTP Polling implementation (SSE doesn't work in Cloudflare Workers Python)
+        try {
+          const TOAST_STORAGE_KEY = '__toast_history_v1';
+          const MAX_TOAST_HISTORY = 200;
+          window.__notifiedIds = new Set();
+
+          const pruneToastHistory = () => {
+            if (!window.__notifiedIds || window.__notifiedIds.size <= MAX_TOAST_HISTORY) {
+              return;
+            }
+            const removeCount = window.__notifiedIds.size - MAX_TOAST_HISTORY;
+            const iterator = window.__notifiedIds.values();
+            for (let i = 0; i < removeCount; i++) {
+              const next = iterator.next();
+              if (next.done) break;
+              window.__notifiedIds.delete(next.value);
+            }
+          };
+
+          const persistToastHistory = () => {
+            try {
+              if (!window.sessionStorage) return;
+              const keys = Array.from(window.__notifiedIds || []).slice(-MAX_TOAST_HISTORY);
+              window.sessionStorage.setItem(TOAST_STORAGE_KEY, JSON.stringify(keys));
+            } catch (err) {
+              if (console && console.warn) console.warn('Failed to persist toast history', err);
+            }
+          };
+
+          const loadToastHistory = () => {
+            let hydrated = false;
+            try {
+              if (!window.sessionStorage) return;
+              const raw = window.sessionStorage.getItem(TOAST_STORAGE_KEY);
+              if (!raw) return;
+              const parsed = JSON.parse(raw);
+              if (Array.isArray(parsed)) {
+                parsed.forEach((key) => {
+                  if (typeof key === 'string' && key) {
+                    window.__notifiedIds.add(key);
+                    hydrated = true;
+                  }
+                });
+              }
+              if (hydrated) {
+                pruneToastHistory();
+                persistToastHistory();
+              }
+            } catch (err) {
+              if (console && console.warn) console.warn('Failed to load toast history', err);
+            }
+          };
+
+          const rememberToastKey = (key) => {
+            if (!key) return;
+            window.__notifiedIds.add(key);
+            pruneToastHistory();
+            persistToastHistory();
+          };
+
+          loadToastHistory();
+          
+          // simple fixed-size hash (FNV-1a 32-bit) for dedupe key
+          function hashKey(str){
+            let h = 0x811c9dc5;
+            for (let i = 0; i < str.length; i++) {
+              h ^= str.charCodeAt(i);
+              h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
+            }
+            return ('00000000' + h.toString(16)).slice(-8);
+          }
+          
+          function processNotification(n) {
+            const key = hashKey(`${n.id}:${n.level}:${n.text || ''}`);
+            if (window.__notifiedIds.has(key)) return;
+            rememberToastKey(key);
+            
+            const ctx = (typeof n.context === 'object' && n.context !== null) ? n.context : {};
+            n.context = ctx;
+            const type = n.level === 'error' ? 'error' : (n.level === 'success' ? 'success' : 'info');
+            let href = ctx.href || null;
+            if (!href) {
+              if (ctx.document_id) {
+                href = `/dashboard/documents/${ctx.document_id}`;
+              } else if (ctx.job_id) {
+                href = `/dashboard/jobs/${ctx.job_id}`;
+              }
+            }
+            
+            // Dispatch all the same events as before
+            window.dispatchEvent(new CustomEvent('toast', { detail: { type, text: n.text, href } }));
+            window.dispatchEvent(new CustomEvent('notification:created', { detail: n }));
+            if (ctx.document_id) {
+              window.dispatchEvent(new CustomEvent('document:activity', { detail: n }));
+            }
+            if (ctx.job_id) {
+              window.dispatchEvent(new CustomEvent('job:activity', { detail: n }));
+            }
+            
+            // HTMX triggers (keep existing logic)
+            const docEl = ctx.document_id ? document.querySelector(`[data-document-detail][data-document-id="${ctx.document_id}"]`) : null;
+            if (docEl && window.htmx) {
+              htmx.trigger(docEl, 'refreshDocument');
+            }
+            const jobEl = ctx.job_id ? document.querySelector(`[data-job-detail][data-job-id="${ctx.job_id}"]`) : null;
+            if (jobEl && window.htmx) {
+              htmx.trigger(jobEl, 'refreshJob');
+            }
+            const docPage = document.querySelector('[data-documents-page]');
+            if (docPage && window.htmx) {
+              htmx.trigger(docPage, 'refreshDocuments');
+            }
+            const jobsPage = document.querySelector('[data-jobs-page]');
+            if (jobsPage && window.htmx) {
+              htmx.trigger(jobsPage, 'refreshJobs');
+            }
+          }
+          
+          const NOTIFICATION_POLL_INTERVAL = 5000; // 5 seconds
+          const NOTIFICATION_CURSOR_KEY = 'last_notification_id';
+          let pollTimer = null;
+          let retryDelay = 1000;
+          const maxDelay = 30000;
+          
+          function pollNotifications() {
+            let lastId = null;
+            try {
+              lastId = localStorage.getItem(NOTIFICATION_CURSOR_KEY);
+            } catch (err) {
+              if (console && console.warn) console.warn('Notification poll: localStorage.getItem failed', err);
+            }
+            const url = lastId 
+              ? `/api/notifications?after_id=${encodeURIComponent(lastId)}&limit=50`
+              : `/api/notifications?limit=50`;
+            
+            fetch(url, {
+              credentials: 'include', // Include cookies for auth
+              headers: {
+                'Accept': 'application/json',
+              }
+            })
+            .then(response => {
+              if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+              }
+              return response.json();
+            })
+            .then(data => {
+              const notifications = data.notifications || [];
+              if (notifications.length > 0) {
+                // Store newest ID before reversing (API returns newest first)
+                const newestId = notifications[0].id;
+                // Process notifications in reverse order (oldest first) for display
+                notifications.reverse().forEach(n => {
+                  processNotification(n);
+                });
+                // Update cursor to most recent notification ID
+                if (newestId) {
+                  try {
+                    localStorage.setItem(NOTIFICATION_CURSOR_KEY, newestId);
+                  } catch (err) {
+                    if (console && console.warn) console.warn('Notification poll: localStorage.setItem failed', err);
+                  }
+                }
+              }
+              // Reset retry delay on success
+              retryDelay = 1000;
+              // Schedule next poll
+              if (pollTimer) clearTimeout(pollTimer);
+              pollTimer = setTimeout(pollNotifications, NOTIFICATION_POLL_INTERVAL);
+            })
+            .catch(error => {
+              console.error('Notification poll error:', error);
+              // Exponential backoff on error
+              const delay = Math.min(maxDelay, retryDelay);
+              retryDelay = Math.min(maxDelay, retryDelay * 2);
+              if (pollTimer) clearTimeout(pollTimer);
+              pollTimer = setTimeout(pollNotifications, delay);
+              // Show error toast
+              window.dispatchEvent(new CustomEvent('toast', { 
+                detail: { type: 'error', text: 'Live updates disconnected, retrying...' } 
+              }));
+            });
+          }
+          
+          // Start polling when DOM is ready
+          pollNotifications();
+          
+          // Pause polling when tab is hidden, resume when visible
+          document.addEventListener('visibilitychange', () => {
+            if (document.hidden) {
+              if (pollTimer) {
+                clearTimeout(pollTimer);
+                pollTimer = null;
+              }
+            } else {
+              if (!pollTimer) {
+                pollNotifications();
+              }
+            }
+          });
+          
+          // Clean up on unload
+          window.addEventListener('beforeunload', () => {
+            if (pollTimer) clearTimeout(pollTimer);
+          });
+        } catch (e) {
+          if (console && console.error) console.error('Notification polling init error', e);
+        }
+      });
+    </script>
+  </head>
+  <body>
+    <div class="min-h-screen bg-bg">
+      {% include 'components/layout/sidebar.html' %}
+      <div class="lg:pl-64 pt-14 lg:pt-0">
+        <main>
+          <div id="flash-area">{% block flash %}{% endblock %}</div>
+          {% block content %}{% endblock %}
+        </main>
+      </div>
+      {% include 'components/overlays/toast.html' %}
+    </div>
+    {% block scripts %}{% endblock %}
+  </body>
+</html>

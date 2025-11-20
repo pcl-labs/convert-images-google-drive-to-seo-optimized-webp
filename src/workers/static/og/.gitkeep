@@ -1,0 +1,13 @@
+# Placeholder for og-image.png
+# 
+# This directory is referenced in templates (base.html, base_public.html)
+# but the og-image.png file is currently missing.
+# 
+# To add the Open Graph image:
+# 1. Create or add og-image.png to this directory
+# 2. Recommended size: 1200x630 pixels
+# 3. The file will be served at /static/og/og-image.png
+
+
+
+

@@ -29,6 +29,14 @@ def notifications_stream_response(
     *,
     session: Optional[Dict[str, Any]] = None,
 ) -> StreamingResponse:
+    """SSE stream for notifications.
+    
+    Worker Compatibility:
+    - Works with Cloudflare Workers ASGI adapter
+    - Uses async generators with polling (5s interval)
+    - Long-running connections may hit Worker timeout limits (30s default, 300s max)
+    - Monitor timeout behavior in production; may need polling fallback for very long connections
+    """
     user_id = user.get("user_id")
     if not user_id:
         logger.warning("notifications_stream_response called without user_id in user context: %s", user)

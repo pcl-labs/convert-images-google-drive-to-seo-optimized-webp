@@ -1,13 +1,9 @@
-google-auth-oauthlib
 Pillow
 tqdm
 fastapi
 uvicorn[standard]
 python-multipart
 pillow-heif
-pyjwt[crypto]
-cryptography
-passlib[bcrypt]
 httpx
 pydantic-settings
 pytest

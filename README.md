@@ -41,9 +41,14 @@ pip install -r requirements.txt
 
 ## Usage
 
-### Web API Usage (FastAPI)
+The Quill API runs in two modes:
 
-The project includes a FastAPI web server for programmatic access.
+1. **Local Development**: FastAPI + Uvicorn (for development and testing)
+2. **Cloudflare Workers**: Python Worker runtime with D1 database and Queues (for production)
+
+Both modes use the same FastAPI application code. See `docs/CLOUDFLARE_WORKERS.md` for detailed setup instructions for both environments.
+
+### Local Development
 
 #### Start the API Server
 
@@ -62,6 +67,29 @@ The API will be available at `http://localhost:8000`
 
 For local development with queue processing, also set:
 - `USE_INLINE_QUEUE=true` (default) - Enables in-memory queue for local dev
+
+### Cloudflare Workers
+
+For Cloudflare Workers development and deployment:
+
+```bash
+# Development / Preview
+wrangler dev
+
+# Production Deployment
+wrangler deploy
+```
+
+**Prerequisites:**
+- Cloudflare account and `wrangler` CLI installed
+- D1 database created and migrated
+- Secrets configured via `wrangler secret put`
+
+See `docs/CLOUDFLARE_WORKERS.md` for complete setup instructions, including:
+- D1 database setup and migrations
+- Queue configuration
+- Secret management
+- Environment-specific configuration
 
 #### API Endpoints
 
@@ -204,15 +232,22 @@ Visit `http://localhost:8000/docs` in your browser for interactive API testing.
 ## File Structure
 
 ```
-├── api/                   # FastAPI web application
-│   └── main.py            # API entry point
-├── core/                  # Core business logic
-│   ├── drive_utils.py     # Google Drive API utilities
-│   ├── filename_utils.py  # Filename parsing/sanitization helpers
-│   └── image_processor.py # Image processing
-├── run_api.py             # Script to run the API server
+├── src/workers/           # Worker-compatible application code
+│   ├── main.py            # Cloudflare Worker entrypoint
+│   ├── api/               # FastAPI application
+│   │   ├── main.py        # FastAPI app initialization
+│   │   ├── config.py      # Configuration (Settings class)
+│   │   ├── app_factory.py # Application factory
+│   │   └── ...            # API routes, middleware, etc.
+│   ├── core/              # Core business logic
+│   ├── templates/         # Jinja2 templates (package-based)
+│   └── static/            # Static assets (package-based)
+├── run_api.py             # Script to run API server locally
+├── wrangler.toml          # Cloudflare Workers configuration
 ├── requirements.txt       # Python dependencies
 ├── docs/                  # Documentation
+│   ├── CLOUDFLARE_WORKERS.md  # Worker setup guide
+│   └── DEPLOYMENT.md      # Deployment instructions
 └── README.md             # This file
 ```
 
@@ -274,8 +309,7 @@ pytest tests/test_local.py -v
 Set in `.env` or your shell as needed:
 
 **Required:**
-- `JWT_SECRET_KEY` (required) - Secret key for JWT token generation and encryption key derivation
-- `ENCRYPTION_KEY` (required in production) - Base64 URL-safe 32-byte key used by the ChaCha20-Poly1305 cipher for encrypting sensitive data
+- `JWT_SECRET_KEY` (required) - Secret key for JWT token generation
 
 **OAuth (optional):**
 - `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_REDIRECT_URI`
@@ -302,8 +336,7 @@ For production, set `USE_INLINE_QUEUE=false` and provide `CLOUDFLARE_ACCOUNT_ID`
 
 ## Dependencies
 
-- `google-auth-oauthlib`: OAuth 2.0 authentication helpers
-- `httpx`: REST client for Google APIs
+- `httpx`: REST client for Google APIs and OAuth flows
 - `Pillow`: Image processing
 - `pillow-heif`: HEIC image support
 - `tqdm`: Progress bars
@@ -311,8 +344,10 @@ For production, set `USE_INLINE_QUEUE=false` and provide `CLOUDFLARE_ACCOUNT_ID`
 - `uvicorn`: ASGI server for FastAPI
 - `python-multipart`: Form data support
 - `pydantic`: Data validation for request/response models
-- `pyjwt`: JWT handling (HMAC-only)
+- Pure-Python JWT implementation (`src/workers/api/jwt.py`): HS256-only JWT signing/verification using standard library (`hmac`, `hashlib`, `base64`, `json`) - no external crypto libraries required, fully Cloudflare Workers-compatible
 - `pytest`: Testing framework
+
+**Note**: OAuth flows (GitHub and Google) are implemented using pure HTTP requests via `AsyncSimpleClient` - no `google-auth` or `google-auth-oauthlib` dependencies required. This approach is lightweight and compatible with Cloudflare Python Workers.
 
 ## Security Features
 
@@ -331,20 +366,31 @@ The application includes in-memory rate limiting middleware that tracks requests
     - **Redis** for distributed rate limiting
     - **Cloudflare Rate Limiting** (native CF feature)
 
-### Token Encryption
+### Authentication & Sessions
 
-Google OAuth tokens (`access_token` and `refresh_token`) are encrypted at rest using [ChaCha20-Poly1305](https://cryptography.io/en/latest/hazmat/primitives/aead/#chacha20-poly1305) via the `cryptography` library. Each ciphertext is a URL-safe base64 string containing:
+**JWT Tokens**: 
+- Pure-Python HS256 implementation in `src/workers/api/jwt.py`
+- Uses standard library only (`hmac`, `hashlib`, `base64`, `json`) - no C-extensions
+- Fully compatible with Cloudflare Python Workers
+- Tokens stored in `access_token` cookie (httponly, secure, samesite=lax)
 
-- Version byte
-- 96-bit nonce (randomly generated per encryption)
-- ChaCha20-Poly1305 ciphertext + authentication tag
+**OAuth Flows**:
+- GitHub and Google OAuth implemented via pure HTTP requests
+- No `google-auth` or `google-auth-oauthlib` dependencies
+- Uses `AsyncSimpleClient` for all OAuth API calls
+- Cloudflare Workers-compatible
 
-The cipher key comes from the `ENCRYPTION_KEY` environment variable (a base64-encoded 32 byte key suitable for ChaCha20-Poly1305).
+**Sessions**:
+- Browser sessions stored in D1 `user_sessions` table
+- Session ID stored in `session_id` cookie (httponly, secure, samesite=lax)
+- Sessions coexist with JWTs: JWTs provide stateless auth, sessions provide stateful tracking (activity, notifications, metadata)
+- Session TTL configurable via `SESSION_TTL_HOURS` (default: 72 hours)
 
-**Key Management:**
-- Generate the key with `python -c "import os, base64; print(base64.urlsafe_b64encode(os.urandom(32)).decode())"`
-- **Key Rotation**: deploy a new `ENCRYPTION_KEY`, then cycle user tokens (re-link Google integrations) or run a migration script that decrypts with the old key and re-encrypts with the new key. Once data is re-encrypted you can discard the old key.
-- **Backup**: Keep secure backups of both `JWT_SECRET_KEY` and `ENCRYPTION_KEY`; losing either means OAuth tokens become unrecoverable.
+### Data Storage Security
+
+Google OAuth tokens and other sensitive data are stored in Cloudflare D1, which automatically encrypts data at rest. No application-level encryption is required - Cloudflare handles encryption at the storage layer.
+
+**Note:** For production deployments, ensure your Cloudflare D1 database is properly configured and access is restricted via Workers bindings and proper authentication.
 
 ## License
 

@@ -1,5 +1,6 @@
 """
-Database utilities for Cloudflare D1 with a local SQLite fallback for development.
+Database utilities for Cloudflare D1, with an explicit SQLite path only for tests
+or special local runs via the LOCAL_SQLITE_PATH environment variable.
 """
 
 import json
@@ -27,26 +28,147 @@ TERMINAL_JOB_STATES = {
 }
 
 
+def _jsproxy_to_dict(obj: Any) -> Dict[str, Any]:
+    """Convert a JsProxy object (from D1/Pyodide) to a Python dict.
+    
+    D1 query results are returned as JsProxy objects which can't be directly
+    converted with dict(). This function handles the conversion by accessing
+    properties directly.
+    """
+    if obj is None:
+        return {}
+    
+    # JsProxy internal properties to exclude
+    JS_PROXY_INTERNALS = {'js_id', 'typeof', '__class__', '__dict__', '__module__'}
+    
+    # Check if it's a JsProxy (from pyodide.ffi)
+    try:
+        from pyodide.ffi import JsProxy
+        if isinstance(obj, JsProxy):
+            # JsProxy objects can be accessed like dicts, but we need to iterate
+            # over their keys to convert to Python dict
+            result = {}
+            # Try to get keys - JsProxy objects may have keys() method or be iterable
+            try:
+                # Try accessing as dict-like object
+                if hasattr(obj, 'keys'):
+                    for key in obj.keys():
+                        key_str = str(key)
+                        # Skip JsProxy internal properties
+                        if key_str not in JS_PROXY_INTERNALS:
+                            result[key_str] = obj[key]
+                elif hasattr(obj, '__iter__'):
+                    # If it's iterable, try to convert each item
+                    for key in obj:
+                        key_str = str(key)
+                        if key_str not in JS_PROXY_INTERNALS:
+                            result[key_str] = obj[key]
+                else:
+                    # Fallback: try to access common properties
+                    # D1 results typically have column names as attributes
+                    # Try to get all attributes
+                    for attr in dir(obj):
+                        if not attr.startswith('_') and attr not in JS_PROXY_INTERNALS:
+                            try:
+                                value = getattr(obj, attr)
+                                # Skip methods
+                                if not callable(value):
+                                    result[attr] = value
+                            except Exception:
+                                pass
+            except Exception as e:
+                logger.debug(f"Error converting JsProxy to dict: {e}")
+                # Last resort: try direct dict conversion
+                try:
+                    converted = dict(obj)
+                    # Filter out internals
+                    return {k: v for k, v in converted.items() if k not in JS_PROXY_INTERNALS}
+                except Exception:
+                    return {}
+            return result
+    except ImportError:
+        # pyodide not available (e.g., in tests), try regular dict conversion
+        pass
+    
+    # Not a JsProxy or pyodide not available, try regular conversion
+    if isinstance(obj, dict):
+        return obj
+    try:
+        return dict(obj)
+    except (TypeError, ValueError):
+        return {}
+
+
+def _jsproxy_to_list(obj: Any) -> List[Any]:
+    """Convert a JsProxy array or list to a Python list.
+    
+    D1 query results from .all() return a result object with a .results property
+    that contains an array of JsProxy objects.
+    """
+    if obj is None:
+        return []
+    
+    # Check if it has a .results property (D1 result object)
+    if hasattr(obj, 'results'):
+        obj = obj.results
+    
+    # Check if it's a JsProxy array
+    try:
+        from pyodide.ffi import JsProxy
+        if isinstance(obj, JsProxy):
+            # Convert JsProxy array to Python list
+            try:
+                return [_jsproxy_to_dict(item) if hasattr(item, 'keys') or isinstance(item, JsProxy) else item for item in obj]
+            except Exception:
+                # Fallback: try to convert directly
+                try:
+                    return list(obj)
+                except Exception:
+                    return []
+    except ImportError:
+        pass
+    
+    # Not a JsProxy, try regular conversion
+    if isinstance(obj, list):
+        return obj
+    try:
+        return list(obj)
+    except (TypeError, ValueError):
+        return []
+
+
 class Database:
-    """Database wrapper for D1 operations with SQLite fallback."""
+    """Database wrapper for D1 operations.
+    
+    In Cloudflare Workers, a D1 binding (env.DB) is required. SQLite is only
+    available when explicitly configured via the LOCAL_SQLITE_PATH environment
+    variable (primarily for tests and non-Workers tooling).
+    """
     
     def __init__(self, db=None):
         """Initialize database connection.
-        If Cloudflare D1 binding is unavailable, use a local SQLite database for development.
+        - If D1 binding is provided (has 'prepare' method), use D1 (Cloudflare Workers).
+        - If LOCAL_SQLITE_PATH is explicitly set, use SQLite (for tests or tools only).
+        - Otherwise, raise DatabaseError requiring a D1 binding.
         """
         self.db = db or settings.d1_database
         self._sqlite_path: Optional[str] = None
-        if not self.db:
-            # Local fallback: initialize SQLite in repo directory
-            db_path = os.environ.get("LOCAL_SQLITE_PATH", os.path.join(os.getcwd(), "dev.db"))
-            self._sqlite_path = db_path
-            try:
-                # Apply migrations once at startup using a temporary connection
+        
+        # Check if we have a D1 binding (Cloudflare Workers)
+        is_d1 = self.db and hasattr(self.db, "prepare")
+        
+        if not is_d1:
+            # No D1 binding - only allow SQLite if explicitly set (for tests/tools)
+            sqlite_path = os.environ.get("LOCAL_SQLITE_PATH")
+            if sqlite_path:
+                # SQLite only allowed when explicitly set via LOCAL_SQLITE_PATH (for tests)
+                self._sqlite_path = sqlite_path
                 self._apply_sqlite_migrations()
-                logger.info(f"Initialized local SQLite database at {db_path}")
-            except Exception as e:
-                logger.error(f"Failed to initialize local SQLite database: {e}", exc_info=True)
-                raise DatabaseError("Database not initialized") from e
+            else:
+                raise DatabaseError(
+                    "Database not configured: D1 binding required. "
+                    "For tests, set LOCAL_SQLITE_PATH environment variable."
+                )
     
     def _apply_sqlite_migrations(self) -> None:
         """Apply migrations from migrations/schema.sql to local SQLite using a temp connection."""
@@ -483,23 +605,109 @@ async def create_user(
     google_id: Optional[str] = None,
     email: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Create a new user."""
+    """Create a new user.
+    
+    Handles UNIQUE constraint violations on github_id/google_id by checking for existing users first.
+    """
+    # Check if user already exists by user_id
+    existing = await get_user_by_id(db, user_id)
+    if existing:
+        # User exists - update if needed
+        github_id_val = github_id if github_id is not None else ""
+        google_id_val = google_id if google_id is not None else ""
+        email_val = email if email is not None else ""
+        
+        query = """
+            UPDATE users SET
+                github_id = COALESCE(NULLIF(?, ''), github_id),
+                google_id = COALESCE(NULLIF(?, ''), google_id),
+                email = COALESCE(NULLIF(?, ''), email),
+                updated_at = datetime('now')
+            WHERE user_id = ?
+            RETURNING *
+        """
+        result = await db.execute(query, (github_id_val, google_id_val, email_val, user_id))
+        if result:
+            return _jsproxy_to_dict(result) if result else existing
+        return existing
+    
+    # User doesn't exist - check for UNIQUE constraint violations on github_id/google_id
+    # D1 doesn't accept Python None - convert to empty string for optional fields
+    github_id_val = github_id if github_id is not None else ""
+    google_id_val = google_id if google_id is not None else ""
+    email_val = email if email is not None else ""
+    
+    # Check if github_id or google_id would violate UNIQUE constraint
+    # Note: Empty strings can also violate UNIQUE constraints, so we check even for empty values
+    # However, we only check if the value is non-empty to avoid unnecessary queries
+    # The try/except below will catch UNIQUE violations for empty strings
+    if github_id_val:
+        existing_github = await get_user_by_github_id(db, github_id_val)
+        if existing_github and existing_github.get("user_id") != user_id:
+            # github_id already exists for a different user - use existing user
+            logger.warning(f"github_id {github_id_val} already exists for user {existing_github.get('user_id')}, returning existing user")
+            return existing_github
+    
+    if google_id_val:
+        existing_google = await get_user_by_google_id(db, google_id_val)
+        if existing_google and existing_google.get("user_id") != user_id:
+            # google_id already exists for a different user - use existing user
+            logger.warning(f"google_id {google_id_val} already exists for user {existing_google.get('user_id')}, returning existing user")
+            return existing_google
+    
+    # Check if email would violate UNIQUE constraint
+    if email_val:
+        existing_email = await get_user_by_email(db, email_val)
+        if existing_email and existing_email.get("user_id") != user_id:
+            # email already exists for a different user - use existing user
+            logger.warning(f"email {email_val} already exists for user {existing_email.get('user_id')}, returning existing user")
+            return existing_email
+    
+    # Safe to insert - no conflicts
     query = """
         INSERT INTO users (user_id, github_id, google_id, email)
         VALUES (?, ?, ?, ?)
-        ON CONFLICT(user_id) DO UPDATE SET
-            github_id = COALESCE(excluded.github_id, users.github_id),
-            google_id = COALESCE(excluded.google_id, users.google_id),
-            email = COALESCE(excluded.email, users.email),
-            updated_at = datetime('now')
         RETURNING *
     """
-    result = await db.execute(query, (user_id, github_id, google_id, email))
-    if not result:
-        # If RETURNING doesn't work, fetch the user manually
-        logger.warning(f"RETURNING clause didn't return result, fetching user manually: {user_id}")
-        return await get_user_by_id(db, user_id) or {}
-    return dict(result) if result else {}
+    try:
+        result = await db.execute(query, (user_id, github_id_val, google_id_val, email_val))
+        if not result:
+            # If RETURNING doesn't work, fetch the user manually
+            logger.warning(f"RETURNING clause didn't return result, fetching user manually: {user_id}")
+            return await get_user_by_id(db, user_id) or {}
+        # Convert JsProxy to dict (function is defined earlier in this file)
+        return _jsproxy_to_dict(result) if result else {}
+    except DatabaseError as e:
+        # Handle UNIQUE constraint violations gracefully
+        if _is_unique_constraint_violation(e):
+            # User might have been created by another request - try to fetch
+            logger.warning(f"UNIQUE constraint violation creating user {user_id}, fetching existing user: {e}")
+            existing = await get_user_by_id(db, user_id)
+            if existing:
+                return existing
+            # If still not found, check by github_id/google_id/email (including empty strings)
+            # Empty strings can also violate UNIQUE constraints, so we check even if the value is empty
+            try:
+                existing = await get_user_by_github_id(db, github_id_val)
+                if existing:
+                    return existing
+            except Exception:
+                pass
+            try:
+                existing = await get_user_by_google_id(db, google_id_val)
+                if existing:
+                    return existing
+            except Exception:
+                pass
+            try:
+                if email_val:
+                    existing = await get_user_by_email(db, email_val)
+                    if existing:
+                        return existing
+            except Exception:
+                pass
+        # Re-raise if not a UNIQUE constraint violation or user not found
+        raise
 
 
 async def create_job_extended(
@@ -556,28 +764,37 @@ async def get_user_by_id(db: Database, user_id: str) -> Optional[Dict[str, Any]]
     """Get user by ID."""
     query = "SELECT * FROM users WHERE user_id = ?"
     result = await db.execute(query, (user_id,))
-    return dict(result) if result else None
+    if not result:
+        return None
+    # Convert JsProxy to dict
+    return _jsproxy_to_dict(result)
 
 
 async def get_user_by_github_id(db: Database, github_id: str) -> Optional[Dict[str, Any]]:
     """Get user by GitHub ID."""
     query = "SELECT * FROM users WHERE github_id = ?"
     result = await db.execute(query, (github_id,))
-    return dict(result) if result else None
+    if not result:
+        return None
+    return _jsproxy_to_dict(result)
 
 
 async def get_user_by_google_id(db: Database, google_id: str) -> Optional[Dict[str, Any]]:
     """Get user by Google subject identifier."""
     query = "SELECT * FROM users WHERE google_id = ?"
     result = await db.execute(query, (google_id,))
-    return dict(result) if result else None
+    if not result:
+        return None
+    return _jsproxy_to_dict(result)
 
 
 async def get_user_by_email(db: Database, email: str) -> Optional[Dict[str, Any]]:
     """Get user by email address."""
     query = "SELECT * FROM users WHERE email = ?"
     result = await db.execute(query, (email,))
-    return dict(result) if result else None
+    if not result:
+        return None
+    return _jsproxy_to_dict(result)
 
 
 async def delete_user_account(db: Database, user_id: str) -> bool:
@@ -763,24 +980,7 @@ async def get_user_by_api_key(db: Database, api_key: str) -> Optional[Dict[str, 
 
 
 # Google OAuth token operations (per integration)
-def _decrypt_google_token_row(row: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    if not row:
-        return None
-    from .crypto import decrypt
-    decoded = dict(row)
-    for field in ("access_token", "refresh_token"):
-        if decoded.get(field):
-            try:
-                decoded[field] = decrypt(decoded[field])
-            except Exception as e:
-                # Log decryption failure with context and return None to prevent processing partial data
-                logger.error(
-                    f"Failed to decrypt {field} for user_id={decoded.get('user_id')}, "
-                    f"integration={decoded.get('integration')}",
-                    exc_info=True
-                )
-                return None
-    return decoded
+# Note: Tokens are stored as plain text - Cloudflare D1 encrypts data at rest automatically
 
 
 async def list_google_tokens(db: Database, user_id: str) -> List[Dict[str, Any]]:
@@ -789,10 +989,10 @@ async def list_google_tokens(db: Database, user_id: str) -> List[Dict[str, Any]]
     tokens: List[Dict[str, Any]] = []
     if not rows:
         return tokens
-    for row in rows:
-        decoded = _decrypt_google_token_row(dict(row))
-        if decoded:
-            tokens.append(decoded)
+    # Convert JsProxy results to Python list
+    rows_list = _jsproxy_to_list(rows)
+    for row in rows_list:
+        tokens.append(_jsproxy_to_dict(row))
     return tokens
 
 
@@ -803,7 +1003,8 @@ async def get_google_token(db: Database, user_id: str, integration: str) -> Opti
     )
     if not result:
         return None
-    return _decrypt_google_token_row(dict(result))
+    # Convert JsProxy to dict
+    return _jsproxy_to_dict(result)
 
 
 async def upsert_google_token(
@@ -816,11 +1017,11 @@ async def upsert_google_token(
     token_type: Optional[str],
     scopes: Optional[str],
 ) -> None:
-    """Insert or update Google OAuth tokens for a specific integration."""
-    from .crypto import encrypt
+    """Insert or update Google OAuth tokens for a specific integration.
+    
+    Tokens are stored as plain text - Cloudflare D1 encrypts data at rest automatically.
+    """
     token_id = f"{user_id}:{integration}"
-    encrypted_access = encrypt(access_token) if access_token else None
-    encrypted_refresh = encrypt(refresh_token) if refresh_token else None
     query = """
         INSERT INTO google_integration_tokens (
             token_id, user_id, integration, access_token, refresh_token, expiry, token_type, scopes, created_at, updated_at
@@ -835,7 +1036,7 @@ async def upsert_google_token(
     """
     await db.execute(
         query,
-        (token_id, user_id, integration, encrypted_access, encrypted_refresh, expiry, token_type, scopes),
+        (token_id, user_id, integration, access_token, refresh_token, expiry, token_type, scopes),
     )
 
 
@@ -846,12 +1047,13 @@ async def update_google_token_expiry(
     access_token: str,
     expiry: Optional[str],
 ) -> None:
-    """Update access token and expiry after refresh."""
-    from .crypto import encrypt
-    encrypted_access = encrypt(access_token) if access_token else None
+    """Update access token and expiry after refresh.
+    
+    Tokens are stored as plain text - Cloudflare D1 encrypts data at rest automatically.
+    """
     await db.execute(
         "UPDATE google_integration_tokens SET access_token = ?, expiry = ?, updated_at = datetime('now') WHERE user_id = ? AND integration = ?",
-        (encrypted_access, expiry, user_id, integration),
+        (access_token, expiry, user_id, integration),
     )
 
 
@@ -1132,7 +1334,11 @@ async def list_documents(
         "SELECT COUNT(*) as total FROM documents WHERE user_id = ?",
         (user_id,),
     )
-    total = dict(count_row).get("total", 0) if count_row else 0
+    if count_row:
+        count_dict = _jsproxy_to_dict(count_row)
+        total = count_dict.get("total", 0)
+    else:
+        total = 0
     rows = await db.execute_all(
         """
         SELECT * FROM documents
@@ -1142,13 +1348,19 @@ async def list_documents(
         """,
         (user_id, page_size, offset),
     )
-    docs = [dict(row) for row in rows] if rows else []
+    if not rows:
+        return [], total
+    # Convert JsProxy results to Python list
+    rows_list = _jsproxy_to_list(rows)
+    docs = [_jsproxy_to_dict(row) for row in rows_list]
     return docs, total
 
 
 async def get_drive_workspace(db: Database, user_id: str) -> Optional[Dict[str, Any]]:
     row = await db.execute("SELECT * FROM drive_workspaces WHERE user_id = ?", (user_id,))
-    return dict(row) if row else None
+    if not row:
+        return None
+    return _jsproxy_to_dict(row)
 
 
 async def upsert_drive_workspace(
@@ -1174,7 +1386,9 @@ async def upsert_drive_workspace(
         """
     )
     row = await db.execute(query, (user_id, root_folder_id, drafts_folder_id, published_folder_id, meta_json))
-    return dict(row) if row else {}
+    if not row:
+        return {}
+    return _jsproxy_to_dict(row)
 
 
 async def upsert_drive_watch(
@@ -1218,7 +1432,9 @@ async def upsert_drive_watch(
             state,
         ),
     )
-    return dict(row) if row else {}
+    if not row:
+        return {}
+    return _jsproxy_to_dict(row)
 
 
 async def delete_drive_watch(
@@ -1247,12 +1463,16 @@ async def delete_drive_watch(
 
 async def get_drive_watch_by_document(db: Database, document_id: str) -> Optional[Dict[str, Any]]:
     row = await db.execute("SELECT * FROM drive_watches WHERE document_id = ?", (document_id,))
-    return dict(row) if row else None
+    if not row:
+        return None
+    return _jsproxy_to_dict(row)
 
 
 async def get_drive_watch_by_channel(db: Database, channel_id: str) -> Optional[Dict[str, Any]]:
     row = await db.execute("SELECT * FROM drive_watches WHERE channel_id = ?", (channel_id,))
-    return dict(row) if row else None
+    if not row:
+        return None
+    return _jsproxy_to_dict(row)
 
 
 async def list_drive_watches_for_user(db: Database, user_id: str) -> List[Dict[str, Any]]:
@@ -1264,7 +1484,11 @@ async def list_drive_watches_for_user(db: Database, user_id: str) -> List[Dict[s
         """,
         (user_id,),
     )
-    return [dict(row) for row in rows or []]
+    if not rows:
+        return []
+    # Convert JsProxy results to Python list
+    rows_list = _jsproxy_to_list(rows)
+    return [_jsproxy_to_dict(row) for row in rows_list]
 
 
 async def list_drive_watches_expiring(
@@ -1298,7 +1522,11 @@ async def list_drive_watches_expiring(
             """,
             (cutoff_iso,),
         )
-    return [dict(row) for row in rows or []]
+    if not rows:
+        return []
+    # Convert JsProxy results to Python list
+    rows_list = _jsproxy_to_list(rows)
+    return [_jsproxy_to_dict(row) for row in rows_list]
 
 
 async def update_drive_watch_fields(
@@ -1735,6 +1963,486 @@ async def ensure_sessions_schema(db: Database) -> None:
     await db.batch(stmts)
 
 
+async def ensure_full_schema(db: Database) -> None:
+    """Apply the full database schema from migrations/schema.sql to D1.
+    
+    This function applies all tables, indexes, and triggers defined in the schema.
+    All statements use IF NOT EXISTS, so it's safe to run multiple times.
+    """
+    logger.info("Applying full database schema to D1")
+    
+    # Split schema into individual statements and execute them
+    # We'll apply the schema in logical groups to handle dependencies
+    
+    # Core tables first (users must exist before others due to foreign keys)
+    core_tables = [
+        (
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                user_id TEXT PRIMARY KEY,
+                github_id TEXT UNIQUE,
+                google_id TEXT UNIQUE,
+                email TEXT NOT NULL UNIQUE,
+                preferences TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            """,
+            (),
+        ),
+        ("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email)", ()),
+        ("CREATE INDEX IF NOT EXISTS idx_users_github_id ON users(github_id)", ()),
+        ("CREATE INDEX IF NOT EXISTS idx_users_google_id ON users(google_id)", ()),
+    ]
+    
+    # API keys table
+    api_keys_tables = [
+        (
+            """
+            CREATE TABLE IF NOT EXISTS api_keys (
+                key_hash TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                last_used TEXT,
+                salt TEXT,
+                iterations INTEGER,
+                lookup_hash TEXT,
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+            )
+            """,
+            (),
+        ),
+        ("CREATE INDEX IF NOT EXISTS idx_api_keys_user_id ON api_keys(user_id)", ()),
+        ("CREATE INDEX IF NOT EXISTS idx_api_keys_lookup_hash ON api_keys(lookup_hash)", ()),
+    ]
+    
+    # Jobs table
+    jobs_tables = [
+        (
+            """
+            CREATE TABLE IF NOT EXISTS jobs (
+                job_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'completed', 'failed', 'cancelled')),
+                progress TEXT NOT NULL DEFAULT '{}',
+                drive_folder TEXT,
+                extensions TEXT,
+                job_type TEXT NOT NULL DEFAULT 'optimize_drive',
+                document_id TEXT,
+                output TEXT,
+                payload TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                completed_at TEXT,
+                error TEXT,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                next_attempt_at TEXT,
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+                FOREIGN KEY (document_id) REFERENCES documents(document_id)
+            )
+            """,
+            (),
+        ),
+        ("CREATE INDEX IF NOT EXISTS idx_jobs_user_id ON jobs(user_id)", ()),
+        ("CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status)", ()),
+        ("CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at DESC)", ()),
+        ("CREATE INDEX IF NOT EXISTS idx_jobs_status_next_attempt ON jobs(status, next_attempt_at)", ()),
+        ("CREATE INDEX IF NOT EXISTS idx_jobs_job_type ON jobs(job_type)", ()),
+        ("CREATE INDEX IF NOT EXISTS idx_jobs_document_id ON jobs(document_id)", ()),
+    ]
+    
+    # Jobs triggers
+    jobs_triggers = [
+        (
+            """
+            CREATE TRIGGER IF NOT EXISTS check_job_status 
+            BEFORE INSERT ON jobs
+            WHEN NEW.status NOT IN ('pending', 'processing', 'completed', 'failed', 'cancelled')
+            BEGIN
+                SELECT RAISE(ABORT, 'Invalid status value. Must be one of: pending, processing, completed, failed, cancelled');
+            END
+            """,
+            (),
+        ),
+        (
+            """
+            CREATE TRIGGER IF NOT EXISTS check_job_status_update
+            BEFORE UPDATE ON jobs
+            WHEN NEW.status NOT IN ('pending', 'processing', 'completed', 'failed', 'cancelled')
+            BEGIN
+                SELECT RAISE(ABORT, 'Invalid status value. Must be one of: pending, processing, completed, failed, cancelled');
+            END
+            """,
+            (),
+        ),
+    ]
+    
+    # Google integration tokens
+    google_tokens_tables = [
+        (
+            """
+            CREATE TABLE IF NOT EXISTS google_integration_tokens (
+                token_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                integration TEXT NOT NULL,
+                access_token TEXT,
+                refresh_token TEXT,
+                expiry TEXT,
+                token_type TEXT,
+                scopes TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(user_id, integration),
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+            )
+            """,
+            (),
+        ),
+    ]
+    
+    # Documents table (needed before document_versions)
+    documents_tables = [
+        (
+            """
+            CREATE TABLE IF NOT EXISTS documents (
+                document_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                source_ref TEXT,
+                raw_text TEXT,
+                metadata TEXT,
+                content_format TEXT,
+                frontmatter TEXT,
+                latest_version_id TEXT,
+                drive_folder_id TEXT,
+                drive_drafts_folder_id TEXT,
+                drive_media_folder_id TEXT,
+                drive_published_folder_id TEXT,
+                drive_file_id TEXT,
+                drive_revision_id TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+            )
+            """,
+            (),
+        ),
+        ("CREATE INDEX IF NOT EXISTS idx_documents_user ON documents(user_id, created_at DESC)", ()),
+        ("CREATE INDEX IF NOT EXISTS idx_documents_source ON documents(source_type, source_ref)", ()),
+    ]
+    
+    # Document versions
+    document_versions_tables = [
+        (
+            """
+            CREATE TABLE IF NOT EXISTS document_versions (
+                version_id TEXT PRIMARY KEY,
+                document_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                version INTEGER NOT NULL,
+                content_format TEXT NOT NULL,
+                frontmatter TEXT,
+                body_mdx TEXT,
+                body_html TEXT,
+                outline TEXT,
+                chapters TEXT,
+                sections TEXT,
+                assets TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (document_id) REFERENCES documents(document_id) ON DELETE CASCADE,
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+                UNIQUE(document_id, version)
+            )
+            """,
+            (),
+        ),
+        ("CREATE INDEX IF NOT EXISTS idx_document_versions_document ON document_versions(document_id, version DESC)", ()),
+        ("CREATE UNIQUE INDEX IF NOT EXISTS unique_document_version ON document_versions(document_id, version)", ()),
+    ]
+    
+    # Document exports
+    document_exports_tables = [
+        (
+            """
+            CREATE TABLE IF NOT EXISTS document_exports (
+                export_id TEXT PRIMARY KEY,
+                document_id TEXT NOT NULL,
+                version_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                target TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued','pending','processing','completed','failed','cancelled')),
+                payload TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (document_id) REFERENCES documents(document_id) ON DELETE CASCADE,
+                FOREIGN KEY (version_id) REFERENCES document_versions(version_id) ON DELETE CASCADE,
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+            )
+            """,
+            (),
+        ),
+        ("CREATE INDEX IF NOT EXISTS idx_document_exports_document ON document_exports(document_id, created_at DESC)", ()),
+    ]
+    
+    # Document exports triggers
+    document_exports_triggers = [
+        (
+            """
+            CREATE TRIGGER IF NOT EXISTS check_document_export_status 
+            BEFORE INSERT ON document_exports
+            WHEN NEW.status NOT IN ('queued','pending','processing','completed','failed','cancelled')
+            BEGIN
+                SELECT RAISE(ABORT, 'Invalid status value for document_exports.');
+            END
+            """,
+            (),
+        ),
+        (
+            """
+            CREATE TRIGGER IF NOT EXISTS check_document_export_status_update
+            BEFORE UPDATE ON document_exports
+            WHEN NEW.status NOT IN ('queued','pending','processing','completed','failed','cancelled')
+            BEGIN
+                SELECT RAISE(ABORT, 'Invalid status value for document_exports.');
+            END
+            """,
+            (),
+        ),
+        (
+            """
+            CREATE TRIGGER IF NOT EXISTS document_exports_set_updated_at
+            AFTER UPDATE ON document_exports
+            WHEN NEW.updated_at = OLD.updated_at
+            BEGIN
+                UPDATE document_exports SET updated_at = datetime('now') WHERE export_id = OLD.export_id;
+            END
+            """,
+            (),
+        ),
+    ]
+    
+    # Pipeline events
+    pipeline_events_tables = [
+        (
+            """
+            CREATE TABLE IF NOT EXISTS pipeline_events (
+                sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_id TEXT NOT NULL UNIQUE,
+                user_id TEXT NOT NULL,
+                job_id TEXT,
+                event_type TEXT NOT NULL,
+                stage TEXT,
+                status TEXT,
+                message TEXT,
+                data TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+                FOREIGN KEY (job_id) REFERENCES jobs(job_id) ON DELETE CASCADE
+            )
+            """,
+            (),
+        ),
+        ("CREATE INDEX IF NOT EXISTS idx_pipeline_events_user ON pipeline_events(user_id, created_at DESC)", ()),
+        ("CREATE INDEX IF NOT EXISTS idx_pipeline_events_job ON pipeline_events(job_id, sequence DESC)", ()),
+    ]
+    
+    # Pipeline events triggers
+    pipeline_events_triggers = [
+        (
+            """
+            CREATE TRIGGER IF NOT EXISTS check_pipeline_event_type
+            BEFORE INSERT ON pipeline_events
+            WHEN NEW.event_type NOT IN (
+                'ingest_youtube',
+                'drive_workspace',
+                'drive_sync',
+                'optimize_drive',
+                'ingest_drive',
+                'generate_blog',
+                'outline.generate',
+                'chapters.organize',
+                'blog.compose'
+            )
+            BEGIN
+                SELECT RAISE(ABORT, 'Invalid event_type value for pipeline_events.');
+            END
+            """,
+            (),
+        ),
+        (
+            """
+            CREATE TRIGGER IF NOT EXISTS check_pipeline_event_type_update
+            BEFORE UPDATE ON pipeline_events
+            WHEN NEW.event_type NOT IN (
+                'ingest_youtube',
+                'drive_workspace',
+                'drive_sync',
+                'optimize_drive',
+                'ingest_drive',
+                'generate_blog',
+                'outline.generate',
+                'chapters.organize',
+                'blog.compose'
+            )
+            BEGIN
+                SELECT RAISE(ABORT, 'Invalid event_type value for pipeline_events.');
+            END
+            """,
+            (),
+        ),
+    ]
+    
+    # Drive workspaces
+    drive_workspaces_tables = [
+        (
+            """
+            CREATE TABLE IF NOT EXISTS drive_workspaces (
+                user_id TEXT PRIMARY KEY,
+                root_folder_id TEXT NOT NULL,
+                drafts_folder_id TEXT NOT NULL,
+                published_folder_id TEXT NOT NULL,
+                metadata TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+            )
+            """,
+            (),
+        ),
+    ]
+    
+    # Drive watches
+    drive_watches_tables = [
+        (
+            """
+            CREATE TABLE IF NOT EXISTS drive_watches (
+                watch_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                document_id TEXT NOT NULL,
+                drive_file_id TEXT NOT NULL,
+                channel_id TEXT NOT NULL,
+                resource_id TEXT NOT NULL,
+                resource_uri TEXT,
+                expires_at TEXT,
+                state TEXT NOT NULL DEFAULT 'active',
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+                FOREIGN KEY (document_id) REFERENCES documents(document_id) ON DELETE CASCADE,
+                UNIQUE(document_id),
+                UNIQUE(channel_id)
+            )
+            """,
+            (),
+        ),
+        ("CREATE INDEX IF NOT EXISTS idx_drive_watches_user ON drive_watches(user_id)", ()),
+        ("CREATE INDEX IF NOT EXISTS idx_drive_watches_expires_at ON drive_watches(expires_at)", ()),
+    ]
+    
+    # Drive watches triggers
+    drive_watches_triggers = [
+        (
+            """
+            CREATE TRIGGER IF NOT EXISTS drive_watches_set_updated_at
+            AFTER UPDATE ON drive_watches
+            WHEN NEW.updated_at = OLD.updated_at
+            BEGIN
+                UPDATE drive_watches SET updated_at = datetime('now') WHERE watch_id = OLD.watch_id;
+            END
+            """,
+            (),
+        ),
+    ]
+    
+    # Usage events
+    usage_events_tables = [
+        (
+            """
+            CREATE TABLE IF NOT EXISTS usage_events (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                job_id TEXT NOT NULL,
+                event_type TEXT NOT NULL CHECK (event_type IN ('download','transcribe','persist','outline','chapters','compose')),
+                metrics TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+                FOREIGN KEY (job_id) REFERENCES jobs(job_id) ON DELETE CASCADE
+            )
+            """,
+            (),
+        ),
+        ("CREATE INDEX IF NOT EXISTS idx_usage_events_user_created ON usage_events(user_id, created_at DESC)", ()),
+        ("CREATE INDEX IF NOT EXISTS idx_usage_events_job ON usage_events(job_id, created_at DESC)", ()),
+    ]
+    
+    # Step invocations
+    step_invocations_tables = [
+        (
+            """
+            CREATE TABLE IF NOT EXISTS step_invocations (
+                idempotency_key TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                step_type TEXT NOT NULL,
+                request_hash TEXT NOT NULL,
+                response_body TEXT NOT NULL,
+                status_code INTEGER NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (idempotency_key, user_id)
+            )
+            """,
+            (),
+        ),
+        ("CREATE INDEX IF NOT EXISTS idx_step_invocations_user ON step_invocations(user_id, created_at DESC)", ()),
+        ("CREATE INDEX IF NOT EXISTS idx_step_invocations_user_hash ON step_invocations(user_id, request_hash)", ()),
+    ]
+    
+    # Apply schema in dependency order
+    try:
+        await db.batch(core_tables)
+        logger.info("Applied core tables (users)")
+        
+        await db.batch(api_keys_tables)
+        logger.info("Applied api_keys table")
+        
+        await db.batch(documents_tables)
+        logger.info("Applied documents table")
+        
+        await db.batch(document_versions_tables)
+        logger.info("Applied document_versions table")
+        
+        await db.batch(document_exports_tables)
+        await db.batch(document_exports_triggers)
+        logger.info("Applied document_exports table and triggers")
+        
+        await db.batch(jobs_tables)
+        await db.batch(jobs_triggers)
+        logger.info("Applied jobs table and triggers")
+        
+        await db.batch(pipeline_events_tables)
+        await db.batch(pipeline_events_triggers)
+        logger.info("Applied pipeline_events table and triggers")
+        
+        await db.batch(google_tokens_tables)
+        logger.info("Applied google_integration_tokens table")
+        
+        await db.batch(drive_workspaces_tables)
+        logger.info("Applied drive_workspaces table")
+        
+        await db.batch(drive_watches_tables)
+        await db.batch(drive_watches_triggers)
+        logger.info("Applied drive_watches table and triggers")
+        
+        await db.batch(usage_events_tables)
+        logger.info("Applied usage_events table")
+        
+        await db.batch(step_invocations_tables)
+        logger.info("Applied step_invocations table")
+        
+        logger.info("Full database schema applied successfully")
+    except Exception as e:
+        logger.error(f"Error applying full schema: {e}", exc_info=True)
+        raise DatabaseError(f"Failed to apply database schema: {str(e)}")
+
+
 async def emit_event(db: Database, evt_id: str, type_: str, aggregate_type: str, aggregate_id: str, payload: dict | None) -> None:
     await db.execute(
         "INSERT OR IGNORE INTO events (id, type, aggregate_type, aggregate_id, payload, occurred_at) VALUES (?, ?, ?, ?, ?, datetime('now'))",
@@ -1898,7 +2606,40 @@ async def create_user_session(
     user_agent: Optional[str] = None,
     extra: Optional[Dict[str, Any]] = None,
 ) -> None:
+    """Create or update a user session in the user_sessions table.
+    
+    Sessions are stored in D1 and tracked via a session_id cookie. They coexist with
+    JWT tokens (stored in access_token cookie) - JWTs provide stateless authentication
+    while sessions provide stateful tracking (activity, notifications, metadata).
+    
+    Session data is stored unencrypted in D1 (Cloudflare provides encryption at rest).
+    No field-level encryption is used.
+    
+    Args:
+        db: Database connection
+        session_id: Unique session identifier (typically from cookie)
+        user_id: User identifier this session belongs to
+        expires_at: When the session expires (UTC datetime)
+        ip_address: Optional IP address of the client
+        user_agent: Optional user agent string
+        extra: Optional JSON-serializable metadata dictionary
+    
+    The session is stored in the user_sessions table with the following structure:
+    - session_id (PRIMARY KEY): Unique session identifier
+    - user_id: Foreign key to users table
+    - created_at: When the session was created
+    - last_seen_at: Last activity timestamp (updated by touch_user_session)
+    - expires_at: Session expiration time
+    - last_notification_id: Cursor for notification streaming
+    - ip_address, user_agent: Client metadata
+    - revoked_at: Revocation timestamp (NULL if active)
+    - extra: JSON metadata (e.g., OAuth provider)
+    """
     now = datetime.now(timezone.utc)
+    # D1 doesn't accept Python None/undefined - use empty strings for optional fields
+    ip_address_val = ip_address if ip_address is not None else ""
+    user_agent_val = user_agent if user_agent is not None else ""
+    
     await db.execute(
         """
         INSERT INTO user_sessions (session_id, user_id, created_at, last_seen_at, expires_at, ip_address, user_agent, extra)
@@ -1917,21 +2658,36 @@ async def create_user_session(
             _serialize_timestamp(now),
             _serialize_timestamp(now),
             _serialize_timestamp(expires_at),
-            ip_address,
-            user_agent,
+            ip_address_val,
+            user_agent_val,
             json.dumps(extra or {}),
         ),
     )
 
 
 async def get_user_session(db: Database, session_id: str) -> Optional[Dict[str, Any]]:
+    """Retrieve a user session by session_id.
+    
+    Sessions are loaded from the user_sessions table in D1. The session_id typically
+    comes from the session_id cookie set during login.
+    
+    Args:
+        db: Database connection
+        session_id: Session identifier to look up
+    
+    Returns:
+        Dictionary with session fields (session_id, user_id, created_at, last_seen_at,
+        expires_at, last_notification_id, ip_address, user_agent, revoked_at, extra)
+        or None if session not found
+    """
     row = await db.execute(
         "SELECT session_id, user_id, created_at, last_seen_at, expires_at, last_notification_id, ip_address, user_agent, revoked_at, extra FROM user_sessions WHERE session_id = ?",
         (session_id,),
     )
     if not row:
         return None
-    return dict(row)
+    # Convert JsProxy to dict
+    return _jsproxy_to_dict(row)
 
 
 async def touch_user_session(
@@ -1944,6 +2700,20 @@ async def touch_user_session(
     extra: Optional[Dict[str, Any]] = None,
     revoked_at: datetime | str | None = None,
 ) -> None:
+    """Update session fields (touch/refresh session).
+    
+    Used to update session activity (last_seen_at), extend expiration, update
+    notification cursor, or revoke the session.
+    
+    Args:
+        db: Database connection
+        session_id: Session identifier to update
+        last_seen_at: Update last activity timestamp
+        expires_at: Update expiration time
+        last_notification_id: Update notification cursor
+        extra: Update metadata dictionary
+        revoked_at: Set revocation timestamp (to revoke session)
+    """
     updates: list[str] = []
     params: list[Any] = []
     if last_seen_at is not None:

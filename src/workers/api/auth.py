@@ -8,10 +8,11 @@ import base64
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, Tuple
 from urllib.parse import urlencode
-import jwt
 import logging
 
-from simple_http import AsyncSimpleClient, HTTPStatusError, RequestError
+from .jwt import encode, decode, ExpiredSignatureError, InvalidTokenError
+
+from .simple_http import AsyncSimpleClient, HTTPStatusError, RequestError
 
 
 from .config import settings
@@ -130,31 +131,38 @@ def generate_jwt_token(
         "exp": datetime.now(timezone.utc) + timedelta(hours=settings.jwt_expiration_hours),
         "iat": datetime.now(timezone.utc),
     }
-    return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
+    return encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
 
 def verify_jwt_token(token: str) -> Dict[str, Any]:
     """Verify and decode a JWT token."""
     try:
-        payload = jwt.decode(
+        payload = decode(
             token,
             settings.jwt_secret_key,
             algorithms=[settings.jwt_algorithm]
         )
         return payload
-    except jwt.ExpiredSignatureError:
+    except ExpiredSignatureError:
         raise AuthenticationError("Token has expired")
-    except jwt.InvalidTokenError:
+    except InvalidTokenError:
         raise AuthenticationError("Invalid token")
 
 
 async def get_github_user_info(access_token: str) -> Dict[str, Any]:
-    """Get user information from GitHub using access token with robust error handling."""
+    """Get user information from GitHub using access token with robust error handling.
+    
+    Uses pure HTTP GET request via AsyncSimpleClient (no third-party auth libraries).
+    GitHub requires a User-Agent header for all API requests.
+    """
     try:
         async with AsyncSimpleClient(timeout=10.0) as client:
             response = await client.get(
                 "https://api.github.com/user",
-                headers={"Authorization": f"Bearer {access_token}"},
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "User-Agent": settings.app_name or "Cloudflare-Worker",
+                },
             )
             response.raise_for_status()
             try:
@@ -170,12 +178,16 @@ async def get_github_user_info(access_token: str) -> Dict[str, Any]:
 async def get_github_primary_email(access_token: str) -> Optional[str]:
     """Fetch the user's primary verified email from GitHub.
     Requires the user:email scope. Returns None if not available.
+    GitHub requires a User-Agent header for all API requests.
     """
     try:
         async with AsyncSimpleClient(timeout=10.0) as client:
             resp = await client.get(
                 "https://api.github.com/user/emails",
-                headers={"Authorization": f"Bearer {access_token}"},
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "User-Agent": settings.app_name or "Cloudflare-Worker",
+                },
             )
             resp.raise_for_status()
             emails = resp.json()
@@ -197,20 +209,36 @@ async def get_github_primary_email(access_token: str) -> Optional[str]:
     return None
 
 
-async def exchange_github_code(code: str) -> Dict[str, Any]:
-    """Exchange GitHub OAuth code for access token."""
+async def exchange_github_code(code: str, redirect_uri: Optional[str] = None) -> Dict[str, Any]:
+    """Exchange GitHub OAuth code for access token.
+    
+    Uses pure HTTP requests via AsyncSimpleClient (no third-party auth libraries).
+    This approach is Cloudflare Workers-compatible and avoids heavy dependencies.
+    
+    Args:
+        code: Authorization code from GitHub OAuth callback
+        redirect_uri: Redirect URI used in authorization request (required by RFC 6749 Section 4.1.3)
+    
+    Note: redirect_uri must match the redirect_uri used in the authorization request
+    for security validation per RFC 6749. If omitted, GitHub may reject the token exchange.
+    """
     if not settings.github_client_id or not settings.github_client_secret:
         raise AuthenticationError("GitHub OAuth not configured")
     
     try:
+        data = {
+            "client_id": settings.github_client_id,
+            "client_secret": settings.github_client_secret,
+            "code": code,
+        }
+        # Add redirect_uri if provided (RFC 6749 Section 4.1.3 requires it when present in auth request)
+        if redirect_uri:
+            data["redirect_uri"] = redirect_uri
+        
         async with AsyncSimpleClient(timeout=10.0) as client:
             response = await client.post(
                 "https://github.com/login/oauth/access_token",
-                data={
-                    "client_id": settings.github_client_id,
-                    "client_secret": settings.github_client_secret,
-                    "code": code,
-                },
+                data=data,
                 headers={"Accept": "application/json"},
             )
             response.raise_for_status()
@@ -236,10 +264,10 @@ async def exchange_github_code(code: str) -> Dict[str, Any]:
         raise AuthenticationError(f"Failed to exchange GitHub code: HTTP {e.response.status_code}")
 
 
-async def authenticate_github(db: Database, code: str) -> tuple[str, Dict[str, Any]]:
+async def authenticate_github(db: Database, code: str, redirect_uri: Optional[str] = None) -> tuple[str, Dict[str, Any]]:
     """Authenticate user with GitHub OAuth and return JWT token and user info."""
     # Exchange code for access token
-    token_data = await exchange_github_code(code)
+    token_data = await exchange_github_code(code, redirect_uri=redirect_uri)
     access_token = token_data.get("access_token")
     if not access_token:
         raise AuthenticationError("No access token received from GitHub")
@@ -320,7 +348,11 @@ def get_google_login_oauth_url(redirect_uri: str) -> Tuple[str, str]:
 
 
 async def exchange_google_login_code(code: str, redirect_uri: str) -> Dict[str, Any]:
-    """Exchange Google OAuth code for tokens for the login flow."""
+    """Exchange Google OAuth code for tokens for the login flow.
+    
+    Uses pure HTTP POST request via AsyncSimpleClient (no google-auth libraries).
+    This approach is Cloudflare Workers-compatible and avoids heavy dependencies.
+    """
     if not settings.google_client_id or not settings.google_client_secret:
         raise AuthenticationError("Google OAuth not configured")
 
@@ -333,8 +365,27 @@ async def exchange_google_login_code(code: str, redirect_uri: str) -> Dict[str, 
     }
 
     try:
+        # Log the request details for debugging
+        logger.debug(
+            "Google token exchange request: url=https://oauth2.googleapis.com/token, data keys=%s",
+            list(data.keys()),
+        )
         async with AsyncSimpleClient(timeout=10.0) as client:
             response = await client.post("https://oauth2.googleapis.com/token", data=data)
+            logger.debug(
+                "Google token exchange response: status=%s, headers=%s, body_length=%s",
+                response.status_code,
+                dict(response.headers),
+                len(response.content),
+            )
+            # Log response text for non-200 status codes
+            if response.status_code != 200:
+                response_text = response.text[:500] if response.text else "(empty)"
+                logger.error(
+                    "Google token exchange error: status=%s, response_text=%r",
+                    response.status_code,
+                    response_text,
+                )
             response.raise_for_status()
             try:
                 return response.json()
@@ -342,12 +393,14 @@ async def exchange_google_login_code(code: str, redirect_uri: str) -> Dict[str, 
                 logger.error("Failed to parse Google token response: %s", exc)
                 raise AuthenticationError("Invalid response format from Google OAuth service") from exc
     except HTTPStatusError as exc:
+        # Log full response for debugging
+        response_body = exc.response.text[:500] if exc.response.text else "(empty)"
         logger.error(
-            "HTTP error during Google login token exchange: %s %s",
+            "HTTP error during Google login token exchange: %s - Response: %s",
             exc.response.status_code,
-            exc.response.text,
+            response_body,
         )
-        raise AuthenticationError(f"Failed to exchange Google code: HTTP {exc.response.status_code}") from exc
+        raise AuthenticationError(f"Failed to exchange Google code: HTTP {exc.response.status_code} - {response_body}") from exc
     except RequestError as exc:
         logger.error("Network error during Google login token exchange: %s", exc)
         raise AuthenticationError("Failed to connect to Google OAuth service") from exc
@@ -375,7 +428,12 @@ async def get_google_user_info(access_token: str) -> Dict[str, Any]:
 
 
 async def _verify_google_id_token(id_token_value: str) -> Dict[str, Any]:
-    """Verify Google ID token via the official tokeninfo endpoint."""
+    """Verify Google ID token via the official tokeninfo endpoint.
+    
+    Uses pure HTTP GET request to Google's tokeninfo endpoint via AsyncSimpleClient.
+    No google-auth library required - verification is done via Google's HTTP API.
+    This approach is Cloudflare Workers-compatible.
+    """
     try:
         async with AsyncSimpleClient(timeout=10.0) as client:
             response = await client.get(

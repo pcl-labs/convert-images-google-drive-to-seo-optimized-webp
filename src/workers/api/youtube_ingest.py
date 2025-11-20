@@ -11,7 +11,7 @@ import re
 from .config import settings
 from .database import get_document, update_document, record_usage_event, record_pipeline_event
 from .google_oauth import build_youtube_service_for_user
-from ..core.youtube_captions import fetch_captions_text, YouTubeCaptionsError
+from core.youtube_captions import fetch_captions_text, YouTubeCaptionsError
 
 
 logger = logging.getLogger(__name__)

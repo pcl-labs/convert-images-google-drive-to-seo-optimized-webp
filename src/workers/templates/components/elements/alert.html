@@ -1,0 +1,16 @@
+{% from 'components/elements/icon.html' import icon %}
+{% macro alert(kind="info", text="", dismissible=True) %}
+  {% set styles = {
+    'info': 'bg-primary/10 text-primary ring-1 ring-primary/30',
+    'success': 'bg-accent/10 text-accent ring-1 ring-accent/30',
+    'error': 'bg-destructive/10 text-destructive ring-1 ring-destructive/30'
+  } %}
+  <div x-data="{show:true}" x-show="show" role="alert" class="relative rounded-md px-3 py-2 text-sm {{ styles.get(kind, styles['info']) }}">
+    <div>{{ text }}</div>
+    {% if dismissible %}
+    <button type="button" aria-label="Close alert" @click="show=false" class="absolute right-2 top-2 text-contentMuted hover:text-content">
+      {{ icon('close', size='h-4 w-4') }}
+    </button>
+    {% endif %}
+  </div>
+{% endmacro %}

@@ -10,6 +10,7 @@ import logging
 import json
 import secrets
 import hmac
+# Jinja2 imports removed - using Jinja2Templates directly
 
 from .models import (
     OptimizeDocumentRequest,
@@ -59,14 +60,16 @@ from .protected import (
     enqueue_job_with_guard,
 )
 from .config import settings
+from .utils import is_secure_request
 from .notifications import notify_job, notify_activity
 from .notifications_stream import notifications_stream_response
 from .pipeline_stream import pipeline_stream_response
+from .flash import add_flash
 from .constants import COOKIE_OAUTH_STATE, COOKIE_GOOGLE_OAUTH_STATE
 from .utils import normalize_ui_status
-from src.workers.core.constants import GOOGLE_SCOPE_DRIVE, GOOGLE_SCOPE_YOUTUBE, GOOGLE_SCOPE_GMAIL, GOOGLE_INTEGRATION_SCOPES
+from core.constants import GOOGLE_SCOPE_DRIVE, GOOGLE_SCOPE_YOUTUBE, GOOGLE_SCOPE_GMAIL, GOOGLE_INTEGRATION_SCOPES
 from .google_oauth import parse_google_scope_list, build_docs_service_for_user, build_drive_service_for_user
-from src.workers.core.google_async import execute_google_request
+from core.google_async import execute_google_request
 from .drive_workspace import ensure_drive_workspace
 from .drive_docs import sync_drive_doc_for_document
 from .ai_preferences import (
@@ -125,22 +128,92 @@ def _validate_csrf(request: Request, form_token: Optional[str]) -> None:
 
 router = APIRouter()
 
-# Templates are at project root, not in src/workers
-# Calculate path relative to project root (go up from src/workers/api/web.py -> project root)
-# __file__ is src/workers/api/web.py, so:
-# - dirname once: src/workers/api
-# - dirname twice: src/workers  
-# - dirname three times: src
-# - dirname four times: project root
-_project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-TEMPLATES_DIR = os.path.join(_project_root, "templates")
-templates = Jinja2Templates(directory=TEMPLATES_DIR)
+# Templates are packaged in src/workers/templates/
+# Use simple filesystem-based Jinja2Templates
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent.parent  # src/workers
+TEMPLATES_DIR = BASE_DIR / "templates"
+
+templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 base_url_value = (settings.base_url or "").strip()
 templates.env.globals["base_url"] = base_url_value.rstrip("/") if base_url_value else ""
 
+# Explicitly register url_for as a global function for template use
+# This ensures url_for is available even if Starlette's automatic injection
+# doesn't work reliably in the Cloudflare Worker runtime
+from jinja2 import pass_context
+
+@pass_context
+def _url_for(context, name: str, **path_params: str) -> str:
+    """Jinja helper for generating URLs using FastAPI's url_for.
+    
+    Templates call this as: {{ url_for('static', path='css/app.css') }}
+    which maps to request.url_for('static', path='css/app.css')
+    
+    The 'request' object is extracted from the template context automatically.
+    """
+    request = context.get('request')
+    if request is None:
+        logger.error("url_for called without 'request' in template context")
+        raise RuntimeError("'request' not found in template context. Ensure 'request' is passed to TemplateResponse.")
+    
+    try:
+        return request.url_for(name, **path_params)
+    except Exception as exc:
+        # Log the error for debugging
+        logger.error(
+            "url_for failed: name=%s, path_params=%s, error=%s, error_type=%s",
+            name,
+            path_params,
+            str(exc),
+            type(exc).__name__,
+            exc_info=True,
+        )
+        # For static files, fallback to a simple path construction
+        if name == "static" and "path" in path_params:
+            fallback_path = f"/static/{path_params['path']}"
+            logger.warning("Using fallback path for static file: %s", fallback_path)
+            return fallback_path
+        # Re-raise for other cases
+        raise
+
+templates.env.globals["url_for"] = _url_for
+
 # Register Jinja filter once (after templates is initialized)
 templates.env.filters["status_label"] = _status_label
+
+# Verify critical templates can be loaded (diagnostic check)
+# This helps catch template packaging/bundling issues early
+def _verify_templates_available():
+    """Verify that critical templates can be loaded.
+    
+    This is a lightweight sanity check to catch template packaging issues.
+    We don't fail startup if this fails, but we log clearly so issues are visible.
+    """
+    critical_templates = ["home.html", "base_public.html"]
+    missing = []
+    for template_name in critical_templates:
+        try:
+            templates.get_template(template_name)
+        except Exception as exc:
+            missing.append(f"{template_name}: {exc}")
+            logger.warning("Template %s not available: %s", template_name, exc)
+    
+    if missing:
+        logger.error(
+            "Template loading check failed. Missing or inaccessible templates: %s. "
+            "This may indicate a packaging/bundling issue in the Worker environment. "
+            "TEMPLATES_DIR=%s",
+            ", ".join(missing),
+            TEMPLATES_DIR
+        )
+    else:
+        logger.debug("Template loading check passed: all critical templates available")
+
+# Run check once at module import (after templates is initialized)
+_verify_templates_available()
 
 # Track background tasks to avoid premature garbage collection
 BACKGROUND_TASKS: set[asyncio.Task] = set()
@@ -416,13 +489,7 @@ def _get_csrf_token(request: Request) -> str:
     return token
 
 
-def _is_secure_request(request: Request, settings) -> bool:
-    if settings.environment == "production":
-        return True
-    xf_proto = request.headers.get("x-forwarded-proto", "").lower()
-    if xf_proto:
-        return xf_proto == "https"
-    return request.url.scheme == "https"
+# Removed _is_secure_request - now using shared is_secure_request from utils
 
 
 def _render_auth_page(request: Request, view_mode: str) -> Response:
@@ -433,7 +500,7 @@ def _render_auth_page(request: Request, view_mode: str) -> Response:
     context = {"request": request, "csrf_token": csrf, "view_mode": view_mode}
     resp = templates.TemplateResponse("auth/login.html", context)
     if not request.cookies.get("csrf_token"):
-        is_secure = _is_secure_request(request, settings)
+        is_secure = is_secure_request(request, settings)
         resp.set_cookie("csrf_token", csrf, httponly=True, samesite="lax", secure=is_secure)
     return resp
 
@@ -484,7 +551,7 @@ async def _render_account_page(
 
     resp = templates.TemplateResponse("account/index.html", context, status_code=status_code)
     if not request.cookies.get("csrf_token"):
-        is_secure = _is_secure_request(request, settings)
+        is_secure = is_secure_request(request, settings)
         resp.set_cookie("csrf_token", csrf, httponly=True, samesite="lax", secure=is_secure)
     return resp
 
@@ -892,7 +959,10 @@ async def api_mark_seen(notification_id: str, request: Request, user: dict = Dep
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
     db = ensure_db()
     await mark_notification_seen(db, user["user_id"], notification_id)
-    return {"ok": True}
+    
+    # Set flash message and redirect
+    await add_flash(request, "Marked seen", category="info")
+    return RedirectResponse(url="/dashboard/activity", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.post("/api/notifications/{notification_id}/dismiss")
@@ -904,7 +974,10 @@ async def api_dismiss(notification_id: str, request: Request, user: dict = Depen
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
     db = ensure_db()
     await dismiss_notification(db, user["user_id"], notification_id)
-    return {"ok": True}
+    
+    # Set flash message and redirect
+    await add_flash(request, "Dismissed", category="info")
+    return RedirectResponse(url="/dashboard/activity", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.get("/api/stream")
@@ -938,7 +1011,7 @@ async def logout(request: Request, csrf_token: str = Form(...)) -> RedirectRespo
     response = RedirectResponse(url="/", status_code=status.HTTP_302_FOUND)
 
     # Determine secure flag consistently with how cookies were set
-    is_secure = _is_secure_request(request, settings)
+    is_secure = is_secure_request(request, settings)
 
     session_cookie = request.cookies.get(settings.session_cookie_name)
     if session_cookie:
@@ -952,32 +1025,53 @@ async def logout(request: Request, csrf_token: str = Form(...)) -> RedirectRespo
             await delete_user_session(db, session_cookie, user_id=user_id)
         except Exception as exc:  # pragma: no cover - defensive logging
             logger.debug("Failed to delete session on logout: %s", exc)
-        response.delete_cookie(
-            settings.session_cookie_name,
-            path="/",
-            samesite="lax",
-            httponly=True,
-            secure=is_secure,
-        )
+        # Delete session cookie - use manual header to avoid conflicts
+        from datetime import datetime, timezone
+        expires = datetime(1970, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        session_cookie_value = f'{settings.session_cookie_name}=""; expires={expires.strftime("%a, %d %b %Y %H:%M:%S GMT")}; Max-Age=0; Path=/; SameSite=lax; HttpOnly'
+        if is_secure:
+            session_cookie_value += "; Secure"
+        response.headers.append("Set-Cookie", session_cookie_value)
 
-    # Clear all authentication-related cookies with matching attributes
-    response.delete_cookie("access_token", path="/", samesite="lax", httponly=True, secure=is_secure)
+    # Clear all authentication-related cookies
+    # NOTE: Cloudflare Workers only sends ONE Set-Cookie header per response.
+    # We prioritize access_token (most important for logout) by deleting it LAST,
+    # so it's the Set-Cookie header that gets sent.
+    # We use the current request's secure flag, which should match how cookies were set.
+    
+    # Delete other OAuth cookies first (won't be sent, but keeps code clean)
     response.delete_cookie(COOKIE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
     response.delete_cookie(COOKIE_GOOGLE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
     response.delete_cookie("google_redirect_uri", path="/", samesite="lax", httponly=True, secure=is_secure)
     response.delete_cookie("google_integration", path="/", samesite="lax", httponly=True, secure=is_secure)
     response.delete_cookie("google_redirect_next", path="/", samesite="lax", httponly=True, secure=is_secure)
-    # Clear CSRF token on logout for security
     response.delete_cookie("csrf_token", path="/", samesite="lax", httponly=True, secure=is_secure)
+    
+    # Delete access_token LAST - this is the Set-Cookie header that will be sent
+    # (most important for logout, so it takes priority)
+    response.delete_cookie("access_token", path="/", samesite="lax", httponly=True, secure=is_secure)
 
     return response
 
 
 @router.get("/", response_class=HTMLResponse)
 async def home(request: Request):
-    if getattr(request.state, "user", None):
-        return RedirectResponse(url="/dashboard", status_code=status.HTTP_302_FOUND)
-    return templates.TemplateResponse("home.html", {"request": request})
+    try:
+        if getattr(request.state, "user", None):
+            return RedirectResponse(url="/dashboard", status_code=status.HTTP_302_FOUND)
+        return templates.TemplateResponse("home.html", {"request": request})
+    except Exception as exc:
+        logger.error(
+            "Error rendering home page: %s, error_type=%s",
+            str(exc),
+            type(exc).__name__,
+            exc_info=True,
+        )
+        # Return a simple error page instead of letting the exception propagate
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error rendering page: {str(exc)}"
+        ) from exc
 
 
 @router.get("/login", response_class=HTMLResponse)
@@ -997,62 +1091,53 @@ async def styleguide(request: Request):
 
 
 @router.get("/dashboard", response_class=HTMLResponse)
-async def dashboard(request: Request, page: int = 1, user: dict = Depends(get_current_user)):
+async def dashboard(request: Request, user: dict = Depends(get_current_user)):
+    """
+    Main dashboard page showing job stats, integrations, and ingest forms.
+    """
+    # Handle DB initialization failures with explicit 503 for protected routes
+    try:
+        db = ensure_db()
+    except HTTPException as exc:
+        if exc.status_code == 500:
+            logger.error("Dashboard: Database unavailable")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Service temporarily unavailable"
+            ) from exc
+        raise
     
-    db = ensure_db()
-    jobs_list, total = await list_jobs(db, user["user_id"], page=page, page_size=10, status=None)
-    stats = await get_job_stats(db, user["user_id"])  # { total, completed, failed, pending, processing }
     csrf = _get_csrf_token(request)
-    # Google connection status for dashboard badge
+    
+    # Load job stats
+    stats: dict = {}
+    try:
+        stats = await get_job_stats(db, user["user_id"])
+    except Exception as exc:
+        logger.exception("Failed loading job stats: %s", exc)
+        stats = {"queued": 0, "running": 0, "completed": 0}
+    
+    # Check Google integrations
     google_tokens = await list_google_tokens(db, user["user_id"])  # type: ignore
     token_map = {str(row.get("integration")).lower(): row for row in (google_tokens or []) if row.get("integration")}
     drive_connected = "drive" in token_map
     youtube_connected = "youtube" in token_map
-
-    # Transform jobs for dashboard table
-    def to_view(j):
-        status = j.get("status", "queued")
-        jt = (j.get("job_type") or "optimize_drive")
-        return {
-            "id": j.get("job_id"),
-            "document_id": j.get("document_id"),
-            "kind": KIND_MAP.get(jt, jt.replace("_", " ").title()),
-            "status": status,
-            "status_label": _status_label(status),
-            "created_at": j.get("created_at"),
-        }
-
-    recent_youtube_job = await latest_job_by_type(db, user["user_id"], "ingest_youtube")
-    recent_youtube_events: List[Dict[str, Any]] = []
-    if recent_youtube_job:
-        recent_youtube_events = await list_pipeline_events(
-            db,
-            user["user_id"],
-            job_id=recent_youtube_job.get("job_id"),
-            limit=25,
-        )
-
+    
     context = {
         "request": request,
         "user": user,
-        "jobs": [to_view(j) for j in jobs_list],
-        "stats": {
-            "queued": stats.get("pending", 0),
-            "running": stats.get("processing", 0),
-            "completed": stats.get("completed", 0),
-        },
-        "csrf_token": csrf,
-        "page_title": "Dashboard",
+        "stats": stats,
         "drive_connected": drive_connected,
         "youtube_connected": youtube_connected,
-        "ingest_job": recent_youtube_job,
-        "ingest_events": recent_youtube_events,
+        "csrf_token": csrf,
         "content_schema_choices": CONTENT_SCHEMA_CHOICES,
+        "page_title": "Dashboard",
     }
-    resp = templates.TemplateResponse("dashboard/index.html", context)
+    
+    template_name = "dashboard/index_fragment.html" if _is_htmx(request) else "dashboard/index.html"
+    resp = templates.TemplateResponse(template_name, context)
     if not request.cookies.get("csrf_token"):
-        # Set secure cookies only in production or when the request is over HTTPS
-        is_secure = _is_secure_request(request, settings)
+        is_secure = is_secure_request(request, settings)
         resp.set_cookie("csrf_token", csrf, httponly=True, samesite="lax", secure=is_secure)
     return resp
 
@@ -1063,7 +1148,17 @@ def _is_htmx(request: Request) -> bool:
 
 @router.get("/dashboard/documents", response_class=HTMLResponse)
 async def documents_page(request: Request, page: int = 1, user: dict = Depends(get_current_user)):
-    db = ensure_db()
+    # Handle DB initialization failures with explicit 503 for protected routes
+    try:
+        db = ensure_db()
+    except HTTPException as exc:
+        if exc.status_code == 500:
+            logger.error("Documents page: Database unavailable")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Service temporarily unavailable"
+            ) from exc
+        raise
     csrf = _get_csrf_token(request)
     documents, total = await _load_document_views(db, user["user_id"], page=page, page_size=20)
     google_tokens = await list_google_tokens(db, user["user_id"])  # type: ignore
@@ -1100,7 +1195,7 @@ async def documents_page(request: Request, page: int = 1, user: dict = Depends(g
     template_name = "documents/index_fragment.html" if _is_htmx(request) else "documents/index.html"
     resp = templates.TemplateResponse(template_name, context)
     if not request.cookies.get("csrf_token"):
-        is_secure = _is_secure_request(request, settings)
+        is_secure = is_secure_request(request, settings)
         resp.set_cookie("csrf_token", csrf, httponly=True, samesite="lax", secure=is_secure)
     return resp
 
@@ -1154,7 +1249,7 @@ async def document_detail_page(document_id: str, request: Request, user: dict = 
     template_name = "documents/detail_fragment.html" if _is_htmx(request) else "documents/detail.html"
     resp = templates.TemplateResponse(template_name, context)
     if not request.cookies.get("csrf_token"):
-        is_secure = _is_secure_request(request, settings)
+        is_secure = is_secure_request(request, settings)
         resp.set_cookie("csrf_token", csrf, httponly=True, samesite="lax", secure=is_secure)
     return resp
 
@@ -1533,19 +1628,31 @@ async def job_detail_partial(job_id: str, request: Request, user: dict = Depends
     template_name = "jobs/detail_fragment.html" if _is_htmx(request) else "jobs/detail.html"
     resp = templates.TemplateResponse(template_name, context)
     if not request.cookies.get("csrf_token"):
-        is_secure = _is_secure_request(request, settings)
+        is_secure = is_secure_request(request, settings)
         resp.set_cookie("csrf_token", csrf, httponly=True, samesite="lax", secure=is_secure)
     return resp
 
 
 @router.get("/dashboard/jobs", response_class=HTMLResponse)
 async def jobs_page(request: Request, user: dict = Depends(get_current_user), page: int = 1, status: Optional[str] = None):
-    db = ensure_db()
+    # Handle DB initialization failures with explicit 503 for protected routes
+    try:
+        db = ensure_db()
+    except HTTPException as exc:
+        if exc.status_code == 500:
+            logger.error("Jobs page: Database unavailable")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Service temporarily unavailable"
+            ) from exc
+        raise
     csrf = _get_csrf_token(request)
+    # Alias status parameter to avoid collision with imported status module
+    status_filter_param = status
     status_filter = None
-    if status:
+    if status_filter_param:
         try:
-            norm = normalize_ui_status(status)
+            norm = normalize_ui_status(status_filter_param)
             status_filter = JobStatusEnum(norm) if norm else None
         except Exception:
             status_filter = None
@@ -1593,7 +1700,7 @@ async def jobs_page(request: Request, user: dict = Depends(get_current_user), pa
     template_name = "jobs/index_fragment.html" if _is_htmx(request) else "jobs/index.html"
     resp = templates.TemplateResponse(template_name, context)
     if not request.cookies.get("csrf_token"):
-        is_secure = _is_secure_request(request, settings)
+        is_secure = is_secure_request(request, settings)
         resp.set_cookie("csrf_token", csrf, httponly=True, samesite="lax", secure=is_secure)
     return resp
 
@@ -1611,7 +1718,7 @@ async def integrations_page(request: Request, user: dict = Depends(get_current_u
     context = {"request": request, "user": user, "integrations": integrations, "services_meta": services_meta, "page_title": "Integrations", "csrf_token": csrf}
     resp = templates.TemplateResponse("integrations/index.html", context)
     if not request.cookies.get("csrf_token"):
-        is_secure = _is_secure_request(request, settings)
+        is_secure = is_secure_request(request, settings)
         resp.set_cookie("csrf_token", csrf, httponly=True, samesite="lax", secure=is_secure)
     return resp
 
@@ -1769,7 +1876,14 @@ async def retry_job(job_id: str, request: Request, user: dict = Depends(get_curr
         await notify_job(db, user_id=user["user_id"], job_id=job_id, level="info", text=f"Job {job_id} retried")
     except Exception:
         pass
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    
+    # Set flash message and redirect
+    await add_flash(request, "Job retried", category="success")
+    if _is_htmx(request):
+        # For HTMX, redirect to jobs page
+        return RedirectResponse(url="/dashboard/jobs", status_code=status.HTTP_303_SEE_OTHER)
+    # For regular requests, redirect to job detail
+    return RedirectResponse(url=f"/dashboard/jobs/{job_id}", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.delete("/dashboard/jobs/{job_id}")
@@ -1798,7 +1912,14 @@ async def cancel_job_html(job_id: str, request: Request, user: dict = Depends(ge
         await notify_job(db, user_id=user["user_id"], job_id=job_id, level="error", text=f"Job {job_id} cancelled")
     except Exception:
         pass
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    
+    # Set flash message and redirect
+    await add_flash(request, "Job cancelled", category="success")
+    if _is_htmx(request):
+        # For HTMX, redirect to jobs page
+        return RedirectResponse(url="/dashboard/jobs", status_code=status.HTTP_303_SEE_OTHER)
+    # For regular requests, redirect to job detail
+    return RedirectResponse(url=f"/dashboard/jobs/{job_id}", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.post("/dashboard/integrations/{service}/connect")
@@ -1830,7 +1951,7 @@ async def settings_page(request: Request, user: dict = Depends(get_current_user)
     context = {"request": request, "user": user, "page_title": "Settings", "csrf_token": csrf}
     resp = templates.TemplateResponse("settings/index.html", context)
     if not request.cookies.get("csrf_token"):
-        is_secure = _is_secure_request(request, settings)
+        is_secure = is_secure_request(request, settings)
         resp.set_cookie("csrf_token", csrf, httponly=True, samesite="lax", secure=is_secure)
     return resp
 
@@ -1925,8 +2046,30 @@ async def delete_account(
             delete_value=confirmation,
         )
 
-    db = ensure_db()
-    deleted = await delete_user_account(db, user["user_id"])  # type: ignore[index]
+    # DB-safe: catch DB initialization failures and return graceful error
+    try:
+        db = ensure_db()
+        deleted = await delete_user_account(db, user["user_id"])  # type: ignore[index]
+    except HTTPException as exc:
+        if exc.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR:
+            # Database temporarily unavailable - return graceful error
+            return await _render_account_page(
+                request,
+                user,
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                delete_error="The database is temporarily unavailable. Please try again in a few minutes.",
+            )
+        raise
+    except Exception as exc:
+        # Other unexpected errors - log and return generic error
+        logger.error("Unexpected error during account deletion: %s", exc, exc_info=True)
+        return await _render_account_page(
+            request,
+            user,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            delete_error="An unexpected error occurred. Please try again or contact support.",
+        )
+
     if not deleted:
         return await _render_account_page(
             request,
@@ -1936,14 +2079,13 @@ async def delete_account(
         )
 
     response = RedirectResponse(url="/", status_code=status.HTTP_302_FOUND)
-    is_secure = _is_secure_request(request, settings)
+    is_secure = is_secure_request(request, settings)
+    # Session deletion is handled by FK cascade when user is deleted
+    # We only need to clear the cookie from the browser
+    # NOTE: Cloudflare Workers only sends ONE Set-Cookie header per response.
+    # We prioritize access_token (most important) by deleting it LAST.
     session_cookie = request.cookies.get(settings.session_cookie_name)
     if session_cookie:
-        try:
-            # Pass user_id for ownership validation (user is authenticated at this point)
-            await delete_user_session(db, session_cookie, user_id=user["user_id"])
-        except Exception as exc:  # pragma: no cover - defensive logging
-            logger.debug("Failed to delete session after account removal: %s", exc)
         response.delete_cookie(
             settings.session_cookie_name,
             path="/",
@@ -1951,11 +2093,13 @@ async def delete_account(
             httponly=True,
             secure=is_secure,
         )
-    response.delete_cookie("access_token", path="/", samesite="lax", httponly=True, secure=is_secure)
+    # Delete other cookies first (won't be sent, but keeps code clean)
     response.delete_cookie(COOKIE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
     response.delete_cookie(COOKIE_GOOGLE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
     response.delete_cookie("google_redirect_uri", path="/", samesite="lax", httponly=True, secure=is_secure)
     response.delete_cookie("google_integration", path="/", samesite="lax", httponly=True, secure=is_secure)
     response.delete_cookie("google_redirect_next", path="/", samesite="lax", httponly=True, secure=is_secure)
     response.delete_cookie("csrf_token", path="/", samesite="lax", httponly=True, secure=is_secure)
+    # Delete access_token LAST - this is the Set-Cookie header that will be sent
+    response.delete_cookie("access_token", path="/", samesite="lax", httponly=True, secure=is_secure)
     return response

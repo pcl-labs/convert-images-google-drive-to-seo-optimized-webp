@@ -4,7 +4,7 @@ import asyncio
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Callable, Any
+from typing import Callable, Any, Optional, Dict
 from fastapi import HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -12,13 +12,38 @@ from starlette.types import ASGIApp
 import logging
 
 from .config import settings
+from .utils import is_secure_request
 from .auth import verify_jwt_token
 from .exceptions import RateLimitError
 from .app_logging import set_request_id
 from .deps import ensure_db
 from .database import get_user_by_id, get_user_session, touch_user_session, delete_user_session
+import json
 
 logger = logging.getLogger(__name__)
+
+# In-memory session cache to avoid async DB reads in middleware
+# This allows synchronous session reads, avoiding ASGI InvalidStateError
+_session_cache: Dict[str, Dict[str, Any]] = {}
+_session_cache_timestamps: Dict[str, float] = {}
+_SESSION_CACHE_TTL = 300  # 5 minutes cache TTL
+_SESSION_CACHE_MAX_SIZE = 1000  # Maximum number of cached sessions (LRU eviction)
+
+# Public routes that should not require DB access for basic rendering
+# These routes should degrade gracefully if DB is unavailable
+_PUBLIC_ROUTES = {"/", "/health", "/login", "/signup", "/styleguide", "/docs", "/redoc", "/openapi.json"}
+
+
+def _is_public_route(request: Request) -> bool:
+    """Check if a request is for a public route that should work without DB.
+    
+    Public routes are those that should render successfully even if the database
+    is temporarily unavailable. This allows the homepage and health checks to
+    work even during DB outages.
+    """
+    path = request.url.path
+    # Exact match or starts with /static/
+    return path in _PUBLIC_ROUTES or path.startswith("/static/")
 
 
 class RequestIDMiddleware(BaseHTTPMiddleware):
@@ -33,7 +58,31 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
 
 
 class SessionMiddleware(BaseHTTPMiddleware):
-    """Load, refresh, and clear user sessions tied to session cookies."""
+    """Load, refresh, and clear user sessions tied to session cookies.
+    
+    This middleware manages browser sessions stored in D1. Sessions coexist with JWT tokens:
+    - JWT (access_token cookie): Stateless authentication token containing user claims
+    - Session (session_id cookie): Stateful tracking for activity, notifications, metadata
+    
+    Session Architecture:
+    - Sessions are stored in the user_sessions table in D1
+    - Session cookie name is configurable via settings.session_cookie_name (default: "session_id")
+    - Sessions have a TTL (settings.session_ttl_hours, default: 72 hours)
+    - Sessions are automatically touched (last_seen_at updated) based on touch_interval
+    - Expired or revoked sessions are automatically cleared
+    
+    Cookie Security:
+    - httponly=True: Prevents JavaScript access
+    - secure=is_secure: HTTPS-only in production (based on request scheme)
+    - samesite="lax": CSRF protection while allowing OAuth redirects
+    
+    The middleware:
+    1. Loads session from session_id cookie on each request
+    2. Validates session expiration and revocation status
+    3. Touches session (updates last_seen_at) if touch_interval elapsed
+    4. Clears invalid/expired session cookies
+    5. Populates request.state.session and request.state.session_id
+    """
 
     def __init__(self, app: ASGIApp):
         super().__init__(app)
@@ -59,22 +108,69 @@ class SessionMiddleware(BaseHTTPMiddleware):
             except ValueError:
                 return None
 
-    @staticmethod
-    def _is_secure_request(request: Request) -> bool:
-        xf_proto = request.headers.get("x-forwarded-proto", "").lower()
-        return (xf_proto == "https") if xf_proto else (request.url.scheme == "https")
+    def _get_session_from_cache(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Get session from in-memory cache if available and not expired."""
+        if session_id not in _session_cache:
+            return None
+        cached_time = _session_cache_timestamps.get(session_id, 0)
+        if time.time() - cached_time > _SESSION_CACHE_TTL:
+            # Cache expired
+            _session_cache.pop(session_id, None)
+            _session_cache_timestamps.pop(session_id, None)
+            return None
+        return _session_cache.get(session_id)
+
+    def _set_session_in_cache(self, session_id: str, session: Dict[str, Any]) -> None:
+        """Store session in in-memory cache with LRU eviction."""
+        # LRU eviction: if cache is full, remove entry with oldest timestamp
+        if len(_session_cache) >= _SESSION_CACHE_MAX_SIZE:
+            # Find entry with oldest timestamp
+            oldest_session_id = min(
+                _session_cache_timestamps.keys(),
+                key=lambda sid: _session_cache_timestamps[sid]
+            )
+            # Remove oldest entry from both dicts to keep them in sync
+            _session_cache.pop(oldest_session_id, None)
+            _session_cache_timestamps.pop(oldest_session_id, None)
+        
+        # Insert new entry
+        _session_cache[session_id] = session
+        _session_cache_timestamps[session_id] = time.time()
+
+    def _clear_session_from_cache(self, session_id: str) -> None:
+        """Remove session from in-memory cache."""
+        _session_cache.pop(session_id, None)
+        _session_cache_timestamps.pop(session_id, None)
+
+    # Removed _is_secure_request - now using shared is_secure_request from utils
 
     async def dispatch(self, request: Request, call_next: Callable):
         session_id = request.cookies.get(self.cookie_name)
         should_clear_cookie = False
         db = None
         lookup_failed = False
+        is_public = _is_public_route(request)
+        path = request.url.path
+        
+        # Skip async DB operations for API endpoints to avoid ASGI InvalidStateError
+        # API endpoints are stateless and don't need session tracking
+        is_api_endpoint = path.startswith("/api/")
+        
         if session_id:
-            try:
-                db = ensure_db()
-                session = await get_user_session(db, session_id)
-            except Exception as exc:  # pragma: no cover - defensive logging
-                logger.debug("SessionMiddleware failed to load session: %s", exc)
+            if is_api_endpoint:
+                # For API endpoints, skip all async DB operations to avoid ASGI errors
+                # API endpoints don't need session state, so we can skip entirely
+                response = await call_next(request)
+                return response
+            
+            # Try to get session from cache first (synchronous, no async needed)
+            session = self._get_session_from_cache(session_id)
+            lookup_failed = False
+            
+            # If not in cache, skip DB lookup entirely to avoid async operations
+            # The session will be loaded on next request after it's cached
+            # This avoids ASGI InvalidStateError from async DB operations
+            if session is None:
                 session = None
                 lookup_failed = True
             now = datetime.now(timezone.utc)
@@ -82,11 +178,11 @@ class SessionMiddleware(BaseHTTPMiddleware):
                 expires_at = self._parse_timestamp(session.get("expires_at"))
                 if expires_at and expires_at <= now:
                     should_clear_cookie = True
-                    if db:
-                        try:
-                            await delete_user_session(db, session_id)
-                        except Exception as exc:  # pragma: no cover - defensive logging
-                            logger.debug("Failed to delete expired session %s: %s", session_id, exc)
+                    # Clear from cache immediately (synchronous)
+                    self._clear_session_from_cache(session_id)
+                    
+                    # Skip async DB delete to avoid ASGI errors
+                    # Session is already cleared from cache, so it won't be used
                 else:
                     session["session_id"] = session_id
                     request.state.session = session
@@ -100,11 +196,12 @@ class SessionMiddleware(BaseHTTPMiddleware):
                             or (now - last_seen_raw).total_seconds() >= self.touch_interval
                         )
                         if needs_touch:
-                            try:
-                                await touch_user_session(db, session_id, last_seen_at=now)
-                                session["last_seen_at"] = now.isoformat()
-                            except Exception as exc:  # pragma: no cover - defensive logging
-                                logger.debug("Failed to update session heartbeat: %s", exc)
+                            # Update cache immediately (synchronous)
+                            session["last_seen_at"] = now.isoformat()
+                            self._set_session_in_cache(session_id, session)
+                            
+                            # Skip async DB write to avoid ASGI errors
+                            # Cache is updated, so session will work for subsequent requests
             elif not lookup_failed:
                 should_clear_cookie = True
 
@@ -117,8 +214,57 @@ class SessionMiddleware(BaseHTTPMiddleware):
                 path="/",
                 samesite="lax",
                 httponly=True,
-                secure=self._is_secure_request(request),
+                secure=is_secure_request(request),
             )
+        return response
+
+
+class FlashMiddleware(BaseHTTPMiddleware):
+    """Read flash messages from session and expose to templates.
+    
+    Flash messages are stored in session.extra as a JSON array.
+    They are read once per request and cleared after reading.
+    Flash messages are exposed via request.state.flash_messages for template access.
+    """
+    
+    async def dispatch(self, request: Request, call_next: Callable):
+        # Initialize empty flash messages
+        request.state.flash_messages = []
+        
+        # Skip flash message processing for API endpoints - they return JSON, not HTML templates
+        # This avoids ASGI InvalidStateError on API endpoints
+        path = request.url.path
+        if path.startswith("/api/"):
+            response = await call_next(request)
+            return response
+        
+        # Read flash messages from session if available
+        session = getattr(request.state, "session", None)
+        session_id = getattr(request.state, "session_id", None)
+        if session and session_id:
+            extra = session.get("extra")
+            if extra:
+                try:
+                    if isinstance(extra, str):
+                        extra_dict = json.loads(extra)
+                    else:
+                        extra_dict = extra
+                    
+                    flash_queue = extra_dict.get("flash_messages", [])
+                    if flash_queue and isinstance(flash_queue, list):
+                        request.state.flash_messages = flash_queue
+                        # Clear flash messages from in-memory session immediately
+                        # Skip async DB write to avoid ASGI InvalidStateError
+                        # Session cache will be updated, and DB will sync eventually
+                        extra_dict.pop("flash_messages", None)
+                        # Update in-memory session dict
+                        session["extra"] = json.dumps(extra_dict) if isinstance(extra_dict, dict) else extra_dict
+                        # Update session cache if it exists (synchronous)
+                        # Skip async DB write to avoid ASGI errors
+                except (json.JSONDecodeError, TypeError, AttributeError) as exc:
+                    logger.debug("Failed to parse session extra for flash messages: %s", exc)
+        
+        response = await call_next(request)
         return response
 
 
@@ -126,7 +272,18 @@ class AuthCookieMiddleware(BaseHTTPMiddleware):
     """Populate request.state.user from JWT in access_token cookie for DRY auth."""
 
     async def dispatch(self, request: Request, call_next: Callable):
+        # Try cookie first, then Authorization header
         token = request.cookies.get("access_token")
+        logger.debug(
+            "AuthCookieMiddleware: Checking for token - cookie_present=%s, cookie_length=%s",
+            token is not None,
+            len(token) if token else 0,
+        )
+        if not token:
+            auth_header = request.headers.get("Authorization", "")
+            if auth_header.startswith("Bearer "):
+                token = auth_header[7:].strip()
+                logger.debug("AuthCookieMiddleware: Found token in Authorization header")
         if token:
             try:
                 payload = verify_jwt_token(token)
@@ -169,8 +326,10 @@ class AuthCookieMiddleware(BaseHTTPMiddleware):
                                 # Provider IDs remain best-effort; don't force a DB hit just for them.
                                 github_id = github_id or stored.get("github_id")
                                 google_id = google_id or stored.get("google_id")
-                    except Exception as exc:
-                        logger.debug("AuthCookieMiddleware: failed to fetch user profile: %s", exc)
+                    except (HTTPException, Exception) as exc:
+                        # DB unavailable - continue without DB enrichment, don't fail request
+                        # HTTPException(500) from ensure_db() is caught here so it doesn't fail the request
+                        logger.debug("AuthCookieMiddleware: DB unavailable, cannot hydrate user from DB - continuing with JWT claims only: %s", exc)
                 request.state.user = {
                     "user_id": user_id,
                     "email": email,
@@ -179,7 +338,13 @@ class AuthCookieMiddleware(BaseHTTPMiddleware):
                 }
                 if user_id:
                     request.state.user_id = user_id
-            except Exception:
+                logger.debug(
+                    "AuthCookieMiddleware: Successfully set request.state.user: user_id=%s, email=%s",
+                    user_id,
+                    email,
+                )
+            except Exception as exc:
+                logger.debug("AuthCookieMiddleware: Failed to verify token: %s", exc, exc_info=True)
                 # Invalid token: ensure no stale user state leaks into request
                 if hasattr(request.state, "user"):
                     try:
@@ -211,17 +376,37 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         self.last_cleanup = time.monotonic()
     
     def _get_client_id(self, request: Request) -> str:
-        """Get client identifier for rate limiting."""
+        """Get client identifier for rate limiting.
+        
+        Note: In Cloudflare Workers, request.client may be None.
+        We also look at CF-Connecting-IP / X-Forwarded-For headers for client IP,
+        and fall back to "unknown" rather than rejecting the request.
+        """
         user_id = getattr(request.state, "user_id", None)
         if user_id:
             return f"user:{user_id}"
-        # Require valid client info for rate limiting
-        if not request.client or not request.client.host:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Client information missing",
-            )
-        return f"ip:{request.client.host}"
+        
+        # Try connection info first
+        ip = None
+        if request.client and getattr(request.client, "host", None):
+            ip = request.client.host
+        
+        # Fallback to headers if no client.host
+        if not ip:
+            headers = request.headers
+            ip = headers.get("CF-Connecting-IP")
+            if not ip:
+                xff = headers.get("X-Forwarded-For", "")
+                if xff:
+                    ip = xff.split(",")[0].strip() or None
+            if not ip:
+                ip = headers.get("X-Real-IP")
+        
+        # Final fallback: don't 400, just treat IP as unknown
+        if not ip:
+            ip = "unknown"
+        
+        return f"ip:{ip}"
     
     async def _is_rate_limited(self, client_id: str) -> bool:
         """Check if client is rate limited (thread-safe)."""
@@ -254,20 +439,16 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 del self.requests[client_id]
     
     async def dispatch(self, request: Request, call_next: Callable):
-        # Skip rate limiting for health checks
-        if request.url.path in ["/health"]:
+        # Skip rate limiting for health checks and static assets
+        path = request.url.path
+        if (
+            path == "/health"
+            or path.startswith("/static/")
+            or path == "/robots.txt"
+        ):
             return await call_next(request)
         
-        try:
-            client_id = self._get_client_id(request)
-        except HTTPException as exc:
-            return JSONResponse(
-                status_code=exc.status_code,
-                content={
-                    "error": exc.detail,
-                    "error_code": "CLIENT_INFO_REQUIRED",
-                },
-            )
+        client_id = self._get_client_id(request)
         
         if await self._is_rate_limited(client_id):
             return JSONResponse(

@@ -1,0 +1,314 @@
+{% extends "base.html" %}
+{% set page_title = 'Account' %}
+{% from 'components/layout/page.html' import page_container, page_header %}
+{% from 'components/elements/card.html' import card %}
+{% from 'components/elements/button.html' import button %}
+{% from 'components/elements/input.html' import input %}
+{% from 'components/overlays/modal.html' import modal %}
+{% block content %}
+{% call page_container() %}
+{{ page_header('Account', 'Your profile information') }}
+
+{% call card(title='Profile') %}
+<dl class="space-y-3 text-sm text-content">
+  <div class="flex flex-col">
+    <dt class="text-xs font-semibold uppercase tracking-wide text-contentMuted">User ID</dt>
+    <dd class="font-mono break-all text-content">{{ user.user_id }}</dd>
+  </div>
+  <div class="flex flex-col">
+    <dt class="text-xs font-semibold uppercase tracking-wide text-contentMuted">GitHub ID</dt>
+    <dd class="font-mono break-all text-content">{{ user.github_id or '-' }}</dd>
+  </div>
+  <div class="flex flex-col">
+    <dt class="text-xs font-semibold uppercase tracking-wide text-contentMuted">Google ID</dt>
+    <dd class="font-mono break-all text-content">{{ user.google_id or '-' }}</dd>
+  </div>
+  <div class="flex flex-col">
+    <dt class="text-xs font-semibold uppercase tracking-wide text-contentMuted">Email</dt>
+    <dd class="font-mono break-all text-content">{{ user.email or '-' }}</dd>
+  </div>
+  <div class="flex flex-col">
+    <dt class="text-xs font-semibold uppercase tracking-wide text-contentMuted">Created</dt>
+    <dd>{{ user.created_at or '-' }}</dd>
+  </div>
+</dl>
+{% endcall %}
+
+{# Connected Accounts card #}
+{% from 'components/icons/brand_icon.html' import brand_icon %}
+{% call card(title='Connected Accounts') %}
+<div class="space-y-4">
+  <div class="space-y-2">
+    <h3 class="text-xs font-semibold uppercase tracking-wide text-contentMuted">Links</h3>
+    <div class="divide-y divide-border surface rounded-md">
+      <div class="flex items-center justify-between p-3">
+        <div class="flex items-center gap-3 min-w-0">
+          <div
+            class="h-6 w-6 rounded-md bg-surfaceMuted border border-border p-1 [&>svg]:h-full [&>svg]:w-full [&>svg]:block">
+            {{ brand_icon('github') }}
+          </div>
+          <div class="min-w-0">
+            <div class="text-sm font-medium text-content">GitHub</div>
+          </div>
+        </div>
+        {% if not user.github_id %}
+        <form method="post" action="/auth/github/start">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+          {{ button('Add', variant='secondary', attrs='type="submit"') }}
+        </form>
+        {% else %}
+        <span
+          class="inline-flex items-center rounded-full border border-border px-3 py-1 text-xs text-contentMuted bg-surfaceMuted">Connected</span>
+        {% endif %}
+      </div>
+      <div class="flex items-center justify-between p-3">
+        <div class="flex items-center gap-3 min-w-0">
+          <div
+            class="h-6 w-6 rounded-md bg-surfaceMuted border border-border p-1 [&>svg]:h-full [&>svg]:w-full [&>svg]:block">
+            {{ brand_icon('google') }}
+          </div>
+          <div class="min-w-0">
+            <div class="text-sm font-medium text-content">Google</div>
+          </div>
+        </div>
+        {% if not user.google_id %}
+        <form method="post" action="/auth/google/login/start">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+          {{ button('Add', variant='secondary', attrs='type="submit"') }}
+        </form>
+        {% else %}
+        <span
+          class="inline-flex items-center rounded-full border border-border px-3 py-1 text-xs text-contentMuted bg-surfaceMuted">Connected</span>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="space-y-2">
+    <h3 class="text-xs font-semibold uppercase tracking-wide text-contentMuted">Email</h3>
+    <div class="surface rounded-md divide-y divide-border">
+      <div class="flex items-center justify-between p-3">
+        <div class="flex items-center gap-3 min-w-0">
+          <div class="h-8 w-8 rounded-md bg-surfaceMuted border border-border p-1.5">
+            <svg viewBox="0 0 24 24" class="h-full w-full text-content" fill="none" stroke="currentColor"
+              stroke-width="1.5" aria-hidden="true">
+              <rect x="3" y="5" width="18" height="14" rx="2" ry="2" />
+              <path d="M3 7l9 6 9-6" />
+            </svg>
+          </div>
+          <div class="min-w-0">
+            <div class="text-sm text-content truncate">{{ user.email or '-' }}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <p class="text-xs text-contentMuted">
+    To enable Drive/YouTube workflows, link Google integrations on the <a href="/dashboard/integrations"
+      class="text-primary hover:text-primary/80">Integrations</a> page.
+  </p>
+</div>
+{% endcall %}
+
+{% call card(title='Appearance') %}
+<div class="space-y-4">
+  <p class="text-sm text-contentMuted">Choose how Quill looks across sessions.</p>
+  <div class="flex gap-3" id="appearance-buttons">
+    {{ button('System', variant='secondary', attrs='type="button" data-theme="system" onclick="setTheme(this)"',
+    extra_classes='flex-1') }}
+    {{ button('Light', variant='secondary', attrs='type="button" data-theme="light" onclick="setTheme(this)"',
+    extra_classes='flex-1') }}
+    {{ button('Dark', variant='secondary', attrs='type="button" data-theme="dark" onclick="setTheme(this)"',
+    extra_classes='flex-1') }}
+  </div>
+</div>
+<style>
+  [data-theme].active {
+    background-color: rgb(var(--primary));
+    color: rgb(var(--primary-contrast));
+  }
+</style>
+<script>
+  function setTheme(btn) {
+    const theme = btn.dataset.theme;
+    if (!theme) return;
+    if (window.themePreference) window.themePreference.set(theme);
+    document.querySelectorAll('[data-theme]').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+  }
+  (function () {
+    const buttons = document.querySelectorAll('[data-theme]');
+    function updateActive() {
+      const pref = window.themePreference ? window.themePreference.get() : 'system';
+      buttons.forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.theme === pref);
+      });
+    }
+    window.addEventListener('theme-change', updateActive);
+    updateActive();
+  })();
+</script>
+{% endcall %}
+
+{% call card(title='AI defaults') %}
+<div class="space-y-4">
+  <p class="text-sm text-contentMuted">These defaults pre-populate YouTube → blog jobs and can fall back to your settings when API calls omit options.</p>
+  {% if ai_message %}
+    <p class="text-xs text-primary" role="status">{{ ai_message }}</p>
+  {% elif ai_error %}
+    <p class="text-xs text-destructive" role="status">{{ ai_error }}</p>
+  {% endif %}
+  <form method="post" action="/dashboard/account/ai" class="space-y-3">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+    <div class="grid gap-3 sm:grid-cols-2">
+      <label class="space-y-1 text-sm text-content">
+        <span class="text-xs font-semibold uppercase tracking-wide text-contentMuted">Default tone</span>
+        <input type="text" name="tone" value="{{ ai_preferences.tone }}" placeholder="e.g. authoritative"
+               class="w-full rounded-md border border-border bg-surface px-3 py-2 text-sm text-content focus:border-primary focus:ring-1 focus:ring-primary" />
+        <span class="text-xs text-contentMuted">Used when no tone is specified.</span>
+      </label>
+      <label class="space-y-1 text-sm text-content">
+        <span class="text-xs font-semibold uppercase tracking-wide text-contentMuted">Model</span>
+        <select name="model"
+                class="w-full rounded-md border border-border bg-surface px-3 py-2 text-sm text-content focus:border-primary focus:ring-1 focus:ring-primary">
+          {% for option in ai_model_choices %}
+            <option value="{{ option.value }}" {% if option.value == ai_preferences.model %}selected{% endif %}>
+              {{ option.label }}
+            </option>
+          {% endfor %}
+        </select>
+        <span class="text-xs text-contentMuted">OpenAI Responses API models.</span>
+      </label>
+      <label class="space-y-1 text-sm text-content">
+        <span class="text-xs font-semibold uppercase tracking-wide text-contentMuted">Max sections</span>
+        <input type="number" name="max_sections" min="1" max="12" value="{{ ai_preferences.max_sections }}"
+               class="w-full rounded-md border border-border bg-surface px-3 py-2 text-sm text-content focus:border-primary focus:ring-1 focus:ring-primary" />
+      </label>
+      <label class="space-y-1 text-sm text-content">
+        <span class="text-xs font-semibold uppercase tracking-wide text-contentMuted">Target chapters</span>
+        <input type="number" name="target_chapters" min="1" max="12" value="{{ ai_preferences.target_chapters }}"
+               class="w-full rounded-md border border-border bg-surface px-3 py-2 text-sm text-content focus:border-primary focus:ring-1 focus:ring-primary" />
+      </label>
+      <label class="space-y-1 text-sm text-content">
+        <span class="text-xs font-semibold uppercase tracking-wide text-contentMuted">Temperature</span>
+        <input type="number" step="0.1" min="0" max="2" name="temperature" value="{{ '%.1f'|format(ai_preferences.temperature) }}"
+               class="w-full rounded-md border border-border bg-surface px-3 py-2 text-sm text-content focus:border-primary focus:ring-1 focus:ring-primary" />
+        <span class="text-xs text-contentMuted">Higher values add more creativity.</span>
+      </label>
+      <label class="flex items-center gap-2 text-sm text-content pt-6">
+        <input type="checkbox" name="include_images" value="1" {% if ai_preferences.include_images %}checked{% endif %}
+               class="h-4 w-4 rounded border-border text-primary focus:ring-primary">
+        <span class="text-xs text-contentMuted uppercase tracking-wide">Generate image prompts</span>
+      </label>
+    </div>
+    <div class="flex justify-end">
+      {{ button('Save defaults', variant='primary', attrs='type="submit"', extra_classes='inline-flex items-center gap-2') }}
+    </div>
+  </form>
+</div>
+{% endcall %}
+
+{% call card(title='Danger zone') %}
+<div class="space-y-3">
+  <div class="space-y-1">
+    <h3 class="text-sm font-semibold text-content">Delete account</h3>
+    <p class="text-sm text-contentMuted">Permanently remove your account, API keys, jobs, and document history. This
+      action cannot be undone.</p>
+  </div>
+  {% if delete_error %}
+  <p class="text-xs text-destructive" role="status">{{ delete_error }}</p>
+  {% endif %}
+  <div class="flex items-center justify-end">
+    {{ button('Delete account', variant='destructive', attrs='type="button"
+    @click="$dispatch(\'open-delete-account\')"', extra_classes='inline-flex items-center gap-2') }}
+  </div>
+</div>
+{% endcall %}
+
+<div class="flex flex-col items-stretch gap-2 md:flex-row md:justify-end">
+  <form method="post" action="/auth/logout">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+    {{ button('Log out', variant='secondary', attrs='type="submit"', extra_classes='inline-flex items-center gap-2') }}
+  </form>
+</div>
+{% endcall %}
+
+<script>
+  (function () {
+    const controls = document.getElementById('appearance-controls');
+    if (!controls) return;
+
+    const radios = controls.querySelectorAll('input[type="radio"][name="appearance"]');
+    const resolvedText = document.getElementById('resolved-theme-text');
+
+    function updateResolvedText() {
+      if (!resolvedText) return;
+      const isDark = document.documentElement.classList.contains('dark');
+      resolvedText.textContent = isDark ? 'dark mode' : 'light mode';
+    }
+
+    function setChecked(value) {
+      radios.forEach(radio => {
+        radio.checked = radio.value === value;
+      });
+    }
+
+    function init() {
+      const preference = window.themePreference ? window.themePreference.get() : 'system';
+      setChecked(preference);
+      updateResolvedText();
+    }
+
+    function handleChange(event) {
+      const value = event.target.value;
+      if (window.themePreference) {
+        window.themePreference.set(value);
+      }
+    }
+
+    function handleThemeChange(event) {
+      if (event && event.detail) {
+        setChecked(event.detail.theme || 'system');
+        updateResolvedText();
+      }
+    }
+
+    radios.forEach(radio => {
+      radio.addEventListener('change', handleChange);
+    });
+
+    window.addEventListener('theme-change', handleThemeChange);
+
+    init();
+  })();
+</script>
+
+{% call modal('delete-account', title='Delete account', confirm_text='Delete', cancel_text='Cancel') %}
+<div class="space-y-4">
+  <p class="text-sm text-content">Deleting your account immediately removes all jobs, documents, API keys, and stored
+    OAuth tokens. There is no way to restore this data.</p>
+  <div
+    x-data="{ submit(){ if(this.$refs.form && this.$refs.form.reportValidity()){ this.$refs.form.requestSubmit(); } } }"
+    @confirm-delete-account.window="submit()" class="space-y-3">
+    <form x-ref="form" method="post" action="/dashboard/account/delete" class="space-y-3">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+      <p id="delete-confirm-hint" class="text-sm text-contentMuted">Type <span
+          class="font-semibold text-content">DELETE</span> below to confirm that you understand this action cannot be
+        undone.</p>
+      {{ input('confirmation', label='Confirmation', value=delete_value, placeholder='DELETE', attrs='required
+      pattern="DELETE" aria-describedby="delete-confirm-hint" autocomplete="off" spellcheck="false" inputmode="text"
+      data-autofocus', error=delete_error) }}
+    </form>
+  </div>
+</div>
+{% endcall %}
+
+{% if delete_error %}
+<script>
+  window.addEventListener('DOMContentLoaded', function () {
+    window.dispatchEvent(new CustomEvent('open-delete-account'));
+  });
+</script>
+{% endif %}
+{% endblock %}

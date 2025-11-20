@@ -1,0 +1,84 @@
+{% from 'components/elements/badge.html' import badge %}
+{% from 'components/elements/alert.html' import alert %}
+<div id="documents-table" class="space-y-4">
+  {% if flash %}
+    <div>
+      {{ alert(kind='success' if flash.status == 'success' else 'error', text=flash.message, dismissible=True) }}
+    </div>
+  {% endif %}
+
+  {% if documents %}
+    <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+      {% for document in documents %}
+        {% set meta = document.metadata or {} %}
+        {% set youtube_meta = meta.youtube if meta.get('youtube') else {} %}
+        {% set drive_meta = meta.drive if meta.get('drive') else {} %}
+        {% set folder = drive_meta.folder or {} %}
+        {% set media = drive_meta.media or {} %}
+        {% set doc_title = document.frontmatter.title or meta.title or youtube_meta.title or document.id %}
+        <article class="rounded-2xl border border-border/70 bg-card/70 p-4 shadow-sm hover:border-primary/70 transition-colors">
+            <div class="flex items-start justify-between gap-3">
+              <div class="space-y-1">
+                <p class="text-[11px] uppercase tracking-wide text-contentMuted">{{ document.source_label or '—' }}</p>
+                <a href="/dashboard/documents/{{ document.id }}" class="text-base font-semibold text-content hover:text-primary break-words">
+                  {{ doc_title }}
+                </a>
+                <p class="text-xs text-contentMuted break-all">Document ID: {{ document.id }}</p>
+                {% if drive_meta.stage or document.drive_sync_status %}
+                  <p class="text-xs text-contentMuted">
+                    Drive: {{ drive_meta.stage|capitalize if drive_meta.stage else '—' }}
+                    {% if document.drive_sync_status %}
+                      · {{ document.drive_sync_status }}
+                    {% endif %}
+                  </p>
+                {% endif %}
+              </div>
+              <div class="flex flex-col items-end gap-2 text-xs text-contentMuted">
+                <p>{{ document.created_at or '—' }}</p>
+                {% if drive_meta.stage %}
+                  {{ badge(drive_meta.stage|capitalize, status='completed' if drive_meta.stage == 'published' else 'default') }}
+                {% endif %}
+            </div>
+          </div>
+          <div class="mt-4 space-y-3 text-sm">
+            <div class="rounded-lg border border-border/70 bg-surface/40 p-3">
+              <p class="text-xs uppercase tracking-wide text-contentMuted">Origin</p>
+              <p class="text-content break-words">{{ document.origin or '—' }}</p>
+            </div>
+            <div class="rounded-lg border border-border/70 bg-surface/40 p-3 space-y-2">
+              <div class="flex items-center justify-between text-xs uppercase tracking-wide text-contentMuted">
+                <span>Workspace</span>
+                {% if folder.webViewLink %}
+                  <a href="{{ folder.webViewLink }}" target="_blank" rel="noopener" class="text-primary hover:text-primary/80">Open folder</a>
+                {% endif %}
+              </div>
+              {% if folder.id or document.drive_folder_id %}
+                <p class="text-sm text-content break-words">{{ folder.name or document.drive_folder_id }}</p>
+                <p class="text-xs text-contentMuted">ID: {{ folder.id or document.drive_folder_id }}</p>
+              {% else %}
+                <p class="text-sm text-contentMuted">No Drive folder linked yet.</p>
+              {% endif %}
+            </div>
+            <div class="rounded-lg border border-dashed border-border/70 bg-surface/20 p-3 space-y-2">
+              <p class="text-xs uppercase tracking-wide text-contentMuted">Quick links</p>
+              <div class="flex flex-wrap gap-2 text-xs">
+                {% if drive_meta.web_view_link %}
+                  <a href="{{ drive_meta.web_view_link }}" target="_blank" rel="noopener" class="inline-flex items-center rounded-full border border-border px-3 py-1 hover:border-primary hover:text-primary">Google Doc</a>
+                {% endif %}
+                {% if media.webViewLink %}
+                  <a href="{{ media.webViewLink }}" target="_blank" rel="noopener" class="inline-flex items-center rounded-full border border-border px-3 py-1 hover:border-primary hover:text-primary">Media</a>
+                {% endif %}
+                <a href="/dashboard/documents/{{ document.id }}" class="inline-flex items-center rounded-full border border-border px-3 py-1 text-content hover:border-primary">Open in Quill</a>
+                {% if not drive_meta.web_view_link and not media.webViewLink %}
+                  <span class="text-contentMuted">Drive assets pending</span>
+                {% endif %}
+              </div>
+            </div>
+          </div>
+        </article>
+      {% endfor %}
+    </div>
+  {% else %}
+    <div class="surface rounded-lg p-6 text-center text-sm text-contentMuted">No documents yet</div>
+  {% endif %}
+</div>

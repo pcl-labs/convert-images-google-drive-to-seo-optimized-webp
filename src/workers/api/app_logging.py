@@ -73,10 +73,14 @@ class JSONFormatter(logging.Formatter):
 
 
 def setup_logging(level: str = "INFO", use_json: bool = True):
-    """Set up logging configuration."""
+    """Set up logging configuration.
+    
+    In Cloudflare Workers, logs go to stdout which is captured by the Workers runtime.
+    For previews, logs are visible in the Wrangler output and Cloudflare dashboard.
+    """
     log_level = getattr(logging, level.upper(), logging.INFO)
     
-    # Create handler
+    # Create handler - stdout works in both local dev and Cloudflare Workers
     handler = logging.StreamHandler(sys.stdout)
     handler.setLevel(log_level)
     
@@ -105,6 +109,9 @@ def setup_logging(level: str = "INFO", use_json: bool = True):
     # Set levels for third-party loggers
     logging.getLogger("uvicorn").setLevel(logging.WARNING)
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+    
+    # Log that logging is configured (helps verify logs are working)
+    root_logger.info("Logging configured: level=%s, use_json=%s", level, use_json)
     
     return root_logger
 

@@ -3,8 +3,8 @@
   "description": "Create SEO Ranking blogs from YouTube. Ship fast, flexible, and SEO-optimized blogs with AI assist out of box. Quill brings the best of the LLM ecosystem.",
   "private": true,
   "scripts": {
-    "dev:css": "tailwindcss -i ./assets/css/input.css -o ./static/css/app.css --watch",
-    "build:css": "tailwindcss -i ./assets/css/input.css -o ./static/css/app.css --minify"
+    "dev:css": "tailwindcss -i ./assets/css/tailwind.css -o ./src/workers/static/css/app.css --watch",
+    "build:css": "tailwindcss -i ./assets/css/tailwind.css -o ./src/workers/static/css/app.css --minify"
   },
   "devDependencies": {
     "@tailwindcss/forms": "^0.5.10",

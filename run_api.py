@@ -1,6 +1,18 @@
 #!/usr/bin/env python3
 """
 Simple script to run the FastAPI server locally.
+
+================================================================================
+NOTE: This module is for LOCAL DEVELOPMENT ONLY.
+It is NOT used in the Cloudflare Python Worker runtime.
+
+The Cloudflare Worker uses src/workers/main.py as its entrypoint,
+which uses Cloudflare's built-in `asgi` module to handle requests
+without Uvicorn.
+
+For local development: python run_api.py
+For Cloudflare Worker: wrangler dev (or deploy)
+================================================================================
 """
 
 import os

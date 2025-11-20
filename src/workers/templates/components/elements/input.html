@@ -1,0 +1,10 @@
+{% macro input(name, label=None, type="text", value="", placeholder="", error=None, attrs="") %}
+  <div class="space-y-1">
+    {% if label %}<label for="{{ name }}" class="block text-sm font-medium text-contentMuted">{{ label }}</label>{% endif %}
+    {# attrs must only contain trusted/internal values; rendered with |safe #}
+    <input id="{{ name }}" name="{{ name }}" type="{{ type }}" value="{{ value }}" placeholder="{{ placeholder }}" class="field w-full"
+      {% if error %}aria-invalid="true" aria-describedby="{{ name }}-error"{% endif %}
+      {{ attrs|safe }}>
+    {% if error %}<p id="{{ name }}-error" class="text-xs text-destructive mt-1">{{ error }}</p>{% endif %}
+  </div>
+{% endmacro %}

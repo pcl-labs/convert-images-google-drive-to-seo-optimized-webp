@@ -1,0 +1,92 @@
+{% from 'components/layout/page.html' import page_container, page_header %}
+{% from 'components/elements/button.html' import button %}
+{% from 'components/elements/card.html' import card %}
+{% from 'components/elements/badge.html' import badge %}
+{% from 'components/elements/alert.html' import alert %}
+
+{% set header_actions %}
+  <div class="flex w-full flex-col gap-2 sm:flex-row sm:justify-end">
+    <form hx-post="/dashboard/jobs/{{ job.id }}/retry" hx-headers='{"X-CSRF-Token":"{{ csrf_token }}"}' hx-swap="none">
+      {{ button('Retry','secondary', extra_classes='w-full sm:w-auto') }}
+    </form>
+    <form hx-delete="/dashboard/jobs/{{ job.id }}" hx-headers='{"X-CSRF-Token":"{{ csrf_token }}"}' hx-swap="none">
+      {{ button('Cancel','destructive', extra_classes='w-full sm:w-auto') }}
+    </form>
+  </div>
+{% endset %}
+{{ page_header('Job ' ~ job.id, 'Created ' ~ (job.created_at or 'unknown'), actions=header_actions) }}
+
+{% call card(title='Metadata', actions='<div>' + badge(job.status_label or job.status, status=job.status) + '</div>') %}
+  <dl class="grid gap-3 sm:grid-cols-2">
+    <div class="space-y-1">
+      <dt class="text-xs uppercase tracking-wide text-contentMuted">Type</dt>
+      <dd class="text-sm text-content">{{ job.kind or job.type }}</dd>
+    </div>
+    <div class="space-y-1">
+      <dt class="text-xs uppercase tracking-wide text-contentMuted">Document</dt>
+      <dd class="font-mono text-sm text-content break-words">{{ job.document_id or '-' }}</dd>
+    </div>
+    <div class="space-y-1">
+      <dt class="text-xs uppercase tracking-wide text-contentMuted">Owner</dt>
+      <dd class="text-sm text-content">{{ job.user or '-' }}</dd>
+    </div>
+    <div class="space-y-1">
+      <dt class="text-xs uppercase tracking-wide text-contentMuted">Updated</dt>
+      <dd class="text-sm text-content">{{ job.updated_at or '-' }}</dd>
+    </div>
+  </dl>
+  {% if job.error %}
+    <div class="mt-4">{{ alert('error', job.error) }}</div>
+  {% endif %}
+{% endcall %}
+
+{% call card(title='Status Timeline') %}
+  <ol class="space-y-3 text-sm">
+    {% for e in job.events or [] %}
+      <li class="flex items-start gap-2">
+        <div class="h-2 w-2 mt-1.5 rounded-full bg-primary"></div>
+        <div>
+          <div class="text-content">{{ e.message }}</div>
+          <div class="text-contentMuted text-xs">{{ e.ts }}</div>
+        </div>
+      </li>
+    {% else %}
+      <li class="text-contentMuted">No events yet</li>
+    {% endfor %}
+  </ol>
+{% endcall %}
+
+{% call card(title='Output') %}
+  <div id="job-status"
+       class="space-y-2"
+       data-status="{{ job.status }}"
+       hx-get="/dashboard/jobs/{{ job.id }}"
+       hx-trigger="every 2s[document.querySelector('#job-status') && document.querySelector('#job-status').dataset.status === 'processing']"
+       hx-swap="outerHTML">
+    {% if job.output %}
+      <pre class="whitespace-pre-wrap text-sm text-content">{{ job.output }}</pre>
+    {% else %}
+      <p class="text-contentMuted text-sm">No output yet.</p>
+    {% endif %}
+  </div>
+{% endcall %}
+
+{% call card(title='Recent Logs') %}
+  {% set logs = (job.progress.recent_logs if job.progress and job.progress.recent_logs else []) %}
+  {% if logs and logs|length > 0 %}
+    <ul class="space-y-1 text-sm text-content">
+      {% for line in logs|reverse %}
+        <li class="flex items-start gap-2">
+          <span class="mt-1.5 h-1.5 w-1.5 rounded-full bg-contentMuted"></span>
+          <span class="break-words">{{ line }}</span>
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="text-contentMuted text-sm">No recent logs yet.</p>
+  {% endif %}
+{% endcall %}
+
+<div class="flex justify-start">
+  <a href="/dashboard/jobs" class="text-sm text-primary hover:text-primary/80">&larr; Back to Jobs</a>
+</div>

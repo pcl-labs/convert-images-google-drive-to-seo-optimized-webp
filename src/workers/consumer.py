@@ -34,7 +34,7 @@ import textwrap
 from datetime import datetime, timezone, timedelta
 import uuid
 
-from src.workers.core.drive_utils import (
+from core.drive_utils import (
     download_images,
     upload_images,
     delete_images,
@@ -42,8 +42,8 @@ from src.workers.core.drive_utils import (
     extract_folder_id_from_input,
     is_valid_drive_file_id,
 )
-from src.workers.core.image_processor import process_image
-from src.workers.api.database import (
+from core.image_processor import process_image
+from api.database import (
     Database,
     update_job_status,
     update_document,
@@ -57,29 +57,29 @@ from src.workers.api.database import (
     record_pipeline_event,
     get_user_preferences,
 )
-from src.workers.api.config import settings
-from src.workers.api.cloudflare_queue import QueueProducer
-from src.workers.api.google_oauth import build_youtube_service_for_user, build_docs_service_for_user, build_drive_service_for_user
-from src.workers.api.drive_workspace import DriveWorkspaceSyncService, link_document_drive_workspace
-from src.workers.api.drive_docs import sync_drive_doc_for_document
-from src.workers.api.drive_watch import ensure_drive_watch, watches_due_for_renewal
-from src.workers.core.ai_modules import (
+from api.config import settings
+from api.cloudflare_queue import QueueProducer
+from api.google_oauth import build_youtube_service_for_user, build_docs_service_for_user, build_drive_service_for_user
+from api.drive_workspace import DriveWorkspaceSyncService, link_document_drive_workspace
+from api.drive_docs import sync_drive_doc_for_document
+from api.drive_watch import ensure_drive_watch, watches_due_for_renewal
+from core.ai_modules import (
     compose_from_plan,
     default_title_from_outline,
     generate_image_prompts,
     markdown_to_html,
 )
-from src.workers.core.content_planner import plan_content
-from src.workers.api.notifications import notify_job
-from src.workers.api.app_logging import setup_logging, get_logger
-from src.workers.core.filename_utils import FILENAME_ID_SEPARATOR, sanitize_folder_name, parse_download_name, make_output_dir_name
-from src.workers.core.constants import TEMP_DIR, FAIL_LOG_PATH
-from src.workers.core.extension_utils import normalize_extensions, detect_extensions_in_dir
-from src.workers.core.google_async import execute_google_request
-from src.workers.core.google_docs_text import google_doc_to_text, text_to_html
-from src.workers.api.youtube_ingest import ingest_youtube_document
-from src.workers.core.youtube_captions import YouTubeCaptionsError
-from src.workers.api.ai_preferences import resolve_generate_blog_options
+from core.content_planner import plan_content
+from api.notifications import notify_job
+from api.app_logging import setup_logging, get_logger
+from core.filename_utils import FILENAME_ID_SEPARATOR, sanitize_folder_name, parse_download_name, make_output_dir_name
+from core.constants import TEMP_DIR, FAIL_LOG_PATH
+from core.extension_utils import normalize_extensions, detect_extensions_in_dir
+from core.google_async import execute_google_request
+from core.google_docs_text import google_doc_to_text, text_to_html
+from api.youtube_ingest import ingest_youtube_document
+from core.youtube_captions import YouTubeCaptionsError
+from api.ai_preferences import resolve_generate_blog_options
 
 # Set up logging
 logger = setup_logging(level="INFO", use_json=True)
@@ -1899,8 +1899,8 @@ async def handle_queue_message(message: Dict[str, Any], db: Database, queue_prod
 
 async def run_inline_queue_consumer(poll_interval: float = 1.0, recover_pending: bool = True):
     """Inline consumer that polls the DB for pending jobs."""
-    from src.workers.api.config import settings
-    from src.workers.api.database import get_pending_jobs
+    from api.config import settings
+    from api.database import get_pending_jobs
 
     app_logger.info("Starting inline queue consumer (DB polling)")
     db = Database(db=settings.d1_database)

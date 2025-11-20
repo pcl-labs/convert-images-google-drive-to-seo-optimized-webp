@@ -4,7 +4,7 @@ This document provides a complete reference for all Jinja component macros in th
 
 ## Button Component
 
-**Location:** `templates/components/elements/button.html`
+**Location:** `src/workers/templates/components/elements/button.html`
 
 **Macro:** `button`
 
@@ -45,7 +45,7 @@ This document provides a complete reference for all Jinja component macros in th
 
 ## Card Component
 
-**Location:** `templates/components/elements/card.html`
+**Location:** `src/workers/templates/components/elements/card.html`
 
 **Macro:** `card`
 
@@ -78,7 +78,7 @@ Uses Jinja's `call` block syntax:
 
 ## Input Component
 
-**Location:** `templates/components/elements/input.html`
+**Location:** `src/workers/templates/components/elements/input.html`
 
 **Macro:** `input`
 
@@ -120,7 +120,7 @@ Uses Jinja's `call` block syntax:
 
 ## Alert Component
 
-**Location:** `templates/components/elements/alert.html`
+**Location:** `src/workers/templates/components/elements/alert.html`
 
 **Macro:** `alert`
 
@@ -153,7 +153,7 @@ Uses Jinja's `call` block syntax:
 
 ## Badge Component
 
-**Location:** `templates/components/elements/badge.html`
+**Location:** `src/workers/templates/components/elements/badge.html`
 
 **Macro:** `badge`
 
@@ -187,7 +187,7 @@ Uses Jinja's `call` block syntax:
 
 ## Modal Component
 
-**Location:** `templates/components/overlays/modal.html`
+**Location:** `src/workers/templates/components/overlays/modal.html`
 
 **Macro:** `modal`
 
@@ -236,7 +236,7 @@ Listen for the confirm event:
 
 ## Page Layout Macros
 
-**Location:** `templates/components/layout/page.html`
+**Location:** `src/workers/templates/components/layout/page.html`
 
 These macros provide consistent, mobile-friendly scaffolding for dashboard pages.
 
@@ -300,7 +300,7 @@ Use `flex` utilities to align actions (e.g., “View” links) on larger screens
 
 ## Dropdown Component
 
-**Location:** `templates/components/elements/dropdown.html`
+**Location:** `src/workers/templates/components/elements/dropdown.html`
 
 **Macro:** `dropdown`
 
@@ -339,7 +339,7 @@ The dropdown uses Alpine.js for state management. The trigger should call `toggl
 
 ## Integration Card Component
 
-**Location:** `templates/components/elements/integration_card.html`
+**Location:** `src/workers/templates/components/elements/integration_card.html`
 
 **Macro:** `integration_card`
 
@@ -367,7 +367,7 @@ The dropdown uses Alpine.js for state management. The trigger should call `toggl
 
 ## Design Tokens
 
-All components use semantic design tokens defined in `assets/css/input.css`. These tokens can be updated in one place to change the entire theme.
+All components use semantic design tokens defined in `assets/css/tailwind.css`. These tokens can be updated in one place to change the entire theme.
 
 ### Token Format: RGB for Opacity Support
 
@@ -379,7 +379,7 @@ Example:
 
 ### Color Tokens
 
-All colors are defined as RGB values in `assets/css/input.css`. The semantic tokens stay the same, but their values change based
+All colors are defined as RGB values in `assets/css/tailwind.css`. The semantic tokens stay the same, but their values change based
 on whether the document root is in light mode (`:root`) or dark mode (`.dark`).
 
 **Google Light Theme (`:root`)**
@@ -428,7 +428,7 @@ on whether the document root is in light mode (`:root`) or dark mode (`.dark`).
 
 **Semantic Utility Classes:**
 - Direct utility classes like `.surface` and `.surface-muted` are available for use in templates
-- These are defined in `@layer components` in `assets/css/input.css`
+- These are defined in `@layer components` in `assets/css/tailwind.css`
 
 **Examples:**
 ```html

@@ -1,25 +1,53 @@
 # Cloudflare Workers configuration
+#
+# This file configures the Quill API Worker for Cloudflare's Python Workers runtime.
+# The Worker entrypoint is src/workers/main.py, which uses FastAPI via an ASGI adapter.
+#
+# For local development, use: python run_api.py (or uvicorn)
+# For Worker dev/preview: wrangler dev
+# For Worker production: wrangler deploy
+#
+# See docs/CLOUDFLARE_WORKERS.md for detailed setup instructions.
 
 name = "quill-api"
-main = "src/workers/main.py"
+main = "src/workers/main.py"  # Python Worker entrypoint (Default class)
 compatibility_date = "2024-01-01"
-compatibility_flags = ["python_workers"]
+compatibility_flags = ["python_workers"]  # Required for Python Workers
 
-# Environment variables
+# Environment variables (accessible via os.environ in Worker)
+# These are set at deploy time and can be overridden per-environment
 [vars]
-ENVIRONMENT = "production"
-DEBUG = "false"
+ENVIRONMENT = "development"  # Used by Settings.environment
+# For Cloudflare Workers production: set to "cloudflare" (requires D1 binding)
+# For local development: set to "development" (uses SQLite fallback)
+DEBUG = "true"             # Used by Settings.debug
+BASE_URL = "http://localhost:8787"  # OAuth redirect URI base (matches wrangler dev port)
+ENABLE_DRIVE_PIPELINE = "true"
+STATIC_FILES_DIR = "./static"
+CORS_ORIGINS = "http://localhost:8000,http://127.0.0.1:8000,http://localhost:8787,http://127.0.0.1:8787"
+JWT_USE_COOKIES = "true"
+QUEUE_NAME = "quill-jobs"
+DEAD_LETTER_QUEUE_NAME = "quill-dlq"
+USE_INLINE_QUEUE = "true"
+TRANSCRIPT_LANGS = "en,en-US,en-GB"
+OPENAI_API_BASE = "https://api.openai.com/v1"
+OPENAI_BLOG_MODEL = "gpt-5.1"
+OPENAI_BLOG_TEMPERATURE = "0.6"
+OPENAI_BLOG_MAX_OUTPUT_TOKENS = "2200"
 
 # D1 Database binding
+# The binding name "DB" must match what the code expects (see src/workers/runtime.py)
+# Code accesses this via env.DB, which is mapped to settings.d1_database
 [[d1_databases]]
-binding = "DB"
+binding = "DB"  # Must match WORKER_DB_BINDING in src/workers/runtime.py
 database_name = "quill-db"
-database_id = "933d76cf-a988-4a71-acc6-d884278c6402"
+database_id = "933d76cf-a988-4a71-acc6-d884278c6402"  # Get via: wrangler d1 list
 
-# Queue binding
+# Queue bindings for background job processing
+# Code expects JOB_QUEUE and DLQ bindings (see src/workers/runtime.py)
 [[queues.producers]]
-queue = "quill-jobs"
-binding = "JOB_QUEUE"
+queue = "quill-jobs"  # Primary job queue name
+binding = "JOB_QUEUE"  # Must match WORKER_QUEUE_BINDING in src/workers/runtime.py
 
 [[queues.consumers]]
 queue = "quill-jobs"
@@ -28,25 +56,52 @@ max_batch_timeout = 30
 max_retries = 3
 dead_letter_queue = "quill-dlq"
 
-# Dead letter queue
+# Dead letter queue (for failed jobs after max retries)
 [[queues.producers]]
-queue = "quill-dlq"
-binding = "DLQ"
+queue = "quill-dlq"  # Dead letter queue name
+binding = "DLQ"  # Must match WORKER_DLQ_BINDING in src/workers/runtime.py
 
-# Secrets (set via wrangler secret put)
-# GITHUB_CLIENT_ID
-# GITHUB_CLIENT_SECRET
-# JWT_SECRET_KEY
+# Required Secrets (set via: wrangler secret put SECRET_NAME)
+# These are encrypted and accessible via os.environ in the Worker
+#
+# Required for authentication:
+#   wrangler secret put JWT_SECRET_KEY          # Secret key for JWT tokens (required)
+#   wrangler secret put GITHUB_CLIENT_ID        # GitHub OAuth Client ID
+#   wrangler secret put GITHUB_CLIENT_SECRET    # GitHub OAuth Client Secret
+#   wrangler secret put GOOGLE_CLIENT_ID        # Google OAuth Client ID (for Drive/YouTube)
+#   wrangler secret put GOOGLE_CLIENT_SECRET    # Google OAuth Client Secret
+#
+# Optional:
+#   wrangler secret put GITHUB_REDIRECT_URI     # OAuth redirect URI (optional)
+#   wrangler secret put BASE_URL                 # Base URL for the app (optional)
+#   wrangler secret put OPENAI_API_KEY          # OpenAI API key (optional, for AI features)
+#
+# For production with Cloudflare Queues (USE_INLINE_QUEUE=false):
+#   wrangler secret put CLOUDFLARE_ACCOUNT_ID   # Cloudflare account ID
+#   wrangler secret put CLOUDFLARE_API_TOKEN    # API token with Queues:Edit permission
+#   wrangler secret put CF_QUEUE_NAME           # Queue name (default: "quill-jobs")
+#   wrangler secret put CF_QUEUE_DLQ            # DLQ name (default: "quill-dlq")
+#
+# See docs/CLOUDFLARE_WORKERS.md for complete setup instructions.
+
+# Static assets binding
+# This tells Wrangler to bundle all files from src/workers/static
+# and make them accessible via env.ASSETS.fetch() in the Worker
+[assets]
+directory = "src/workers/static"
+binding = "ASSETS"
 
 # Routes (optional - for custom domain)
+# Uncomment and configure if you want to use a custom domain:
 # routes = [
 #   { pattern = "api.example.com/*", zone_name = "example.com" }
 # ]
 
-# Limits
+# Resource Limits
 [limits]
-cpu_ms = 50000  # 50 seconds CPU time
+cpu_ms = 50000  # 50 seconds CPU time per request (default: 50s, max: 50s)
 
+# Observability / Logging
 [observability]
 enabled = false
 head_sampling_rate = 1
@@ -55,7 +110,7 @@ head_sampling_rate = 1
 enabled = true
 head_sampling_rate = 1
 persist = true
-invocation_logs = true
+invocation_logs = true  # Logs each request invocation
 
 [observability.traces]
 enabled = false

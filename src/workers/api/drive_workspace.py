@@ -17,7 +17,7 @@ from .database import (
 )
 from .google_oauth import build_docs_service_for_user, build_drive_service_for_user
 from .drive_watch import ensure_drive_watch
-from src.workers.core.google_async import execute_google_request
+from core.google_async import execute_google_request
 
 logger = get_logger(__name__)
 
@@ -489,7 +489,12 @@ class DriveWorkspaceSyncService:
         else:
             query = "SELECT * FROM documents WHERE user_id = ? AND drive_file_id IS NOT NULL"
         rows = await self.db.execute_all(query, tuple(params))
-        return [dict(row) for row in rows or []]
+        if not rows:
+            return []
+        # Convert JsProxy results to Python list
+        from .database import _jsproxy_to_list, _jsproxy_to_dict
+        rows_list = _jsproxy_to_list(rows)
+        return [_jsproxy_to_dict(row) for row in rows_list]
 
     async def _mark_pending_revision(
         self,

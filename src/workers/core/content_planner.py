@@ -12,7 +12,7 @@ except Exception:  # pragma: no cover - optional dependency during tests
     AsyncOpenAI = None  # type: ignore
     OpenAIError = Exception  # type: ignore
 
-from src.workers.api.config import settings
+from api.config import settings
 from .ai_modules import generate_outline, organize_chapters, generate_seo_metadata
 
 logger = logging.getLogger(__name__)
