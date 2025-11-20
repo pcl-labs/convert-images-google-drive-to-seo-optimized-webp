@@ -11,7 +11,7 @@ import re
 from .config import settings
 from .database import get_document, update_document, record_usage_event, record_pipeline_event
 from .google_oauth import build_youtube_service_for_user
-from core.youtube_captions import fetch_captions_text, YouTubeCaptionsError
+from core.youtube_captions import fetch_captions_text_async, YouTubeCaptionsError
 
 
 logger = logging.getLogger(__name__)
@@ -195,7 +195,7 @@ async def ingest_youtube_document(
         message="Fetching captions",
         data={"video_id": youtube_video_id, "langs": langs},
     )
-    cap = await asyncio.to_thread(fetch_captions_text, yt_service, youtube_video_id, langs)
+    cap = await fetch_captions_text_async(yt_service, youtube_video_id, langs)
     if not cap.get("success"):
         raise YouTubeCaptionsError(cap.get("error") or "Captions unavailable for this video.")
     await _safe_record_pipeline_event(

@@ -59,6 +59,9 @@
             window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', text: 'Request failed' } }));
           });
         }
+        // Disable notification HTTP polling in dev to keep Wrangler logs readable.
+        // The implementation below is left in place but short-circuited.
+        return;
 
         // HTTP Polling implementation (SSE doesn't work in Cloudflare Workers Python)
         try {
@@ -245,10 +248,9 @@
             });
           }
           
-          // Start polling when DOM is ready
-          pollNotifications();
+          // Start polling when DOM is ready (temporarily disabled)
           
-          // Pause polling when tab is hidden, resume when visible
+          // Pause polling when tab is hidden, resume when visible (temporarily disabled)
           document.addEventListener('visibilitychange', () => {
             if (document.hidden) {
               if (pollTimer) {
@@ -256,9 +258,8 @@
                 pollTimer = null;
               }
             } else {
-              if (!pollTimer) {
-                pollNotifications();
-              }
+              // Notification polling is disabled in dev to keep Wrangler logs clean.
+              // Intentionally do NOT restart pollNotifications() here.
             }
           });
           

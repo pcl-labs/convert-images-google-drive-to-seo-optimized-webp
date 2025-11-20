@@ -65,7 +65,7 @@ from .app_logging import get_logger
 from .exceptions import JobNotFoundError
 from core.drive_utils import extract_folder_id_from_input
 from core.google_clients import GoogleAPIError
-from core.youtube_api import fetch_video_metadata, YouTubeAPIError
+from core.youtube_api import fetch_video_metadata, fetch_video_metadata_async, YouTubeAPIError
 from core.youtube_captions import YouTubeCaptionsError
 from .deps import (
     ensure_db,
@@ -421,7 +421,8 @@ async def start_ingest_youtube_job(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     try:
-        metadata_bundle = await asyncio.to_thread(fetch_video_metadata, youtube_service, video_id)
+        # Use async fetch path in Workers runtime to avoid urllib timeouts
+        metadata_bundle = await fetch_video_metadata_async(youtube_service, video_id)
     except YouTubeAPIError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
@@ -783,8 +784,8 @@ async def debug_google_integrations(
             extra={"user_id": user_id, "video_id": video_id},
         )
         youtube_service = await build_youtube_service_for_user(db, user_id)
-        metadata_bundle = await asyncio.to_thread(
-            fetch_video_metadata, youtube_service, video_id
+        metadata_bundle = await fetch_video_metadata_async(
+            youtube_service, video_id
         )
         youtube_meta = metadata_bundle.get("metadata") or {}
         results["youtube_ok"] = True
@@ -814,9 +815,14 @@ async def debug_google_integrations(
             extra={"user_id": user_id},
         )
         drive_service = await build_drive_service_for_user(db, user_id)
-        drive_listing = await asyncio.to_thread(
-            drive_service.list_folder_files, "root"
-        )
+        # Use async path in Workers runtime when available
+        if hasattr(drive_service, "list_folder_files_async"):
+            drive_listing = await drive_service.list_folder_files_async("root")  # type: ignore[attr-defined]
+        else:
+            drive_listing = await asyncio.to_thread(
+                drive_service.list_folder_files,
+                "root",
+            )
         files = drive_listing.get("files") or []
         results["drive_ok"] = True
         results["drive_file_count"] = len(files)
