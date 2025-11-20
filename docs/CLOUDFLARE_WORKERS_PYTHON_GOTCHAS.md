@@ -14,6 +14,7 @@ This document captures critical gotchas and best practices for developing Python
 8. [Error Handling](#error-handling)
 9. [ASGI Middleware and Async Operations](#asgi-middleware-and-async-operations)
 10. [HTTP Cookies and Set-Cookie Headers](#http-cookies-and-set-cookie-headers)
+11. [Database Operations and UNIQUE Constraints](#database-operations-and-unique-constraints)
 
 ---
 
@@ -558,6 +559,67 @@ response.delete_cookie("access_token", path="/", samesite="lax", httponly=True, 
 
 ---
 
+## Database Operations and UNIQUE Constraints
+
+### ⚠️ **CRITICAL: Use Returned Record IDs, Not Calculated Ones**
+
+**Problem:** When database operations (like `create_user`) handle UNIQUE constraint violations by returning existing records, the returned record may have a **different ID** than the one you calculated. Using the calculated ID instead of the returned ID causes FOREIGN KEY constraint failures and data inconsistencies.
+
+**Example - User Creation:**
+```python
+# ❌ WRONG - Using calculated user_id after create_user returns existing user
+user_id = f"github_{github_id}"  # Calculated: "github_12345"
+created_user = await create_user(db, user_id, github_id=github_id, email=email)
+# If user already exists (e.g., logged in with Google first), created_user.user_id might be "google_67890"
+
+# Using calculated user_id causes FOREIGN KEY failures!
+jwt_token = generate_jwt_token(user_id, ...)  # Wrong: uses "github_12345"
+await create_user_session(db, session_id, user_id, ...)  # Fails: "github_12345" doesn't exist!
+```
+
+**Solution:**
+```python
+# ✅ CORRECT - Always use the actual user_id from the returned record
+user_id = f"github_{github_id}"  # Calculated: "github_12345"
+created_user = await create_user(db, user_id, github_id=github_id, email=email)
+
+# Use the actual user_id from the returned user (might be different if user already existed)
+actual_user_id = created_user.get("user_id") or user_id
+actual_github_id = created_user.get("github_id") or github_id
+actual_email = created_user.get("email") or email
+
+# Now use actual_user_id everywhere
+jwt_token = generate_jwt_token(actual_user_id, github_id=actual_github_id, email=actual_email)
+await create_user_session(db, session_id, actual_user_id, ...)  # Works: uses correct user_id
+```
+
+**Why This Happens:**
+- `create_user` checks for existing users by `email`, `github_id`, or `google_id` to handle UNIQUE constraints gracefully
+- If a user already exists (e.g., logged in with Google first, then tries GitHub), `create_user` returns the **existing user** with its original `user_id` (e.g., `"google_67890"`)
+- The calculated `user_id` (e.g., `"github_12345"`) doesn't exist in the database
+- Using the calculated ID causes FOREIGN KEY constraint failures when creating related records (sessions, tokens, etc.)
+
+**Impact:**
+- FOREIGN KEY constraint failures when creating sessions, tokens, or other related records
+- JWT tokens with incorrect `user_id` claims
+- Data inconsistencies between calculated IDs and actual database records
+- Authentication failures when the JWT `user_id` doesn't match the database
+
+**Best Practices:**
+1. **Always extract the actual ID** from returned database records when operations may return existing records
+2. **Use the returned record's fields** (not just ID, but all fields) to ensure consistency
+3. **Handle UNIQUE constraints gracefully** by checking for existing records before insert, but always use the returned record's actual values
+4. **Test cross-provider scenarios** (e.g., user logs in with Google, then tries GitHub) to catch these issues early
+
+**When This Matters:**
+- User creation/authentication flows (`create_user`, OAuth callbacks)
+- Any operation that handles UNIQUE constraint violations by returning existing records
+- Operations that create related records (sessions, tokens, etc.) based on a parent record's ID
+
+**Key Takeaway:** When database operations return existing records (to handle UNIQUE constraints), **always use the returned record's actual ID and fields**, not the calculated/expected ones. This prevents FOREIGN KEY constraint failures and ensures data consistency.
+
+---
+
 ## Summary Checklist
 
 When developing for Cloudflare Workers Python:
@@ -577,6 +639,7 @@ When developing for Cloudflare Workers Python:
 - [ ] **Errors:** Handle service unavailability gracefully
 - [ ] **ASGI Middleware:** Skip async DB operations for API endpoints, or move them after `call_next` if acceptable
 - [ ] **Set-Cookie Headers:** Only one `Set-Cookie` header per response - delete critical cookies (like `access_token`) **last**
+- [ ] **Database UNIQUE Constraints:** When operations return existing records, use the returned record's actual ID and fields, not calculated ones
 
 ---
 

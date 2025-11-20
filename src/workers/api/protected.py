@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 from .config import settings
+from .exceptions import DatabaseError
 from .models import (
     JobStatus,
     JobProgress,
@@ -783,7 +784,21 @@ async def google_auth_start(
     Stores OAuth state in user's session instead of cookies for better cross-site redirect reliability.
     """
     from .database import touch_user_session
+    from .flash import add_flash
     import json
+    
+    # Check OAuth configuration early to provide better error message
+    if not settings.google_client_id or not settings.google_client_secret:
+        # Redirect back to integrations page with flash error (for browser requests)
+        integration_key = normalize_google_integration(integration)
+        redirect_path = redirect or f"/dashboard/integrations/{integration_key}"
+        redirect_path = _validate_redirect_path(redirect_path, "/dashboard/integrations")
+        # Try to add flash message, but don't fail if session doesn't exist
+        try:
+            await add_flash(request, "Google OAuth is not configured. Please contact support.", category="error")
+        except Exception as flash_error:
+            logger.debug(f"Could not add flash message (session may not exist): {flash_error}")
+        return RedirectResponse(url=redirect_path, status_code=status.HTTP_302_FOUND)
     
     try:
         integration_key = normalize_google_integration(integration)
@@ -809,22 +824,50 @@ async def google_auth_start(
         
         # If no session exists, create one for this authenticated user
         if not session_id:
-            from .database import create_user_session, create_user
+            from .database import create_user_session, create_user, get_user_by_id
             from datetime import timedelta
             # Ensure user exists in database (required for foreign key constraint in user_sessions)
-            await create_user(
-                db,
-                user["user_id"],
-                github_id=user.get("github_id"),
-                google_id=user.get("google_id"),
-                email=user.get("email"),
-            )
+            # Check if user exists first to avoid UNIQUE constraint violations on github_id/google_id
+            existing_user = await get_user_by_id(db, user["user_id"])
+            if not existing_user:
+                # Only create if user doesn't exist
+                # create_user handles UNIQUE constraint violations gracefully by returning existing user
+                try:
+                    created_user = await create_user(
+                        db,
+                        user["user_id"],
+                        github_id=user.get("github_id"),
+                        google_id=user.get("google_id"),
+                        email=user.get("email"),
+                    )
+                    # Use the returned user (might be different if UNIQUE constraint returned existing user)
+                    existing_user = created_user
+                except Exception as create_error:
+                    # If create fails, try to get the existing user - they might have been created by another request
+                    logger.warning(f"create_user failed, checking if user exists: {create_error}")
+                    existing_user = await get_user_by_id(db, user["user_id"])
+                    if not existing_user:
+                        # If user still doesn't exist, we can't create a session - this is a critical error
+                        logger.error(f"Cannot create session: user {user['user_id']} does not exist and could not be created: {create_error}")
+                        raise HTTPException(
+                            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail="Failed to create user account. Please try again."
+                        ) from create_error
+            # Use the existing user's user_id (might be different if UNIQUE constraint returned different user)
+            actual_user_id = existing_user.get("user_id") or user["user_id"]
+            # Verify user exists before creating session
+            if not actual_user_id:
+                logger.error(f"Cannot create session: user_id is None for user {user['user_id']}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="User account error. Please try again."
+                )
             session_id = secrets.token_urlsafe(32)
             expires_at = datetime.now(timezone.utc) + timedelta(hours=settings.session_ttl_hours)
             await create_user_session(
                 db,
                 session_id,
-                user["user_id"],
+                actual_user_id,
                 expires_at,
                 ip_address=(request.client.host if request.client else None),
                 user_agent=request.headers.get("user-agent"),
@@ -870,9 +913,41 @@ async def google_auth_start(
         # If we stored in session, just redirect
         response = RedirectResponse(url=auth_url)
         return response
+    except ValueError as e:
+        # ValueError from get_google_oauth_url when OAuth is not configured
+        if "Google OAuth not configured" in str(e):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Google OAuth is not configured. Please contact support."
+            ) from e
+        raise
+    except DatabaseError as e:
+        # Database errors (including UNIQUE constraint violations)
+        logger.error(f"Google auth initiation failed (database error): {e}", exc_info=True)
+        # Check if it's a UNIQUE constraint violation
+        from .database import _is_unique_constraint_violation
+        if _is_unique_constraint_violation(e):
+            # Try to redirect with error message instead of 500
+            integration_key = normalize_google_integration(integration)
+            redirect_path = redirect or f"/dashboard/integrations/{integration_key}"
+            redirect_path = _validate_redirect_path(redirect_path, "/dashboard/integrations")
+            try:
+                await add_flash(request, "An error occurred while connecting. Please try again.", category="error")
+            except Exception:
+                pass
+            return RedirectResponse(url=redirect_path, status_code=status.HTTP_302_FOUND)
+        # Re-raise other database errors
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Database error occurred. Please try again later."
+        ) from e
     except Exception as e:
-        logger.error(f"Google auth initiation failed: {e}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Google OAuth not configured")
+        logger.error(f"Google auth initiation failed: {e}", exc_info=True)
+        # Don't assume it's an OAuth configuration issue - show the actual error
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"An error occurred: {str(e)}"
+        ) from e
 
 
 @router.get("/auth/google/callback", tags=["Authentication"])
@@ -897,17 +972,21 @@ async def google_auth_callback(code: str, state: str, request: Request, user: di
     
     # If session isn't loaded by middleware, try to load it manually from cookie
     # This can happen on cross-site redirects where middleware might not have loaded it
-    if not session_id:
+    # or when session is not in cache (middleware skips DB lookup to avoid ASGI errors)
+    if not session or not session_id:
         session_cookie = request.cookies.get(settings.session_cookie_name)
         if session_cookie:
             from .database import get_user_session
             try:
-                session = await get_user_session(db, session_cookie)
-                if session:
+                loaded_session = await get_user_session(db, session_cookie)
+                if loaded_session:
+                    session = loaded_session
                     session_id = session_cookie
                     logger.debug("Google integration callback: Manually loaded session %s from cookie", session_id)
+                else:
+                    logger.debug("Google integration callback: Session cookie %s not found in database", session_cookie)
             except Exception as exc:
-                logger.debug("Google integration callback: Failed to manually load session: %s", exc)
+                logger.warning("Google integration callback: Failed to manually load session: %s", exc, exc_info=True)
     
     logger.debug(
         "Google integration callback: session_present=%s, session_id=%s, cookies=%s",

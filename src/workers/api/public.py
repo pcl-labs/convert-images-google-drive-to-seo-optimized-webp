@@ -1429,9 +1429,24 @@ async def github_auth_start_post(request: Request, csrf_token: str = Form(...)):
 
 @router.get("/auth/google/login/start", tags=["Authentication"])
 async def google_login_start(request: Request):
+    # Check OAuth configuration early to provide better error message
+    if not settings.google_client_id or not settings.google_client_secret:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Google OAuth is not configured. Please contact support."
+        )
+    
     try:
         auth_url, state = _get_google_login_oauth_redirect(request)
         return _build_google_oauth_response(request, auth_url, state)
+    except (ValueError, AuthenticationError) as exc:
+        # ValueError or AuthenticationError when OAuth is not configured
+        if "Google OAuth not configured" in str(exc):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Google OAuth is not configured. Please contact support."
+            ) from exc
+        raise
     except Exception as exc:
         logger.exception("Google auth initiation failed")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Google OAuth not configured") from exc
@@ -1570,12 +1585,18 @@ async def github_callback(code: str, state: str, request: Request):
         from .database import create_user
         
         # Create or update user in database (required for foreign key constraint in user_sessions)
+        # create_user may return an existing user if github_id already exists for a different user_id
         db = ensure_db()
-        await create_user(db, user_id, github_id=github_id, email=email)
+        created_user = await create_user(db, user_id, github_id=github_id, email=email)
         
-        jwt_token = generate_jwt_token(user_id, github_id=github_id, email=email)
-        user = {"user_id": user_id, "email": email, "github_id": github_id}
-        user_response = {"user_id": user_id, "email": email, "github_id": github_id}
+        # Use the actual user_id from the returned user (might be different if user already existed)
+        actual_user_id = created_user.get("user_id") or user_id
+        actual_github_id = created_user.get("github_id") or github_id
+        actual_email = created_user.get("email") or email
+        
+        jwt_token = generate_jwt_token(actual_user_id, github_id=actual_github_id, email=actual_email)
+        user = {"user_id": actual_user_id, "email": actual_email, "github_id": actual_github_id}
+        user_response = {"user_id": actual_user_id, "email": actual_email, "github_id": actual_github_id}
 
         is_secure = is_secure_request(request)
         if settings.jwt_use_cookies:
@@ -1596,7 +1617,7 @@ async def github_callback(code: str, state: str, request: Request):
             await create_user_session(
                 db,
                 session_id,
-                user_id,
+                actual_user_id,  # Use actual_user_id from create_user, not calculated user_id
                 expires_at,
                 ip_address=(request.client.host if request.client else None),
                 user_agent=request.headers.get("user-agent"),
@@ -1701,15 +1722,21 @@ async def google_login_callback(code: str, state: str, request: Request):
         from .database import create_user
         
         # Create or update user in database (required for foreign key constraint in user_sessions)
+        # create_user may return an existing user if google_id already exists for a different user_id
         db = ensure_db()
-        await create_user(db, user_id, google_id=google_id, email=email)
+        created_user = await create_user(db, user_id, google_id=google_id, email=email)
         
-        jwt_token = generate_jwt_token(user_id, google_id=google_id, email=email)
-        user = {"user_id": user_id, "email": email, "google_id": google_id}
+        # Use the actual user_id from the returned user (might be different if user already existed)
+        actual_user_id = created_user.get("user_id") or user_id
+        actual_google_id = created_user.get("google_id") or google_id
+        actual_email = created_user.get("email") or email
+        
+        jwt_token = generate_jwt_token(actual_user_id, google_id=actual_google_id, email=actual_email)
+        user = {"user_id": actual_user_id, "email": actual_email, "google_id": actual_google_id}
         user_response = {
-            "user_id": user_id,
-            "email": email,
-            "google_id": google_id,
+            "user_id": actual_user_id,
+            "email": actual_email,
+            "google_id": actual_google_id,
         }
 
         is_secure = is_secure_request(request)
@@ -1739,7 +1766,7 @@ async def google_login_callback(code: str, state: str, request: Request):
                 await create_user_session(
                     db,
                     session_id,
-                    user_id,
+                    actual_user_id,  # Use actual_user_id from create_user, not calculated user_id
                     expires_at,
                     ip_address=(request.client.host if request.client else None),
                     user_agent=request.headers.get("user-agent"),

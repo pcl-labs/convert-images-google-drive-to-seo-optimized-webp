@@ -9,7 +9,6 @@ import pytest
 
 from tests.conftest import create_test_user
 from src.workers.api.database import (
-    Database,
     create_document,
     create_job_extended,
     get_document,
@@ -351,207 +350,206 @@ def test_process_ingest_youtube_job_merges_metadata(monkeypatch, isolated_db):
     asyncio.run(_run())
 
 
-def test_ingest_youtube_queue_flow(monkeypatch):
-    async def _run():
-        db = Database()
-        user_id = f"user-{uuid.uuid4()}"
-        await create_user(db, user_id=user_id, github_id=None, email=f"{user_id}@example.com")
+@pytest.mark.asyncio
+async def test_ingest_youtube_queue_flow(monkeypatch, isolated_db):
+    db = isolated_db
+    # Ensure notifications schema exists (required for record_pipeline_event)
+    from src.workers.api.database import ensure_notifications_schema
+    await ensure_notifications_schema(db)
+    user_id = f"user-{uuid.uuid4()}"
+    await create_test_user(db, user_id=user_id, email=f"{user_id}@example.com")
 
-        stub_queue = StubQueue()
-        job_row = None
-        fake_service = object()
-        fake_text = "Hello world from captions."
+    stub_queue = StubQueue()
+    job_row = None
+    fake_service = object()
+    fake_text = "Hello world from captions."
 
-        try:
-            monkeypatch.setattr("src.workers.api.protected.settings.use_inline_queue", False)
-            monkeypatch.setattr("src.workers.api.protected.build_youtube_service_for_user", AsyncMock(return_value=fake_service))
+    try:
+        monkeypatch.setattr("src.workers.api.protected.settings.use_inline_queue", False)
+        monkeypatch.setattr("src.workers.api.protected.build_youtube_service_for_user", AsyncMock(return_value=fake_service))
 
-            metadata_bundle = {
-                "frontmatter": {"title": "Queue Flow Video", "slug": "queue-flow-video"},
-                "metadata": {
-                    "title": "Queue Flow Video",
-                    "description": "Demo integration path",
-                    "duration_seconds": 90,
-                    "channel_title": "Queue Channel",
-                    "channel_id": "queue123",
-                    "published_at": "2024-01-01T00:00:00Z",
-                    "thumbnails": {},
-                    "category_id": "24",
-                    "tags": ["queue", "demo"],
-                    "url": "https://youtu.be/queue123456",
+        metadata_bundle = {
+            "frontmatter": {"title": "Queue Flow Video", "slug": "queue-flow-video"},
+            "metadata": {
+                "title": "Queue Flow Video",
+                "description": "Demo integration path",
+                "duration_seconds": 90,
+                "channel_title": "Queue Channel",
+                "channel_id": "queue123",
+                "published_at": "2024-01-01T00:00:00Z",
+                "thumbnails": {},
+                "category_id": "24",
+                "tags": ["queue", "demo"],
+                "url": "https://youtu.be/queue123456",
+            },
+        }
+
+        def _fake_fetch_metadata(service, video_id):
+            assert service is fake_service
+            assert video_id == "queue123456"
+            return metadata_bundle
+
+        monkeypatch.setattr("src.workers.api.protected.fetch_video_metadata", _fake_fetch_metadata)
+
+        async def _fake_worker_ingest(
+            db,
+            job_id,
+            user_id_param,
+            document_id,
+            video_id,
+            metadata,
+            frontmatter_payload,
+            duration,
+        ):
+            youtube_meta = dict(metadata)
+            youtube_meta.setdefault("video_id", video_id)
+            await update_document(
+                db,
+                document_id,
+                {
+                    "raw_text": fake_text,
+                    "metadata": {
+                        "source": "youtube",
+                        "youtube": youtube_meta,
+                        "transcript": {"chars": len(fake_text), "duration_s": duration, "lang": "en"},
+                    },
                 },
+            )
+            return {
+                "job_output": {
+                    "document_id": document_id,
+                    "youtube_video_id": video_id,
+                    "transcript": {"chars": len(fake_text), "duration_s": duration, "lang": "en"},
+                    "metadata": {"frontmatter": frontmatter_payload, "youtube": youtube_meta},
+                }
             }
 
-            def _fake_fetch_metadata(service, video_id):
-                assert service is fake_service
-                assert video_id == "queue123456"
-                return metadata_bundle
+        monkeypatch.setattr("src.workers.consumer.ingest_youtube_document", _fake_worker_ingest)
+        monkeypatch.setattr("src.workers.consumer.notify_job", AsyncMock(return_value=None))
 
-            monkeypatch.setattr("src.workers.api.protected.fetch_video_metadata", _fake_fetch_metadata)
+        job_status = await start_ingest_youtube_job(
+            db, stub_queue, user_id, "https://youtu.be/queue123456"
+        )
+        job_row = await get_job(db, job_status.job_id, user_id)
 
-            async def _fake_worker_ingest(
-                db,
-                job_id,
-                user_id_param,
-                document_id,
-                video_id,
-                metadata,
-                frontmatter_payload,
-                duration,
-            ):
-                youtube_meta = dict(metadata)
-                youtube_meta.setdefault("video_id", video_id)
-                await update_document(
-                    db,
-                    document_id,
-                    {
-                        "raw_text": fake_text,
-                        "metadata": {
-                            "source": "youtube",
-                            "youtube": youtube_meta,
-                            "transcript": {"chars": len(fake_text), "duration_s": duration, "lang": "en"},
-                        },
-                    },
-                )
-                return {
-                    "job_output": {
-                        "document_id": document_id,
-                        "youtube_video_id": video_id,
-                        "transcript": {"chars": len(fake_text), "duration_s": duration, "lang": "en"},
-                        "metadata": {"frontmatter": frontmatter_payload, "youtube": youtube_meta},
-                    }
-                }
+        assert stub_queue.messages, "Queue message must be produced"
+        message = stub_queue.messages[0]
+        assert message["job_id"] == job_status.job_id
+        assert message["document_id"] == job_status.document_id
 
-            monkeypatch.setattr("src.workers.consumer.ingest_youtube_document", _fake_worker_ingest)
-            monkeypatch.setattr("src.workers.consumer.notify_job", AsyncMock(return_value=None))
+        await handle_queue_message(message, db)
 
-            job_status = await start_ingest_youtube_job(
-                db, stub_queue, user_id, "https://youtu.be/queue123456"
-            )
-            job_row = await get_job(db, job_status.job_id, user_id)
+        job_row = await get_job(db, job_status.job_id, user_id)
+        assert job_row["status"] == "completed"
+        output = _parse_metadata(job_row.get("output"))
+        assert output["transcript"]["chars"] == len(fake_text)
 
-            assert stub_queue.messages, "Queue message must be produced"
-            message = stub_queue.messages[0]
-            assert message["job_id"] == job_status.job_id
-            assert message["document_id"] == job_status.document_id
-
-            await handle_queue_message(message, db)
-
-            job_row = await get_job(db, job_status.job_id, user_id)
-            assert job_row["status"] == "completed"
-            output = _parse_metadata(job_row.get("output"))
-            assert output["transcript"]["chars"] == len(fake_text)
-
-            doc = await get_document(db, job_status.document_id, user_id=user_id)
-            assert doc is not None
-            assert doc.get("raw_text") == fake_text
-            metadata = _parse_metadata(doc.get("metadata"))
-            assert metadata["transcript"]["duration_s"] == 90
-            assert metadata["youtube"]["video_id"] == "queue123456"
-        finally:
-            job_id = job_row["job_id"] if job_row else None
-            await db.execute("DELETE FROM usage_events WHERE job_id = ?", ((job_id or ""),))
-            if job_id:
-                await db.execute("DELETE FROM jobs WHERE job_id = ?", (job_id,))
-            # Precise cleanup: remove only the document created by this test
-            if 'job_status' in locals() and job_status:
-                await db.execute("DELETE FROM documents WHERE document_id = ?", (job_status.document_id,))
-            # Temp DB makes explicit cleanup less critical, but keep for explicit cleanup
-            pass
-
-    asyncio.run(_run())
+        doc = await get_document(db, job_status.document_id, user_id=user_id)
+        assert doc is not None
+        assert doc.get("raw_text") == fake_text
+        metadata = _parse_metadata(doc.get("metadata"))
+        assert metadata["transcript"]["duration_s"] == 90
+        assert metadata["youtube"]["video_id"] == "queue123456"
+    finally:
+        job_id = job_row["job_id"] if job_row else None
+        await db.execute("DELETE FROM usage_events WHERE job_id = ?", ((job_id or ""),))
+        if job_id:
+            await db.execute("DELETE FROM jobs WHERE job_id = ?", (job_id,))
+        # Precise cleanup: remove only the document created by this test
+        if 'job_status' in locals() and job_status:
+            await db.execute("DELETE FROM documents WHERE document_id = ?", (job_status.document_id,))
+        # Temp DB makes explicit cleanup less critical, but keep for explicit cleanup
+        pass
 
 
 @pytest.mark.autopilot_enabled
-def test_autopilot_helper_creates_generate_job(monkeypatch, isolated_db):
-    async def _run():
-        db = isolated_db
-        user_id = f"user-{uuid.uuid4()}"
-        document_id = str(uuid.uuid4())
-        pipeline_job_id = str(uuid.uuid4())
-        create_test_user(db, user_id=user_id, email=f"{user_id}@example.com")
-        await create_document(
+@pytest.mark.asyncio
+async def test_autopilot_helper_creates_generate_job(monkeypatch, isolated_db):
+    db = isolated_db
+    user_id = f"user-{uuid.uuid4()}"
+    document_id = str(uuid.uuid4())
+    pipeline_job_id = str(uuid.uuid4())
+    await create_test_user(db, user_id=user_id, email=f"{user_id}@example.com")
+    await create_document(
+        db,
+        document_id=document_id,
+        user_id=user_id,
+        source_type="youtube",
+        source_ref="video123",
+        raw_text="seed",
+        metadata={"source": "youtube", "youtube": {"video_id": "video123"}},
+        frontmatter={"title": "Demo"},
+        content_format="youtube",
+    )
+    await create_job_extended(
+        db,
+        pipeline_job_id,
+        user_id,
+        job_type="ingest_youtube",
+        document_id=document_id,
+    )
+
+    try:
+        async def _fake_generate(
             db,
-            document_id=document_id,
-            user_id=user_id,
-            source_type="youtube",
-            source_ref="video123",
-            raw_text="seed",
-            metadata={"source": "youtube", "youtube": {"video_id": "video123"}},
-            frontmatter={"title": "Demo"},
-            content_format="youtube",
-        )
-        await create_job_extended(
-            db,
-            pipeline_job_id,
+            job_id,
             user_id,
-            job_type="ingest_youtube",
-            document_id=document_id,
+            document_id,
+            options=None,
+            pipeline_job_id=None,
+        ):
+            await update_job_status(db, job_id, "completed")
+
+        monkeypatch.setattr("src.workers.consumer.process_generate_blog_job", _fake_generate)
+        recorded_events: list[str] = []
+
+        async def _fake_pipeline_event(
+            db_arg,
+            user_arg,
+            job_arg,
+            *,
+            stage,
+            status,
+            message,
+            pipeline_job_id=None,
+            data=None,
+            notify_level=None,
+            notify_text=None,
+            notify_context=None,
+        ):
+            recorded_events.append(stage)
+
+        monkeypatch.setattr("src.workers.consumer._pipeline_progress_event", _fake_pipeline_event)
+
+        autopilot_options = {"tone": "serious", "content_type": "faq"}
+        await _maybe_trigger_generate_blog_pipeline(
+            db,
+            user_id,
+            document_id,
+            pipeline_job_id,
+            None,  # parent_job_id: no parent job
+            autopilot_options=autopilot_options,
         )
 
-        try:
-            async def _fake_generate(
-                db,
-                job_id,
-                user_id,
-                document_id,
-                options=None,
-                pipeline_job_id=None,
-            ):
-                await update_job_status(db, job_id, "completed")
-
-            monkeypatch.setattr("src.workers.consumer.process_generate_blog_job", _fake_generate)
-            recorded_events: list[str] = []
-
-            async def _fake_pipeline_event(
-                db_arg,
-                user_arg,
-                job_arg,
-                *,
-                stage,
-                status,
-                message,
-                pipeline_job_id=None,
-                data=None,
-                notify_level=None,
-                notify_text=None,
-                notify_context=None,
-            ):
-                recorded_events.append(stage)
-
-            monkeypatch.setattr("src.workers.consumer._pipeline_progress_event", _fake_pipeline_event)
-
-            autopilot_options = {"tone": "serious", "content_type": "faq"}
-            await _maybe_trigger_generate_blog_pipeline(
-                db,
-                user_id,
-                document_id,
-                pipeline_job_id,
-                None,  # parent_job_id: no parent job
-                autopilot_options=autopilot_options,
-            )
-
-            rows = await db.execute_all(
-                "SELECT * FROM jobs WHERE job_type = 'generate_blog' AND document_id = ? ORDER BY created_at DESC",
-                (document_id,),
-            )
-            assert rows
-            job = dict(rows[0])
-            payload_data = _parse_metadata(job.get("payload"))
-            assert payload_data.get("pipeline_job_id") == pipeline_job_id
-            options_payload = payload_data.get("options") or {}
-            assert options_payload.get("tone") == "serious"
-            assert options_payload.get("content_type") == "faq"
-            assert "generate_blog.enqueue" in recorded_events
-        finally:
-            # best-effort cleanup of jobs and document created by this test
-            await db.execute("DELETE FROM jobs WHERE document_id = ?", (document_id,))
-            await db.execute("DELETE FROM jobs WHERE job_id = ?", (pipeline_job_id,))
-            await db.execute("DELETE FROM documents WHERE document_id = ?", (document_id,))
-            # Temp DB makes explicit cleanup less critical, but keep for explicit cleanup
-            pass
-
-    asyncio.run(_run())
+        rows = await db.execute_all(
+            "SELECT * FROM jobs WHERE job_type = 'generate_blog' AND document_id = ? ORDER BY created_at DESC",
+            (document_id,),
+        )
+        assert rows
+        job = dict(rows[0])
+        payload_data = _parse_metadata(job.get("payload"))
+        assert payload_data.get("pipeline_job_id") == pipeline_job_id
+        options_payload = payload_data.get("options") or {}
+        assert options_payload.get("tone") == "serious"
+        assert options_payload.get("content_type") == "faq"
+        assert "generate_blog.enqueue" in recorded_events
+    finally:
+        # best-effort cleanup of jobs and document created by this test
+        await db.execute("DELETE FROM jobs WHERE document_id = ?", (document_id,))
+        await db.execute("DELETE FROM jobs WHERE job_id = ?", (pipeline_job_id,))
+        await db.execute("DELETE FROM documents WHERE document_id = ?", (document_id,))
+        # Temp DB makes explicit cleanup less critical, but keep for explicit cleanup
+        pass
 
 
 def test_ingest_youtube_retry_and_dlq(monkeypatch, isolated_db):

@@ -599,30 +599,109 @@ async def create_user(
     google_id: Optional[str] = None,
     email: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Create a new user."""
+    """Create a new user.
+    
+    Handles UNIQUE constraint violations on github_id/google_id by checking for existing users first.
+    """
+    # Check if user already exists by user_id
+    existing = await get_user_by_id(db, user_id)
+    if existing:
+        # User exists - update if needed
+        github_id_val = github_id if github_id is not None else ""
+        google_id_val = google_id if google_id is not None else ""
+        email_val = email if email is not None else ""
+        
+        query = """
+            UPDATE users SET
+                github_id = COALESCE(NULLIF(?, ''), github_id),
+                google_id = COALESCE(NULLIF(?, ''), google_id),
+                email = COALESCE(NULLIF(?, ''), email),
+                updated_at = datetime('now')
+            WHERE user_id = ?
+            RETURNING *
+        """
+        result = await db.execute(query, (github_id_val, google_id_val, email_val, user_id))
+        if result:
+            return _jsproxy_to_dict(result) if result else existing
+        return existing
+    
+    # User doesn't exist - check for UNIQUE constraint violations on github_id/google_id
     # D1 doesn't accept Python None - convert to empty string for optional fields
-    # email is required (NOT NULL), so ensure it's not None
     github_id_val = github_id if github_id is not None else ""
     google_id_val = google_id if google_id is not None else ""
     email_val = email if email is not None else ""
     
+    # Check if github_id or google_id would violate UNIQUE constraint
+    # Note: Empty strings can also violate UNIQUE constraints, so we check even for empty values
+    # However, we only check if the value is non-empty to avoid unnecessary queries
+    # The try/except below will catch UNIQUE violations for empty strings
+    if github_id_val:
+        existing_github = await get_user_by_github_id(db, github_id_val)
+        if existing_github and existing_github.get("user_id") != user_id:
+            # github_id already exists for a different user - use existing user
+            logger.warning(f"github_id {github_id_val} already exists for user {existing_github.get('user_id')}, returning existing user")
+            return existing_github
+    
+    if google_id_val:
+        existing_google = await get_user_by_google_id(db, google_id_val)
+        if existing_google and existing_google.get("user_id") != user_id:
+            # google_id already exists for a different user - use existing user
+            logger.warning(f"google_id {google_id_val} already exists for user {existing_google.get('user_id')}, returning existing user")
+            return existing_google
+    
+    # Check if email would violate UNIQUE constraint
+    if email_val:
+        existing_email = await get_user_by_email(db, email_val)
+        if existing_email and existing_email.get("user_id") != user_id:
+            # email already exists for a different user - use existing user
+            logger.warning(f"email {email_val} already exists for user {existing_email.get('user_id')}, returning existing user")
+            return existing_email
+    
+    # Safe to insert - no conflicts
     query = """
         INSERT INTO users (user_id, github_id, google_id, email)
         VALUES (?, ?, ?, ?)
-        ON CONFLICT(user_id) DO UPDATE SET
-            github_id = COALESCE(NULLIF(excluded.github_id, ''), users.github_id),
-            google_id = COALESCE(NULLIF(excluded.google_id, ''), users.google_id),
-            email = COALESCE(NULLIF(excluded.email, ''), users.email),
-            updated_at = datetime('now')
         RETURNING *
     """
-    result = await db.execute(query, (user_id, github_id_val, google_id_val, email_val))
-    if not result:
-        # If RETURNING doesn't work, fetch the user manually
-        logger.warning(f"RETURNING clause didn't return result, fetching user manually: {user_id}")
-        return await get_user_by_id(db, user_id) or {}
-    # Convert JsProxy to dict (function is defined earlier in this file)
-    return _jsproxy_to_dict(result) if result else {}
+    try:
+        result = await db.execute(query, (user_id, github_id_val, google_id_val, email_val))
+        if not result:
+            # If RETURNING doesn't work, fetch the user manually
+            logger.warning(f"RETURNING clause didn't return result, fetching user manually: {user_id}")
+            return await get_user_by_id(db, user_id) or {}
+        # Convert JsProxy to dict (function is defined earlier in this file)
+        return _jsproxy_to_dict(result) if result else {}
+    except DatabaseError as e:
+        # Handle UNIQUE constraint violations gracefully
+        if _is_unique_constraint_violation(e):
+            # User might have been created by another request - try to fetch
+            logger.warning(f"UNIQUE constraint violation creating user {user_id}, fetching existing user: {e}")
+            existing = await get_user_by_id(db, user_id)
+            if existing:
+                return existing
+            # If still not found, check by github_id/google_id/email (including empty strings)
+            # Empty strings can also violate UNIQUE constraints, so we check even if the value is empty
+            try:
+                existing = await get_user_by_github_id(db, github_id_val)
+                if existing:
+                    return existing
+            except Exception:
+                pass
+            try:
+                existing = await get_user_by_google_id(db, google_id_val)
+                if existing:
+                    return existing
+            except Exception:
+                pass
+            try:
+                if email_val:
+                    existing = await get_user_by_email(db, email_val)
+                    if existing:
+                        return existing
+            except Exception:
+                pass
+        # Re-raise if not a UNIQUE constraint violation or user not found
+        raise
 
 
 async def create_job_extended(

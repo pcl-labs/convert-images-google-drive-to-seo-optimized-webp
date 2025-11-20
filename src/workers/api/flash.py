@@ -5,9 +5,6 @@ import logging
 from typing import Optional
 from fastapi import Request
 
-from .deps import ensure_db
-from .database import touch_user_session
-
 logger = logging.getLogger(__name__)
 
 
@@ -62,12 +59,25 @@ async def add_flash(
     flash_queue.append(flash_msg)
     extra_dict["flash_messages"] = flash_queue
     
-    # Update session
+    # Update in-memory session immediately (synchronous)
+    # This avoids ASGI InvalidStateError from async DB operations
+    # The session will be synced to DB on the next request when SessionMiddleware touches it
+    session["extra"] = json.dumps(extra_dict) if isinstance(extra_dict, dict) else extra_dict
+    
+    # Update session cache if available (from SessionMiddleware)
+    # This allows flash messages to be available on the next request without DB read
     try:
-        db = ensure_db()
-        await touch_user_session(db, session_id, extra=extra_dict)
-        # Update in-memory session
-        session["extra"] = json.dumps(extra_dict) if isinstance(extra_dict, dict) else extra_dict
-    except Exception as exc:
-        logger.warning("Failed to persist flash message to session: %s", exc)
+        from .middleware import _session_cache, _session_cache_timestamps
+        import time
+        if session_id in _session_cache:
+            # Update cached session with new flash message
+            cached_session = _session_cache[session_id]
+            cached_session["extra"] = session["extra"]
+            _session_cache_timestamps[session_id] = time.time()
+    except (ImportError, AttributeError):
+        # SessionMiddleware cache not available - that's OK, session will sync on next request
+        pass
+    
+    # Skip async DB write to avoid ASGI InvalidStateError
+    # The session will be persisted when SessionMiddleware touches it on the next request
 
