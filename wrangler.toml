@@ -17,18 +17,18 @@ compatibility_flags = ["python_workers"]  # Required for Python Workers
 # Environment variables (accessible via os.environ in Worker)
 # These are set at deploy time and can be overridden per-environment
 [vars]
-ENVIRONMENT = "development"  # Used by Settings.environment
+ENVIRONMENT = "cloudflare"  # Used by Settings.environment
 # For Cloudflare Workers production: set to "cloudflare" (requires D1 binding)
 # For local development: set to "development" (uses SQLite fallback)
-DEBUG = "true"             # Used by Settings.debug
-BASE_URL = "http://localhost:8787"  # OAuth redirect URI base (matches wrangler dev port)
+DEBUG = "false"             # Used by Settings.debug
+BASE_URL = "https://quill-api.paulchrisluke.workers.dev"  # OAuth redirect URI base for Cloudflare Workers
 ENABLE_DRIVE_PIPELINE = "true"
 STATIC_FILES_DIR = "./static"
-CORS_ORIGINS = "http://localhost:8000,http://127.0.0.1:8000,http://localhost:8787,http://127.0.0.1:8787"
+CORS_ORIGINS = "http://localhost:8000,http://127.0.0.1:8000,http://localhost:8787,http://127.0.0.1:8787,https://quill-api.paulchrisluke.workers.dev"
 JWT_USE_COOKIES = "true"
 QUEUE_NAME = "quill-jobs"
 DEAD_LETTER_QUEUE_NAME = "quill-dlq"
-USE_INLINE_QUEUE = "true"
+USE_INLINE_QUEUE = "false"
 TRANSCRIPT_LANGS = "en,en-US,en-GB"
 OPENAI_API_BASE = "https://api.openai.com/v1"
 OPENAI_BLOG_MODEL = "gpt-5.1"
@@ -116,3 +116,11 @@ invocation_logs = true  # Logs each request invocation
 enabled = false
 persist = true
 head_sampling_rate = 1
+
+# Local development overrides for `wrangler dev` and `wrangler deploy --env local`
+[env.local.vars]
+ENVIRONMENT = "development"
+DEBUG = "true"
+BASE_URL = "http://localhost:8787"
+USE_INLINE_QUEUE = "true"
+CORS_ORIGINS = "http://localhost:8000,http://127.0.0.1:8000,http://localhost:8787,http://127.0.0.1:8787"
