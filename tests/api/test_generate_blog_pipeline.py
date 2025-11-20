@@ -2,25 +2,25 @@ import asyncio
 import json
 import uuid
 
+from tests.conftest import create_test_user
 from src.workers.api.database import (
     Database,
     create_document,
     create_job_extended,
     get_job,
     get_document,
-    create_user,
     update_user_preferences,
 )
 from src.workers.api.models import JobType
 from src.workers.consumer import process_generate_blog_job
 
 
-def test_process_generate_blog_job_creates_output():
+def test_process_generate_blog_job_creates_output(isolated_db):
     async def _run():
-        db = Database()
+        db = isolated_db
         user_id = "pipeline-user"
         document_id = str(uuid.uuid4())
-        await create_user(db, user_id, email="pipeline@example.com")
+        await create_test_user(db, user_id=user_id, email="pipeline@example.com")
         await update_user_preferences(
             db,
             user_id,
@@ -120,11 +120,11 @@ def test_process_generate_blog_job_creates_output():
             assets = json.loads(version_row.get("assets") or "{}")
             assert assets.get("generator", {}).get("model")
         finally:
-            # Cleanup: delete in FK-safe order
+            # Cleanup: delete in FK-safe order (temp DB makes this less critical, but keep for explicit cleanup)
             await db.execute("DELETE FROM document_versions WHERE document_id = ?", (document_id,))
             await db.execute("DELETE FROM usage_events WHERE job_id = ?", (job_id,))
             await db.execute("DELETE FROM jobs WHERE job_id = ?", (job_id,))
             await db.execute("DELETE FROM documents WHERE document_id = ?", (document_id,))
-            await db.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
+            # User deletion not needed - temp DB is cleaned up automatically
 
     asyncio.run(_run())

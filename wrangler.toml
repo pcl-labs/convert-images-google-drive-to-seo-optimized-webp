@@ -17,7 +17,9 @@ compatibility_flags = ["python_workers"]  # Required for Python Workers
 # Environment variables (accessible via os.environ in Worker)
 # These are set at deploy time and can be overridden per-environment
 [vars]
-ENVIRONMENT = "development"  # Used by Settings.environment (set to "production" for prod deploy)
+ENVIRONMENT = "development"  # Used by Settings.environment
+# For Cloudflare Workers production: set to "cloudflare" (requires D1 binding)
+# For local development: set to "development" (uses SQLite fallback)
 DEBUG = "false"             # Used by Settings.debug
 BASE_URL = "http://localhost:8787"  # OAuth redirect URI base (matches wrangler dev port)
 

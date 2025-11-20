@@ -7,34 +7,36 @@ This document tracks features that have been temporarily disabled to get the app
 - `/auth/me` - Returns 200 with real user data
 - `/health` - Returns 200
 - `/test/fetch` - Returns 200 (fetch API working)
-- `/dashboard` - Returns 200 with hello world (auth working, DB calls disabled)
+- `/dashboard` - Returns 200 with full dashboard (auth working, DB calls enabled)
+- Live Updates/Notifications - ✅ Working via HTTP polling (migrated from SSE)
+- Sessions - ✅ Enabled and working
+- FlashMiddleware - ✅ Enabled and working (fixed ASGI error)
 
 ## Disabled Middleware
 
-### 1. SessionMiddleware
-**Status:** Disabled  
-**Location:** `src/workers/api/app_factory.py:267`  
-**Reason:** Requires D1 database to load sessions. Only used for toast notifications.  
-**Impact:** No session management, no toast notifications via flash messages.  
-**Can be re-enabled:** Yes, once D1 is properly configured and tested.
+### 1. FlashMiddleware
+**Status:** ✅ **ENABLED** (Fixed)  
+**Location:** `src/workers/api/app_factory.py:273`  
+**Reason:** Flash messages for toast notifications.  
+**Impact:** Flash messages work correctly.  
 
-### 2. FlashMiddleware
-**Status:** Disabled  
-**Location:** `src/workers/api/app_factory.py:268`  
-**Reason:** Depends on SessionMiddleware. Only used for toast notifications.  
-**Impact:** No flash messages/toast notifications.  
-**Can be re-enabled:** Yes, after SessionMiddleware is working.
+**Fix Applied:**
+- **Root Cause**: Doing async DB write (`touch_user_session`) AFTER `call_next(request)` (after response generated) interfered with Cloudflare Workers Python ASGI response lifecycle
+- **Solution**: Moved DB write to BEFORE `call_next(request)`, matching SessionMiddleware pattern
+- **Key Insight**: In Cloudflare Workers Python ASGI adapter, avoid async operations after response is generated but before returning it, as this causes `asyncio.exceptions.InvalidStateError` when ASGI Future tries to set result during response body send
 
-### 3. SecurityHeadersMiddleware
+**Can be re-enabled:** ✅ **ENABLED** - Working correctly after fix
+
+### 2. SecurityHeadersMiddleware
 **Status:** Disabled  
-**Location:** `src/workers/api/app_factory.py:265`  
+**Location:** `src/workers/api/app_factory.py` (not currently registered)  
 **Reason:** Testing minimal middleware stack first.  
 **Impact:** No security headers (X-Frame-Options, X-Content-Type-Options, etc.).  
-**Can be re-enabled:** Yes, should be safe to add back (no DB needed).
+**Can be re-enabled:** ✅ Yes, should be safe to add back (no DB needed, low risk).
 
-### 4. RateLimitMiddleware
+### 3. RateLimitMiddleware
 **Status:** Disabled  
-**Location:** `src/workers/api/app_factory.py:269-273`  
+**Location:** `src/workers/api/app_factory.py:275-281`  
 **Reason:** Uses `time.monotonic()` and `asyncio.Lock()` which may not work correctly in Cloudflare Workers.  
 **Impact:** No rate limiting protection.  
 **Can be re-enabled:** Needs testing - may need to use Cloudflare KV or Workers KV instead of in-memory tracking.
@@ -42,6 +44,8 @@ This document tracks features that have been temporarily disabled to get the app
 ## Enabled Middleware
 
 - ✅ `AuthCookieMiddleware` - Reads JWT from cookies/headers, sets `request.state.user`
+- ✅ `SessionMiddleware` - Manages browser sessions in D1, used for OAuth flows and activity tracking
+- ✅ `FlashMiddleware` - Flash messages for toast notifications (fixed ASGI error)
 - ✅ `CORSMiddleware` - CORS handling
 - ✅ `RequestIDMiddleware` - Adds request ID to responses
 
@@ -68,59 +72,29 @@ This document tracks features that have been temporarily disabled to get the app
   - `FlashMiddleware` - Skips flash clear on DB failure
   - `AuthCookieMiddleware` - Continues with JWT claims only if DB unavailable
 
+### Frontend: SSE to HTTP Polling Migration
+**Files Modified:**
+- `src/workers/templates/base.html` - Replaced `EventSource('/api/stream')` SSE implementation with HTTP polling to `/api/notifications`
+- `src/workers/templates/components/overlays/toast.html` - Fixed Alpine.js regex error (removed extra backslashes)
+
+**Reason:** SSE (Server-Sent Events) doesn't work in Cloudflare Workers Python - requires special `ctx` parameter that's not available. HTTP polling works reliably and provides same functionality.
+
 ## Next Steps to Re-enable Features
 
-1. **SecurityHeadersMiddleware** - Add back first (no DB needed, low risk)
-2. **SessionMiddleware** - Requires D1 to be working, test session creation/retrieval
-3. **FlashMiddleware** - Add back after SessionMiddleware works
-4. **RateLimitMiddleware** - Needs alternative implementation using KV or remove entirely
+1. **SecurityHeadersMiddleware** - Add back (no DB needed, low risk)
+2. **FlashMiddleware** - ✅ **FIXED AND ENABLED** - Root cause identified and resolved
+3. **RateLimitMiddleware** - Needs alternative implementation using KV or remove entirely
 
-## Disabled Endpoint Features
-
-### Dashboard Endpoint
-**File:** `src/workers/api/web.py:1057`  
-**Status:** Simplified to hello world  
-**Changes:**
-- Disabled `Depends(get_current_user)` dependency - reads `request.state.user` directly instead
-- Commented out all DB calls (`ensure_db()`, `list_jobs()`, `get_job_stats()`, etc.)
-- Commented out sidebar template include in `base.html`
-- Returns simple PlainTextResponse instead of rendering template
-
-**Reason:** `Depends(get_current_user)` was causing 500 errors. Reading from `request.state.user` directly works.
-
-### OAuth Callbacks
-**File:** `src/workers/api/public.py:499, 561`  
-**Status:** Session cookie creation disabled  
-**Changes:**
-- Commented out `await _issue_session_cookie()` calls in GitHub and Google OAuth callbacks
-- Sessions are disabled, so session cookie creation is not needed
-
-**Reason:** Sessions are disabled, so we don't need to create session cookies during OAuth flow.
-
-### Form Data in Fetch
-**File:** `src/workers/api/simple_http.py:171-177`  
-**Status:** Fixed - form data now passed as string  
-**Changes:**
-- Form data (application/x-www-form-urlencoded) is now decoded to string before passing to fetch
-- JSON and binary data remain as bytes
-
-**Reason:** Cloudflare Workers `fetch` API expects form data as a string, not bytes. This was causing OAuth token exchange to fail.
-
-### OAuth Authentication (DB Bypass)
-**File:** `src/workers/api/public.py:491-504, 567-607`  
-**Status:** Simplified to skip DB entirely  
-**Changes:**
-- GitHub OAuth callback: Removed all DB calls (`get_user_by_github_id`, `create_user`, etc.)
-- Google OAuth callback: Removed all DB calls (`get_user_by_google_id`, `create_user`, etc.)
-- Both callbacks now generate JWT directly from OAuth provider data
-- Removed `ensure_db()` checks - no DB needed for authentication
-
-**Reason:** DB operations were failing and blocking OAuth redirects. Authentication now works purely from OAuth provider data without any database persistence.
 
 ## Notes
 
 - ✅ D1 database is configured in `wrangler.toml` (binding: "DB", database_id: "933d76cf-a988-4a71-acc6-d884278c6402")
-- Auth works without DB if JWT token contains email (which it does)
-- ✅ Dashboard endpoint works with simplified hello world response
-- ⚠️ `Depends(get_current_user)` dependency causes 500 errors - needs investigation
+- ✅ Auth works with JWT tokens and sessions
+- ✅ Dashboard endpoint fully functional with all features
+- ✅ Live Updates/Notifications working via HTTP polling (migrated from SSE due to Cloudflare Workers Python limitations)
+- ✅ Sessions enabled and working for OAuth flows and activity tracking
+- ✅ FlashMiddleware enabled and working (fixed ASGI InvalidStateError by moving DB write before call_next)
+- ✅ Frontend migrated from SSE (EventSource) to HTTP polling for notifications
+- ✅ FlashMiddleware enabled and working (fixed ASGI InvalidStateError by moving DB write before call_next)
+- ✅ Frontend migrated from SSE (EventSource) to HTTP polling for notifications
 

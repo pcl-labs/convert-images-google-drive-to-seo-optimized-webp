@@ -137,17 +137,32 @@ def _jsproxy_to_list(obj: Any) -> List[Any]:
 
 
 class Database:
-    """Database wrapper for D1 operations with SQLite fallback."""
+    """Database wrapper for D1 operations. SQLite only available for tests via LOCAL_SQLITE_PATH."""
     
     def __init__(self, db=None):
         """Initialize database connection.
-        In Cloudflare Workers, D1 binding is required - no SQLite fallback.
+        - If D1 binding is provided (has 'prepare' method), use D1 (Cloudflare Workers).
+        - If LOCAL_SQLITE_PATH is explicitly set, use SQLite (for tests only).
+        - Otherwise, raise DatabaseError requiring D1 binding.
         """
         self.db = db or settings.d1_database
         self._sqlite_path: Optional[str] = None
-        if not self.db:
-            # No fallback in Workers - D1 is required
-            raise DatabaseError("D1 database binding not available - required in Cloudflare Workers")
+        
+        # Check if we have a D1 binding (Cloudflare Workers)
+        is_d1 = self.db and hasattr(self.db, "prepare")
+        
+        if not is_d1:
+            # No D1 binding - only allow SQLite if explicitly set (for tests)
+            sqlite_path = os.environ.get("LOCAL_SQLITE_PATH")
+            if sqlite_path:
+                # SQLite only allowed when explicitly set via LOCAL_SQLITE_PATH (for tests)
+                self._sqlite_path = sqlite_path
+                self._apply_sqlite_migrations()
+            else:
+                raise DatabaseError(
+                    "Database not configured: D1 binding required. "
+                    "For tests, set LOCAL_SQLITE_PATH environment variable."
+                )
     
     def _apply_sqlite_migrations(self) -> None:
         """Apply migrations from migrations/schema.sql to local SQLite using a temp connection."""

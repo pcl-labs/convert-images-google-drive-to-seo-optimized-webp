@@ -7,11 +7,11 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from tests.conftest import create_test_user
 from src.workers.api.database import (
     Database,
     create_document,
     create_job_extended,
-    create_user,
     get_document,
     get_job,
     get_google_token,
@@ -45,6 +45,10 @@ class StubQueue:
     async def send_generic(self, payload):
         self.messages.append(payload)
         return True
+    
+    async def send(self, payload):
+        """Alias for send_generic to match Cloudflare Queue API."""
+        return await self.send_generic(payload)
 
 
 class StubQueueProducer:
@@ -69,11 +73,11 @@ def _parse_metadata(raw):
     return raw
 
 
-def test_start_ingest_youtube_job_stores_metadata(monkeypatch):
+def test_start_ingest_youtube_job_stores_metadata(monkeypatch, isolated_db):
     async def _run():
-        db = Database()
+        db = isolated_db
         user_id = f"user-{uuid.uuid4()}"
-        await create_user(db, user_id=user_id, github_id=None, email=f"{user_id}@example.com")
+        await create_test_user(db, user_id=user_id, email=f"{user_id}@example.com")
 
         stub_queue = StubQueue()
         job = None
@@ -130,22 +134,19 @@ def test_start_ingest_youtube_job_stores_metadata(monkeypatch):
             assert latest_outline[0].get("source") == "youtube_chapter"
             assert metadata.get("outline_source") == "youtube_chapters"
         finally:
-            # cleanup (best-effort)
-            try:
-                if job is not None:
-                    await db.execute("DELETE FROM jobs WHERE job_id = ?", (job.job_id,))
-                    await db.execute("DELETE FROM documents WHERE document_id = ?", (job.document_id,))
-            finally:
-                await db.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
+            # cleanup (best-effort) - temp DB makes this less critical, but keep for explicit cleanup
+            if job is not None:
+                await db.execute("DELETE FROM jobs WHERE job_id = ?", (job.job_id,))
+                await db.execute("DELETE FROM documents WHERE document_id = ?", (job.document_id,))
 
     asyncio.run(_run())
 
 
-def test_start_ingest_youtube_job_inline_executes(monkeypatch):
+def test_start_ingest_youtube_job_inline_executes(monkeypatch, isolated_db):
     async def _run():
-        db = Database()
+        db = isolated_db
         user_id = f"user-{uuid.uuid4()}"
-        await create_user(db, user_id=user_id, github_id=None, email=f"{user_id}@example.com")
+        await create_test_user(db, user_id=user_id, email=f"{user_id}@example.com")
 
         stub_queue = StubQueue()
         job = None
@@ -222,12 +223,13 @@ def test_start_ingest_youtube_job_inline_executes(monkeypatch):
                     await db.execute("DELETE FROM jobs WHERE job_id = ?", (job.job_id,))
                     await db.execute("DELETE FROM documents WHERE document_id = ?", (job.document_id,))
             finally:
-                await db.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
+                # Temp DB makes explicit cleanup less critical, but keep for explicit cleanup
+                pass
 
     asyncio.run(_run())
 
 
-def test_process_ingest_youtube_job_merges_metadata(monkeypatch):
+def test_process_ingest_youtube_job_merges_metadata(monkeypatch, isolated_db):
     """Test YouTube ingestion with real API calls using access token from YOUTUBE_TEST_ACCESS_TOKEN env var."""
     async def _run():
         # Get access token from environment
@@ -246,12 +248,13 @@ def test_process_ingest_youtube_job_merges_metadata(monkeypatch):
         # Note: Token must be issued with 'youtube.force-ssl' scope (not 'youtube' or 'youtube.readonly')
         # Users with youtube or youtube.readonly tokens need to re-authenticate via /auth/google/start?integration=youtube
         
-        db = Database()
+        db = isolated_db
         user_id = f"user-{uuid.uuid4()}"
         document_id = str(uuid.uuid4())
         job_id = None
         try:
-            await create_user(db, user_id=user_id, github_id=None, email=f"{user_id}@example.com")
+            # Use create_test_user helper which ensures unique provider IDs
+            create_test_user(db, user_id=user_id, email=f"{user_id}@example.com")
             
             # Store Google token for YouTube integration (with refresh token if available)
             # Use explicit test scopes - youtube.force-ssl is required for captions API
@@ -342,7 +345,8 @@ def test_process_ingest_youtube_job_merges_metadata(monkeypatch):
                 await db.execute("DELETE FROM jobs WHERE job_id = ?", (job_id,))
             await db.execute("DELETE FROM documents WHERE document_id = ?", (document_id,))
             await db.execute("DELETE FROM google_integration_tokens WHERE user_id = ?", (user_id,))
-            await db.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
+            # Temp DB makes explicit cleanup less critical, but keep for explicit cleanup
+            pass
 
     asyncio.run(_run())
 
@@ -452,19 +456,20 @@ def test_ingest_youtube_queue_flow(monkeypatch):
             # Precise cleanup: remove only the document created by this test
             if 'job_status' in locals() and job_status:
                 await db.execute("DELETE FROM documents WHERE document_id = ?", (job_status.document_id,))
-            await db.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
+            # Temp DB makes explicit cleanup less critical, but keep for explicit cleanup
+            pass
 
     asyncio.run(_run())
 
 
 @pytest.mark.autopilot_enabled
-def test_autopilot_helper_creates_generate_job(monkeypatch):
+def test_autopilot_helper_creates_generate_job(monkeypatch, isolated_db):
     async def _run():
-        db = Database()
+        db = isolated_db
         user_id = f"user-{uuid.uuid4()}"
         document_id = str(uuid.uuid4())
         pipeline_job_id = str(uuid.uuid4())
-        await create_user(db, user_id=user_id, github_id=None, email=f"{user_id}@example.com")
+        create_test_user(db, user_id=user_id, email=f"{user_id}@example.com")
         await create_document(
             db,
             document_id=document_id,
@@ -543,16 +548,17 @@ def test_autopilot_helper_creates_generate_job(monkeypatch):
             await db.execute("DELETE FROM jobs WHERE document_id = ?", (document_id,))
             await db.execute("DELETE FROM jobs WHERE job_id = ?", (pipeline_job_id,))
             await db.execute("DELETE FROM documents WHERE document_id = ?", (document_id,))
-            await db.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
+            # Temp DB makes explicit cleanup less critical, but keep for explicit cleanup
+            pass
 
     asyncio.run(_run())
 
 
-def test_ingest_youtube_retry_and_dlq(monkeypatch):
+def test_ingest_youtube_retry_and_dlq(monkeypatch, isolated_db):
     async def _run():
-        db = Database()
+        db = isolated_db
         user_id = f"user-{uuid.uuid4()}"
-        await create_user(db, user_id=user_id, github_id=None, email=f"{user_id}@example.com")
+        await create_test_user(db, user_id=user_id, email=f"{user_id}@example.com")
         stub_queue = StubQueue()
         queue_producer = StubQueueProducer()
 

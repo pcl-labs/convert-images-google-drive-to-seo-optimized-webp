@@ -54,7 +54,7 @@
           <template x-if="t.href && /^\\/.test(t.href)">
             <a :href="t.href" class="text-xs uppercase tracking-wide text-contentMuted hover:text-primary">View details &rarr;</a>
           </template>
-          <template x-if="t.href && /^https?:\\/\\//i.test(t.href)">
+          <template x-if="t.href && /^https?:\/\//i.test(t.href)">
             <a :href="t.href" class="text-xs uppercase tracking-wide text-contentMuted hover:text-primary" target="_blank" rel="noopener">Open link &rarr;</a>
           </template>
         </div>

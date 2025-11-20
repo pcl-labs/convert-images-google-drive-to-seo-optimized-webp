@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import urlencode
 
-from api.simple_http import AsyncSimpleClient, HTTPStatusError, RequestError
+from .simple_http import AsyncSimpleClient, HTTPStatusError, RequestError
 
 from core.constants import GOOGLE_INTEGRATION_SCOPES
 from core.google_clients import GoogleDocsClient, GoogleDriveClient, OAuthToken, YouTubeClient

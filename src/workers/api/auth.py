@@ -12,7 +12,7 @@ import logging
 
 from .jwt import encode, decode, ExpiredSignatureError, InvalidTokenError
 
-from api.simple_http import AsyncSimpleClient, HTTPStatusError, RequestError
+from .simple_http import AsyncSimpleClient, HTTPStatusError, RequestError
 
 
 from .config import settings

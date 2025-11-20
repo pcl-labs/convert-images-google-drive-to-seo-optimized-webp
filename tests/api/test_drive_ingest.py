@@ -6,9 +6,9 @@ from unittest.mock import AsyncMock
 import pytest
 from fastapi import HTTPException
 
+from tests.conftest import create_test_user
 from src.workers.api.database import (
     Database,
-    create_user,
     create_document,
     create_job_extended,
     get_document,
@@ -81,10 +81,10 @@ class _StubDriveService:
 
 
 @pytest.mark.asyncio
-async def test_start_ingest_drive_job_requires_file():
-    db = Database()
+async def test_start_ingest_drive_job_requires_file(isolated_db):
+    db = isolated_db
     user_id = f"user-{uuid.uuid4()}"
-    await create_user(db, user_id=user_id, github_id=None, email=f"{user_id}@example.com")
+    await create_test_user(db, user_id=user_id, email=f"{user_id}@example.com")
     document_id = str(uuid.uuid4())
     await create_document(
         db,
@@ -99,10 +99,10 @@ async def test_start_ingest_drive_job_requires_file():
 
 
 @pytest.mark.asyncio
-async def test_process_ingest_drive_job_persists_text(monkeypatch):
-    db = Database()
+async def test_process_ingest_drive_job_persists_text(monkeypatch, isolated_db):
+    db = isolated_db
     user_id = f"user-{uuid.uuid4()}"
-    await create_user(db, user_id=user_id, github_id=None, email=f"{user_id}@example.com")
+    await create_test_user(db, user_id=user_id, email=f"{user_id}@example.com")
     document_id = str(uuid.uuid4())
     file_id = "1" * 44
     await create_document(
@@ -142,10 +142,10 @@ async def test_process_ingest_drive_job_persists_text(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_drive_change_poll_marks_external_and_triggers_ingest(monkeypatch):
-    db = Database()
+async def test_drive_change_poll_marks_external_and_triggers_ingest(monkeypatch, isolated_db):
+    db = isolated_db
     user_id = f"user-{uuid.uuid4()}"
-    await create_user(db, user_id=user_id, github_id=None, email=f"{user_id}@example.com")
+    await create_test_user(db, user_id=user_id, email=f"{user_id}@example.com")
     document_id = str(uuid.uuid4())
     file_id = "2" * 44
     await create_document(
@@ -189,10 +189,10 @@ async def test_drive_change_poll_marks_external_and_triggers_ingest(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_sync_drive_doc_for_document_updates_drive(monkeypatch):
-    db = Database()
+async def test_sync_drive_doc_for_document_updates_drive(monkeypatch, isolated_db):
+    db = isolated_db
     user_id = f"user-{uuid.uuid4()}"
-    await create_user(db, user_id=user_id, github_id=None, email=f"{user_id}@example.com")
+    await create_test_user(db, user_id=user_id, email=f"{user_id}@example.com")
     document_id = str(uuid.uuid4())
     file_id = "4" * 44
     await create_document(

@@ -8,6 +8,7 @@ from email.utils import parsedate_to_datetime
 
 from .config import settings
 from .constants import COOKIE_OAUTH_STATE, COOKIE_GOOGLE_OAUTH_STATE
+from .utils import is_secure_request
 from .auth import (
     authenticate_github,
     authenticate_google,
@@ -34,9 +35,7 @@ router = APIRouter()
 logger = get_logger(__name__)
 
 
-def _is_secure_request(request: Request) -> bool:
-    xf_proto = request.headers.get("x-forwarded-proto", "").lower()
-    return (xf_proto == "https") if xf_proto else (request.url.scheme == "https")
+# Removed _is_secure_request - now using shared is_secure_request from utils
 
 
 def _get_github_oauth_redirect(request: Request) -> tuple[str, str]:
@@ -49,7 +48,7 @@ def _get_github_oauth_redirect(request: Request) -> tuple[str, str]:
 
 
 def _build_github_oauth_response(request: Request, auth_url: str, state: str) -> RedirectResponse:
-    is_secure = _is_secure_request(request)
+    is_secure = is_secure_request(request)
     response = RedirectResponse(url=auth_url, status_code=status.HTTP_303_SEE_OTHER)
     response.set_cookie(
         key=COOKIE_OAUTH_STATE,
@@ -78,7 +77,7 @@ def _get_google_login_oauth_redirect(request: Request) -> tuple[str, str]:
 
 
 def _build_google_oauth_response(request: Request, auth_url: str, state: str) -> RedirectResponse:
-    is_secure = _is_secure_request(request)
+    is_secure = is_secure_request(request)
     response = RedirectResponse(url=auth_url, status_code=status.HTTP_303_SEE_OTHER)
     response.set_cookie(
         key=COOKIE_GOOGLE_OAUTH_STATE,
@@ -141,7 +140,7 @@ async def _issue_session_cookie(
 
 async def _build_logout_response(request: Request, *, redirect: str = "/") -> RedirectResponse:
     response = RedirectResponse(url=redirect, status_code=status.HTTP_302_FOUND)
-    is_secure = _is_secure_request(request)
+    is_secure = is_secure_request(request)
     response.delete_cookie("access_token", path="/", samesite="lax", httponly=True, secure=is_secure)
     response.delete_cookie(COOKIE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
     response.delete_cookie(COOKIE_GOOGLE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
@@ -285,6 +284,52 @@ async def debug_users():
             "error": str(exc),
             "error_type": type(exc).__name__
         }
+
+
+@router.get("/debug/sessions", tags=["Public"])
+async def debug_sessions(session_id: Optional[str] = None):
+    """Debug endpoint to list sessions in the database."""
+    try:
+        from .deps import ensure_db
+        from .database import _jsproxy_to_list, _jsproxy_to_dict
+        
+        db = ensure_db()
+        if session_id:
+            session = await db.execute(
+                "SELECT * FROM user_sessions WHERE session_id = ?",
+                (session_id,)
+            )
+            if not session:
+                return {"success": True, "count": 0, "sessions": []}
+            session_dict = _jsproxy_to_dict(session)
+            return {
+                "success": True,
+                "count": 1,
+                "sessions": [session_dict],
+            }
+        else:
+            sessions = await db.execute_all(
+                "SELECT * FROM user_sessions ORDER BY created_at DESC LIMIT 50"
+            )
+            sessions_list = _jsproxy_to_list(sessions)
+            sessions_data = []
+            for s in sessions_list:
+                if isinstance(s, dict):
+                    sessions_data.append(s)
+                else:
+                    sessions_data.append(_jsproxy_to_dict(s))
+            
+            return {
+                "success": True,
+                "count": len(sessions_data),
+                "sessions": sessions_data,
+            }
+    except Exception as exc:
+        return {
+            "success": False,
+            "error": str(exc),
+            "error_type": type(exc).__name__
+    }
 
 
 @router.get("/debug/db-test", tags=["Public"])
@@ -445,7 +490,7 @@ async def debug_cookie_test(request: Request):
     })
     
     # Set a test cookie with same settings as access_token
-    is_secure = _is_secure_request(request)
+    is_secure = is_secure_request(request)
     response.set_cookie(
         key="test_cookie",
         value="test_value_12345",
@@ -476,7 +521,7 @@ async def debug_cookie_redirect_test(request: Request):
     Debug endpoint to test cookie setting on RedirectResponse (like OAuth callback).
     Sets a cookie and redirects to /debug/cookie-read to test if cookie persists.
     """
-    is_secure = _is_secure_request(request)
+    is_secure = is_secure_request(request)
     logger.debug(
         "Cookie redirect test: Setting test_access_token cookie: secure=%s, max_age=3600, path=/",
         is_secure,
@@ -527,7 +572,7 @@ async def debug_oauth_callback_test(request: Request):
     test_email = "debug@example.com"
     jwt_token = generate_jwt_token(user_id=test_user_id, email=test_email)
     
-    is_secure = _is_secure_request(request)
+    is_secure = is_secure_request(request)
     max_age_seconds = settings.jwt_expiration_hours * 3600
     
     debug_info = {
@@ -591,7 +636,7 @@ async def debug_oauth_callback_simulate(request: Request):
     test_email = "simulated@example.com"
     jwt_token = generate_jwt_token(user_id=test_user_id, email=test_email)
     
-    is_secure = _is_secure_request(request)
+    is_secure = is_secure_request(request)
     max_age_seconds = settings.jwt_expiration_hours * 3600
     
     logger.info(
@@ -690,7 +735,7 @@ async def debug_auto_login(request: Request):
             user_id = f"google_{google_id}"
             jwt_token = generate_jwt_token(user_id=user_id, google_id=google_id, email=email)
             
-            is_secure = _is_secure_request(request)
+            is_secure = is_secure_request(request)
             max_age_seconds = settings.jwt_expiration_hours * 3600
             
             logger.info(
@@ -748,7 +793,7 @@ async def debug_simulate_oauth_callback(request: Request, user_id: Optional[str]
     test_email = email or "test@example.com"
     jwt_token = generate_jwt_token(user_id=test_user_id, email=test_email)
     
-    is_secure = _is_secure_request(request)
+    is_secure = is_secure_request(request)
     max_age_seconds = settings.jwt_expiration_hours * 3600
     
     logger.info(
@@ -793,7 +838,7 @@ async def debug_oauth_callback_debug(request: Request):
     test_email = "debug_oauth@example.com"
     jwt_token = generate_jwt_token(user_id=test_user_id, email=test_email)
     
-    is_secure = _is_secure_request(request)
+    is_secure = is_secure_request(request)
     max_age_seconds = settings.jwt_expiration_hours * 3600
     
     debug_info = {
@@ -1359,13 +1404,14 @@ async def github_auth_start(request: Request):
     try:
         auth_url, state = _get_github_oauth_redirect(request)
         return _build_github_oauth_response(request, auth_url, state)
-    except Exception:
+    except Exception as exc:
         logger.exception("GitHub auth initiation failed")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="GitHub OAuth not configured")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="GitHub OAuth not configured") from exc
 
 
 @router.post("/auth/github/start", tags=["Authentication"]) 
 async def github_auth_start_post(request: Request, csrf_token: str = Form(...)):
+    """POST version of GitHub OAuth start - same as GET but with CSRF validation."""
     cookie_token = request.cookies.get("csrf_token")
     if not cookie_token or not secrets.compare_digest(cookie_token, csrf_token):
         try:
@@ -1377,12 +1423,8 @@ async def github_auth_start_post(request: Request, csrf_token: str = Form(...)):
         except Exception:
             pass
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
-    try:
-        auth_url, state = _get_github_oauth_redirect(request)
-        return _build_github_oauth_response(request, auth_url, state)
-    except Exception:
-        logger.exception("GitHub auth initiation (POST) failed")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="GitHub OAuth not configured")
+    # Use the same logic as GET endpoint
+    return await github_auth_start(request)
 
 
 @router.get("/auth/google/login/start", tags=["Authentication"])
@@ -1408,12 +1450,8 @@ async def google_login_start_post(request: Request, csrf_token: str = Form(...))
         except Exception:
             pass
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
-    try:
-        auth_url, state = _get_google_login_oauth_redirect(request)
-        return _build_google_oauth_response(request, auth_url, state)
-    except Exception as exc:
-        logger.exception("Google auth initiation (POST) failed")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Google OAuth not configured") from exc
+    # Use the same logic as GET endpoint (sessions instead of cookies)
+    return await google_login_start(request)
 
 
 @router.get("/auth/set-cookie", tags=["Authentication"])
@@ -1461,7 +1499,7 @@ async def set_auth_cookie(
         logger.warning("set_auth_cookie: Invalid token provided: %s", exc)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid token") from exc
     
-    is_secure = _is_secure_request(request)
+    is_secure = is_secure_request(request)
     max_age_seconds = settings.jwt_expiration_hours * 3600
     
     logger.info(
@@ -1494,20 +1532,20 @@ async def set_auth_cookie(
 async def github_callback(code: str, state: str, request: Request):
     stored_state = request.cookies.get(COOKIE_OAUTH_STATE)
     if not stored_state or not secrets.compare_digest(stored_state, state):
-        logger.warning("OAuth state verification failed - possible CSRF attack")
+        logger.warning("GitHub login state verification failed - possible CSRF attack")
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid state parameter - possible CSRF attack")
 
     # Skip DB check - we're not using DB for auth anymore
-    # try:
-    #     db = ensure_db()
-    # except HTTPException as exc:
-    #     if exc.status_code == 500:
-    #         logger.error("GitHub OAuth callback: Database unavailable - cannot complete authentication")
-    #         is_secure = _is_secure_request(request)
-    #         response = RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
-    #         response.delete_cookie(key=COOKIE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
-    #         return response
-    #     raise
+    try:
+        db = ensure_db()
+    except HTTPException as exc:
+        if exc.status_code == 500:
+            logger.error("GitHub OAuth callback: Database unavailable - cannot complete authentication")
+            is_secure = is_secure_request(request)
+            response = RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
+            response.delete_cookie(key=COOKIE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
+            return response
+        raise
 
     try:
         # Generate JWT directly from OAuth data without DB persistence
@@ -1539,7 +1577,7 @@ async def github_callback(code: str, state: str, request: Request):
         user = {"user_id": user_id, "email": email, "github_id": github_id}
         user_response = {"user_id": user_id, "email": email, "github_id": github_id}
 
-        is_secure = _is_secure_request(request)
+        is_secure = is_secure_request(request)
         if settings.jwt_use_cookies:
             max_age_seconds = settings.jwt_expiration_hours * 3600
             logger.info(
@@ -1589,10 +1627,7 @@ async def github_callback(code: str, state: str, request: Request):
             #     is_secure=is_secure,
             #     provider="github",
             # )
-            # Delete OAuth state cookie AFTER setting access_token cookie
-            # This ensures access_token cookie is set first
-            logger.info("GitHub OAuth: Deleting OAuth state cookie")
-            response.delete_cookie(key=COOKIE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
+            # OAuth state was stored in session and already deleted when retrieved
             
             # Log final headers before returning
             final_set_cookie_headers = [v for k, v in response.headers.items() if k.lower() == "set-cookie"]
@@ -1604,7 +1639,6 @@ async def github_callback(code: str, state: str, request: Request):
             return response
         else:
             response = JSONResponse(content={"access_token": jwt_token, "token_type": "bearer", "user": user_response})
-            response.delete_cookie(key=COOKIE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
             return response
     except Exception:
         logger.exception("GitHub callback failed")
@@ -1619,16 +1653,16 @@ async def google_login_callback(code: str, state: str, request: Request):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid state parameter - possible CSRF attack")
 
     # Skip DB check - we're not using DB for auth anymore
-    # try:
-    #     db = ensure_db()
-    # except HTTPException as exc:
-    #     if exc.status_code == 500:
-    #         logger.error("Google login callback: Database unavailable - cannot complete authentication")
-    #         is_secure = _is_secure_request(request)
-    #         response = RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
-    #         response.delete_cookie(key=COOKIE_GOOGLE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
-    #         return response
-    #     raise
+    try:
+        db = ensure_db()
+    except HTTPException as exc:
+        if exc.status_code == 500:
+            logger.error("Google login callback: Database unavailable - cannot complete authentication")
+            is_secure = is_secure_request(request)
+            response = RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
+            response.delete_cookie(key=COOKIE_GOOGLE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
+            return response
+        raise
 
     try:
         # Generate JWT directly from OAuth data without DB persistence
@@ -1678,7 +1712,7 @@ async def google_login_callback(code: str, state: str, request: Request):
             "google_id": google_id,
         }
 
-        is_secure = _is_secure_request(request)
+        is_secure = is_secure_request(request)
         logger.info(
             "Google OAuth callback: jwt_use_cookies=%s, is_secure=%s, user_id=%s, email=%s",
             settings.jwt_use_cookies,
@@ -1732,16 +1766,16 @@ async def google_login_callback(code: str, state: str, request: Request):
                 logger.debug(
                     "Google OAuth: All response headers: %s",
                     dict(response.headers),
-                )
-                # Session cookies disabled - SessionMiddleware is not enabled
-                # await _issue_session_cookie(
-                #     response,
-                #     request,
-                #     db,
-                #     user["user_id"],
-                #     is_secure=is_secure,
-                #     provider="google",
-                # )
+            )
+            # Session cookies disabled - SessionMiddleware is not enabled
+            # await _issue_session_cookie(
+            #     response,
+            #     request,
+            #     db,
+            #     user["user_id"],
+            #     is_secure=is_secure,
+            #     provider="google",
+            # )
                 response.delete_cookie(key=COOKIE_GOOGLE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
                 logger.info("Google OAuth: Returning redirect response with access_token cookie")
                 return response
@@ -1753,8 +1787,8 @@ async def google_login_callback(code: str, state: str, request: Request):
                 )
                 # Still try to return response even if cookie setting failed
                 response = RedirectResponse(url="/dashboard", status_code=status.HTTP_302_FOUND)
-                response.delete_cookie(key=COOKIE_GOOGLE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
-                return response
+            response.delete_cookie(key=COOKIE_GOOGLE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
+            return response
         else:
             response = JSONResponse(content={"access_token": jwt_token, "token_type": "bearer", "user": user_response})
             response.delete_cookie(key=COOKIE_GOOGLE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
@@ -1767,7 +1801,7 @@ async def google_login_callback(code: str, state: str, request: Request):
         )
         # Expected auth errors: clear state cookie and return safe message
         logger.warning("Google callback failed: %s", exc)
-        is_secure = _is_secure_request(request)
+        is_secure = is_secure_request(request)
         message = str(exc)
         if settings.jwt_use_cookies:
             response = RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
@@ -1778,7 +1812,7 @@ async def google_login_callback(code: str, state: str, request: Request):
     except Exception:
         # Unexpected errors: log with stack, clear state cookie, return generic message
         logger.exception("Google callback failed")
-        is_secure = _is_secure_request(request)
+        is_secure = is_secure_request(request)
         if settings.jwt_use_cookies:
             response = RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
         else:

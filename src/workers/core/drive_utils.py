@@ -19,7 +19,7 @@ from .extension_utils import normalize_extensions
 
 # Import settings with try/except for CLI fallback compatibility
 try:
-    from ..api.config import settings
+    from api.config import settings
 except ImportError:
     # CLI fallback: settings may not be available in CLI context
     settings = None

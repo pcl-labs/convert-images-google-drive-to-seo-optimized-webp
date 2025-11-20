@@ -43,10 +43,15 @@ class Default(WorkerEntrypoint):
         
         # 2) Import app_factory AFTER env is applied (avoids config.py reading env too early)
         from api.app_factory import create_app
+        from api.asgi_safe import SingleResponseMiddleware
         
         # 3) Lazily create FastAPI app once per isolate
         if app is None:
-            app = create_app()
+            inner_app = create_app()
+            # Wrap with SingleResponseMiddleware to prevent InvalidStateError
+            # This ensures only one complete response per request, ignoring
+            # Starlette's error recovery attempts that would cause InvalidStateError
+            app = SingleResponseMiddleware(inner_app)
         
         # 4) Delegate to Cloudflare's ASGI server
         return await asgi.fetch(app, request, self.env)

@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 from typing import Optional
+from fastapi import Request
+
+from .config import settings
 
 
 def redact_token(token: Optional[str], visible: int = 4) -> str:
@@ -58,3 +61,37 @@ def normalize_ui_status(status: Optional[str]) -> Optional[str]:
         return normalized
     
     return None
+
+
+def is_secure_request(request: Request, env_settings=None) -> bool:
+    """
+    Determine if a request should use secure cookies (HTTPS).
+    
+    This is the single source of truth for secure cookie detection across
+    the application. All cookie setting and deletion operations must use
+    this function to ensure attributes match.
+    
+    Args:
+        request: FastAPI Request object
+        env_settings: Optional Settings instance (defaults to global settings)
+    
+    Returns:
+        True if the request should use secure cookies, False otherwise.
+        
+    Behavior:
+        - In production (environment == "production"): Always returns True
+        - In development: Checks x-forwarded-proto header or request.url.scheme
+    """
+    active = env_settings or settings
+    
+    # Production override: always secure
+    if getattr(active, "environment", None) == "production":
+        return True
+    
+    # Check x-forwarded-proto header (set by proxies/load balancers)
+    xf_proto = request.headers.get("x-forwarded-proto", "").lower()
+    if xf_proto:
+        return xf_proto == "https"
+    
+    # Fall back to request URL scheme
+    return request.url.scheme == "https"

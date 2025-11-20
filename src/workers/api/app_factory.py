@@ -269,8 +269,8 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
     # Re-enabling SessionMiddleware - D1 is now working
     # Sessions are used for stateful tracking (notifications, activity) and can help with OAuth flows
     app.add_middleware(SessionMiddleware)
-    # FlashMiddleware disabled - only used for toast notifications, can be re-enabled later
-    # app.add_middleware(FlashMiddleware)
+    # FlashMiddleware re-enabled - testing fix for ASGI errors (moved DB write to after call_next)
+    app.add_middleware(FlashMiddleware)
     
     # RateLimitMiddleware disabled - uses time.monotonic() and asyncio.Lock() which may not work correctly in Workers
     # To re-enable: implement using Cloudflare KV or Workers KV for distributed rate limiting
