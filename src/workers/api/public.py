@@ -681,7 +681,8 @@ async def debug_auto_login(request: Request):
     from .simple_http import AsyncSimpleClient
     
     # Use refresh token to get user info
-    refresh_token = "REMOVED_REFRESH_TOKEN"
+    # NOTE: Refresh token should come from environment variable or user's stored token, not hardcoded
+    refresh_token = os.environ.get("GOOGLE_REFRESH_TOKEN")
     client_id = settings.google_client_id
     client_secret = settings.google_client_secret
     
