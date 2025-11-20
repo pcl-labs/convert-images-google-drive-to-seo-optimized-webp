@@ -753,6 +753,96 @@ async def start_ingest_text_job(
     )
 
 
+@router.get("/debug/google", tags=["Debug"])
+async def debug_google_integrations(
+    request: Request,
+    video_id: str = Query("p12N2v2WHDA", description="YouTube video ID to test"),
+    user: dict = Depends(get_current_user),
+):
+    """Debug endpoint to exercise YouTube and Drive integrations from Workers.
+
+    - Verifies that OAuth tokens can be loaded for the current user.
+    - Performs lightweight YouTube and Drive API calls.
+    - Logs detailed success/failure information for Cloudflare observability.
+    """
+
+    db = ensure_db()
+    user_id = user.get("user_id")
+
+    results: Dict[str, Any] = {
+        "user_id": user_id,
+        "video_id": video_id,
+        "youtube_ok": False,
+        "drive_ok": False,
+    }
+
+    # YouTube diagnostics
+    try:
+        logger.info(
+            "debug_youtube_start",
+            extra={"user_id": user_id, "video_id": video_id},
+        )
+        youtube_service = await build_youtube_service_for_user(db, user_id)
+        metadata_bundle = await asyncio.to_thread(
+            fetch_video_metadata, youtube_service, video_id
+        )
+        youtube_meta = metadata_bundle.get("metadata") or {}
+        results["youtube_ok"] = True
+        results["youtube_duration"] = youtube_meta.get("duration_seconds")
+        results["youtube_title"] = youtube_meta.get("title")
+        logger.info(
+            "debug_youtube_success",
+            extra={
+                "user_id": user_id,
+                "video_id": video_id,
+                "duration": youtube_meta.get("duration_seconds"),
+                "title": youtube_meta.get("title"),
+            },
+        )
+    except Exception as exc:
+        results["youtube_error"] = str(exc)
+        logger.error(
+            "debug_youtube_error",
+            exc_info=True,
+            extra={"user_id": user_id, "video_id": video_id, "error": str(exc)},
+        )
+
+    # Drive diagnostics (minimal list of files from root folder)
+    try:
+        logger.info(
+            "debug_drive_start",
+            extra={"user_id": user_id},
+        )
+        drive_service = await build_drive_service_for_user(db, user_id)
+        drive_listing = await asyncio.to_thread(
+            drive_service.list_folder_files, "root"
+        )
+        files = drive_listing.get("files") or []
+        results["drive_ok"] = True
+        results["drive_file_count"] = len(files)
+        logger.info(
+            "debug_drive_success",
+            extra={
+                "user_id": user_id,
+                "file_count": len(files),
+            },
+        )
+    except Exception as exc:
+        results["drive_error"] = str(exc)
+        logger.error(
+            "debug_drive_error",
+            exc_info=True,
+            extra={"user_id": user_id, "error": str(exc)},
+        )
+
+    logger.info(
+        "debug_google_integrations_complete",
+        extra={"user_id": user_id, "video_id": video_id, "results": results},
+    )
+
+    return results
+
+
 @router.get("/auth/github/status", tags=["Authentication"])
 async def github_link_status(user: dict = Depends(get_current_user)):
     db = ensure_db()
