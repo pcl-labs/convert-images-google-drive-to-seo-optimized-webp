@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Awaitable, Dict, Optional
 
-from api.simple_http import HTTPStatusError, RequestError, SimpleClient, SimpleResponse
+from api.simple_http import HTTPStatusError, RequestError, SimpleClient, SimpleResponse, AsyncSimpleClient
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +94,115 @@ class GoogleAPISession:
             self._client = None
 
 
+def _is_workers_runtime() -> bool:
+    """Return True when running inside the Cloudflare Workers Python runtime.
+
+    We detect this by attempting to import ``js.fetch`` which is only available
+    in the Workers/Pyodide environment. This helper is cheap and safe to call.
+    """
+    try:  # pragma: no cover - environment specific
+        from js import fetch as _f  # type: ignore
+    except ImportError:  # pragma: no cover - standard Python
+        return False
+    return _f is not None
+
+
+def _run_or_schedule_close(awaitable: Awaitable[Any], label: str) -> None:
+    async def _runner() -> None:
+        try:
+            await awaitable
+        except Exception:
+            logger.warning("Error closing %s", label, exc_info=True)
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        try:
+            asyncio.run(_runner())
+        except Exception:
+            logger.warning("Error closing %s", label, exc_info=True)
+    else:
+        loop.create_task(_runner())
+
+
+class AsyncGoogleAPISession:
+    """Async Google API session backed by AsyncSimpleClient (Workers runtime).
+
+    This mirrors GoogleAPISession but issues requests via the Workers ``fetch``
+    API through AsyncSimpleClient, which is required for Cloudflare Python
+    Workers where urllib/urlopen are not appropriate.
+    """
+
+    def __init__(self, base_url: str, token: OAuthToken, *, timeout: float = 30.0):
+        self.base_url = base_url.rstrip("/")
+        self.token = token
+        self._client = AsyncSimpleClient(base_url=self.base_url, timeout=timeout)
+
+    def _inject_headers(self, headers: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+        merged: Dict[str, str] = {"Accept": "application/json"}
+        if headers:
+            merged.update(headers)
+        auth_token = self.token.token_type or "Bearer"
+        merged["Authorization"] = f"{auth_token} {self.token.access_token}"
+        return merged
+
+    async def request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: Optional[Dict[str, Any]] = None,
+        json_body: Optional[Dict[str, Any]] = None,
+        headers: Optional[Dict[str, str]] = None,
+        parse_json: bool = True,
+    ) -> Any:
+        merged_headers = self._inject_headers(headers)
+        try:
+            response = await self._client.request(
+                method,
+                path,
+                params=params,
+                json=json_body,
+                headers=merged_headers,
+            )
+        except HTTPStatusError as exc:
+            raise GoogleHTTPError(
+                exc.response.status_code,
+                exc.response.text,
+                payload=exc.response.text,
+            ) from exc
+        except RequestError as exc:
+            raise GoogleAPIError(f"Network error: {exc}") from exc
+
+        if not parse_json:
+            return response
+
+        if not response.content:
+            return {}
+        try:
+            return response.json()
+        except ValueError as exc:  # pragma: no cover - defensive
+            raise GoogleAPIError(
+                f"Google API returned invalid JSON: {response.text[:200]}"
+            ) from exc
+
+    async def aclose(self) -> None:
+        if not self._client:
+            return
+        client = self._client
+        self._client = None
+        try:
+            close = getattr(client, "aclose", None)
+            if callable(close):
+                await close()
+            else:
+                sync_close = getattr(client, "close", None)
+                if callable(sync_close):
+                    sync_close()
+        except Exception as exc:
+            logger.warning("Error closing async HTTP client: %s", exc, exc_info=True)
+
+
 class GoogleDriveClient:
     """Minimal Google Drive v3 client for listing/uploading/downloading files."""
 
@@ -100,6 +210,9 @@ class GoogleDriveClient:
         self.token = token
         self._metadata_session = GoogleAPISession("https://www.googleapis.com/drive/v3", token)
         self._upload_session = GoogleAPISession("https://www.googleapis.com/upload/drive/v3", token)
+        self._async_metadata_session: Optional[AsyncGoogleAPISession] = None
+        if _is_workers_runtime():  # pragma: no cover - Workers specific
+            self._async_metadata_session = AsyncGoogleAPISession("https://www.googleapis.com/drive/v3", token)
         self._files_resource = _GoogleDriveFilesResource(self._metadata_session)
 
     def list_folder_files(
@@ -118,6 +231,35 @@ class GoogleDriveClient:
             params["pageToken"] = page_token
         response = self._metadata_session.request("GET", "/files", params=params)
         return response.json()
+
+    async def list_folder_files_async(
+        self,
+        folder_id: str,
+        *,
+        page_token: Optional[str] = None,
+        fields: str = "nextPageToken, files(id, name, mimeType)",
+    ) -> Dict[str, Any]:
+        """Async variant of list_folder_files for Workers runtime.
+
+        Uses AsyncGoogleAPISession when available; otherwise falls back to the
+        synchronous implementation executed in a thread.
+        """
+        if not self._async_metadata_session:
+            return await asyncio.to_thread(
+                self.list_folder_files,
+                folder_id,
+                page_token=page_token,
+                fields=fields,
+            )
+
+        params: Dict[str, Any] = {
+            "q": f"'{folder_id}' in parents and trashed = false",
+            "spaces": "drive",
+            "fields": fields,
+        }
+        if page_token:
+            params["pageToken"] = page_token
+        return await self._async_metadata_session.request("GET", "/files", params=params)
 
     def download_file(self, file_id: str, file_obj) -> None:
         self._metadata_session.request(
@@ -182,6 +324,25 @@ class GoogleDriveClient:
     def close(self) -> None:
         self._metadata_session.close()
         self._upload_session.close()
+        self._close_async_metadata_session()
+
+    async def aclose(self) -> None:
+        self._metadata_session.close()
+        self._upload_session.close()
+        session = self._async_metadata_session
+        self._async_metadata_session = None
+        if session:
+            try:
+                await session.aclose()
+            except Exception:
+                logger.warning("Error closing async Drive session", exc_info=True)
+
+    def _close_async_metadata_session(self) -> None:
+        session = self._async_metadata_session
+        if not session:
+            return
+        self._async_metadata_session = None
+        _run_or_schedule_close(session.aclose(), "Drive async metadata session")
 
 
 class GoogleDocsRequest:
@@ -337,6 +498,9 @@ class YouTubeClient:
 
     def __init__(self, token: OAuthToken):
         self._session = GoogleAPISession("https://youtube.googleapis.com/youtube/v3", token)
+        self._async_session: Optional[AsyncGoogleAPISession] = None
+        if _is_workers_runtime():  # pragma: no cover - Workers specific
+            self._async_session = AsyncGoogleAPISession("https://youtube.googleapis.com/youtube/v3", token)
 
     def fetch_video(self, video_id: str) -> Dict[str, Any]:
         response = self._session.request(
@@ -346,6 +510,20 @@ class YouTubeClient:
         )
         return response.json()
 
+    async def fetch_video_async(self, video_id: str) -> Dict[str, Any]:
+        """Async variant of fetch_video for Workers runtime.
+
+        Uses AsyncGoogleAPISession when available; otherwise executes the
+        synchronous fetch_video implementation in a worker thread.
+        """
+        if not self._async_session:
+            return await asyncio.to_thread(self.fetch_video, video_id)
+        return await self._async_session.request(
+            "GET",
+            "/videos",
+            params={"part": "snippet,contentDetails,status", "id": video_id},
+        )
+
     def list_captions(self, video_id: str) -> Dict[str, Any]:
         response = self._session.request(
             "GET",
@@ -354,15 +532,74 @@ class YouTubeClient:
         )
         return response.json()
 
+    async def list_captions_async(self, video_id: str) -> Dict[str, Any]:
+        """Async variant of list_captions for Workers runtime.
+
+        Uses AsyncGoogleAPISession when available; otherwise executes the
+        synchronous list_captions implementation in a worker thread.
+        """
+        if not self._async_session:
+            return await asyncio.to_thread(self.list_captions, video_id)
+        return await self._async_session.request(
+            "GET",
+            "/captions",
+            params={"part": "id,snippet", "videoId": video_id},
+        )
+
     def download_caption(self, caption_id: str, *, format: str = "srt") -> str:
-        response = self._session.request("GET", f"/captions/{caption_id}", params={"tfmt": format})
+        response = self._session.request(
+            "GET",
+            f"/captions/{caption_id}",
+            params={"tfmt": format},
+            headers={"Accept": "application/octet-stream"},
+        )
         if response.headers.get("content-type", "").startswith("application/json"):
             # YouTube may return JSON errors; raise a descriptive error
             raise GoogleHTTPError(response.status_code, response.text, payload=response.text)
         return response.text
 
+    async def download_caption_async(self, caption_id: str, *, format: str = "srt") -> str:
+        """Async variant of download_caption for Workers runtime.
+
+        Uses the async HTTP client when available; otherwise runs the sync
+        implementation in a worker thread. Returns caption text (SRT or
+        requested format) or raises GoogleHTTPError/GoogleAPIError on failure.
+        """
+        if not self._async_session:
+            return await asyncio.to_thread(self.download_caption, caption_id, format=format)
+
+        response = await self._async_session.request(
+            "GET",
+            f"/captions/{caption_id}",
+            params={"tfmt": format},
+            headers={"Accept": "application/octet-stream"},
+            parse_json=False,
+        )
+
+        if response.headers.get("content-type", "").startswith("application/json"):
+            raise GoogleHTTPError(response.status_code, response.text, payload=response.text)
+        return response.text
+
     def close(self) -> None:
         self._session.close()
+        self._schedule_async_close()
+
+    async def aclose(self) -> None:
+        self._session.close()
+        session = self._async_session
+        self._async_session = None
+        if session:
+            try:
+                await session.aclose()
+            except Exception:
+                logger.warning("Error closing async YouTube session", exc_info=True)
+
+    def _schedule_async_close(self) -> None:
+        session = self._async_session
+        if not session:
+            return
+        self._async_session = None
+        _run_or_schedule_close(session.aclose(), "YouTube async session")
 
 
 __all__ = [

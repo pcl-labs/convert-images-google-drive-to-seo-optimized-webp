@@ -107,6 +107,23 @@ def fetch_video_metadata(client: YouTubeClient, video_id: str) -> Dict[str, Any]
         response = client.fetch_video(video_id)
     except GoogleAPIError as exc:
         raise YouTubeAPIError(f"YouTube API error: {exc}") from exc
+    return _parse_video_metadata_response(response, video_id)
+
+
+async def fetch_video_metadata_async(client: YouTubeClient, video_id: str) -> Dict[str, Any]:
+    """Async variant of fetch_video_metadata for Workers runtime.
+
+    Uses YouTubeClient.fetch_video_async under the hood so that outbound
+    requests go through the Workers ``fetch`` API instead of urllib.
+    """
+    try:
+        response = await client.fetch_video_async(video_id)
+    except GoogleAPIError as exc:
+        raise YouTubeAPIError(f"YouTube API error: {exc}") from exc
+    return _parse_video_metadata_response(response, video_id)
+
+
+def _parse_video_metadata_response(response: Dict[str, Any], video_id: str) -> Dict[str, Any]:
     items = response.get("items") or []
     if not items:
         raise YouTubeAPIError("Video not found or inaccessible")

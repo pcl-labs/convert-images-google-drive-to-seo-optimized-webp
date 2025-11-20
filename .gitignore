@@ -91,6 +91,9 @@ data/dev.db
 data/.queue.json
 data/.queue.json.lock
 
+# Local dev DB at repo root
+/local.db
+
 # Cloudflare Workers build artifacts
 .wrangler/
 python_modules/

@@ -113,16 +113,31 @@ def _strip_srt_formatting(srt_text: str) -> str:
 
 
 def fetch_captions_text(service: YouTubeClient, video_id: str, langs: List[str]) -> Dict[str, Any]:
-    """
-    Fetch caption text via official YouTube Data API for a given video owned by the authenticated user.
-
-    Returns { success, text, lang, source } or { success: False, error }.
-    """
+    """Synchronous captions helper used in non-Workers environments/tests."""
     try:
         resp = service.list_captions(video_id)
     except GoogleAPIError as exc:
         return {"success": False, "error": f"YouTube Captions API error: {exc}"}
 
+    return _process_captions_response(service, resp, langs)
+
+
+async def fetch_captions_text_async(service: YouTubeClient, video_id: str, langs: List[str]) -> Dict[str, Any]:
+    """Async captions helper for Cloudflare Workers runtime.
+
+    Uses YouTubeClient.list_captions_async and download_caption_async so that
+    outbound HTTP calls go through the Workers ``fetch`` API instead of
+    urllib, avoiding timeouts in the Workers environment.
+    """
+    try:
+        resp = await service.list_captions_async(video_id)
+    except GoogleAPIError as exc:
+        return {"success": False, "error": f"YouTube Captions API error: {exc}"}
+
+    return await _process_captions_response_async(service, resp, langs)
+
+
+def _process_captions_response(service: YouTubeClient, resp: Dict[str, Any], langs: List[str]) -> Dict[str, Any]:
     items = resp.get("items") or []
     if not items:
         return {"success": False, "error": "No captions available for this video (owner-only captions)."}
@@ -140,9 +155,34 @@ def fetch_captions_text(service: YouTubeClient, video_id: str, langs: List[str])
     except GoogleHTTPError as exc:
         return {"success": False, "error": f"Failed to download captions: {exc}"}
 
+    return _normalize_captions_text(srt_text, lang)
+
+
+async def _process_captions_response_async(service: YouTubeClient, resp: Dict[str, Any], langs: List[str]) -> Dict[str, Any]:
+    items = resp.get("items") or []
+    if not items:
+        return {"success": False, "error": "No captions available for this video (owner-only captions)."}
+
+    chosen = _select_caption_track(items, langs or ["en"])
+    if not chosen:
+        return {"success": False, "error": "No captions match requested languages."}
+
+    cap_id = chosen.get("id")
+    snippet = chosen.get("snippet", {})
+    lang = snippet.get("language") or ""
+
+    try:
+        srt_text = await service.download_caption_async(cap_id, format="srt")
+    except GoogleHTTPError as exc:
+        return {"success": False, "error": f"Failed to download captions: {exc}"}
+
+    return _normalize_captions_text(srt_text, lang)
+
+
+def _normalize_captions_text(srt_text: str, lang: str) -> Dict[str, Any]:
     # Extract plain text from SRT format by stripping sequence numbers and timestamps
     text = _strip_srt_formatting(srt_text)
-    
+
     # Normalization: strip and ensure non-empty
     text = (text or "").strip()
     if not text:

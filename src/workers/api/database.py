@@ -137,6 +137,14 @@ def _jsproxy_to_list(obj: Any) -> List[Any]:
         return []
 
 
+def _rows_to_dicts(rows: Any) -> List[Dict[str, Any]]:
+    """Normalize D1/SQLite list results into a list of plain dicts."""
+    if not rows:
+        return []
+    rows_list = _jsproxy_to_list(rows)
+    return [_jsproxy_to_dict(row) for row in rows_list]
+
+
 class Database:
     """Database wrapper for D1 operations.
     
@@ -735,12 +743,17 @@ async def create_job_extended(
         "upload_failed": 0,
         "recent_logs": []
     })
+    # D1-safe normalization: no bare None values. Use empty strings for
+    # nullable text fields and JSON strings for structured columns.
+    drive_folder_val = drive_folder if drive_folder is not None else ""
+    document_id_val = document_id if document_id is not None else ""
     extensions_json = json.dumps(extensions or [])
-    output_json = json.dumps(output) if output is not None else None
-    payload_json = json.dumps(payload) if payload is not None else None
+    output_json = json.dumps(output or {}) if output is not None else ""
+    payload_json = json.dumps(payload or {}) if payload is not None else ""
+
     query = (
         "INSERT INTO jobs (job_id, user_id, status, progress, drive_folder, extensions, job_type, document_id, output, payload, attempt_count, next_attempt_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL) RETURNING *"
+        "VALUES (?, ?, ?, ?, NULLIF(?, ''), ?, ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), 0, NULL) RETURNING *"
     )
     result = await db.execute(
         query,
@@ -749,15 +762,15 @@ async def create_job_extended(
             user_id,
             JobStatusEnum.PENDING.value,
             progress,
-            drive_folder,
+            drive_folder_val,
             extensions_json,
             job_type,
-            document_id,
+            document_id_val,
             output_json,
             payload_json,
         ),
     )
-    return dict(result) if result else {}
+    return _jsproxy_to_dict(result) if result else {}
 
 
 async def get_user_by_id(db: Database, user_id: str) -> Optional[Dict[str, Any]]:
@@ -833,7 +846,7 @@ async def update_user_identity(
     params.append(user_id)
     result = await db.execute(query, tuple(params))
     if result:
-        return dict(result)
+        return _jsproxy_to_dict(result)
     return await get_user_by_id(db, user_id)
 
 
@@ -854,10 +867,8 @@ async def get_user_preferences(db: Database, user_id: str) -> Dict[str, Any]:
     row = await db.execute("SELECT preferences FROM users WHERE user_id = ?", (user_id,))
     if not row:
         return {}
-    if isinstance(row, dict):
-        raw = row.get("preferences")
-    else:
-        raw = row["preferences"]
+    row_dict = _jsproxy_to_dict(row)
+    raw = row_dict.get("preferences")
     return _parse_preferences(raw)
 
 
@@ -869,7 +880,7 @@ async def update_user_preferences(db: Database, user_id: str, preferences: Dict[
         (payload, user_id),
     )
     if result:
-        row = dict(result)
+        row = _jsproxy_to_dict(result)
         row["preferences"] = _parse_preferences(row.get("preferences"))
         return row
     raise DatabaseError("User not found for preferences update")
@@ -916,8 +927,11 @@ async def get_api_key_record_by_hash(db: Database, key_hash: str) -> Optional[Di
     
     # Only return result if the UPDATE actually affected a row (key exists)
     # and the user still exists (user_id subquery returned a value)
-    if result and result.get('user_id'):
-        return dict(result)
+    if not result:
+        return None
+    row = _jsproxy_to_dict(result)
+    if row.get("user_id"):
+        return row
     return None
 
 
@@ -934,7 +948,7 @@ async def get_all_api_key_records(db: Database) -> List[Dict[str, Any]]:
         JOIN api_keys ak ON u.user_id = ak.user_id
     """
     results = await db.execute_all(query, ())
-    return [dict(row) for row in results] if results else []
+    return _rows_to_dicts(results)
 
 
 async def get_api_key_candidates_by_lookup_hash(db: Database, lookup_hash: str) -> List[Dict[str, Any]]:
@@ -946,7 +960,7 @@ async def get_api_key_candidates_by_lookup_hash(db: Database, lookup_hash: str) 
         WHERE ak.lookup_hash = ?
     """
     results = await db.execute_all(query, (lookup_hash,))
-    return [dict(row) for row in results] if results else []
+    return _rows_to_dicts(results)
 
 
 async def get_user_by_api_key(db: Database, api_key: str) -> Optional[Dict[str, Any]]:
@@ -1097,7 +1111,7 @@ async def create_job(
         query,
         (job_id, user_id, JobStatusEnum.PENDING.value, progress, drive_folder, extensions_json)
     )
-    return dict(result) if result else {}
+    return _jsproxy_to_dict(result) if result else {}
 
 
 async def get_job(db: Database, job_id: str, user_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
@@ -1108,7 +1122,7 @@ async def get_job(db: Database, job_id: str, user_id: Optional[str] = None) -> O
     else:
         query = "SELECT * FROM jobs WHERE job_id = ?"
         result = await db.execute(query, (job_id,))
-    return dict(result) if result else None
+    return _jsproxy_to_dict(result) if result else None
 
 
 async def update_job_status(
@@ -1199,7 +1213,11 @@ async def list_jobs(
     # Get total count
     count_query = f"SELECT COUNT(*) as total FROM jobs {where_clause}"
     count_result = await db.execute(count_query, tuple(params))
-    total = dict(count_result).get("total", 0) if count_result else 0
+    if count_result:
+        count_dict = _jsproxy_to_dict(count_result)
+        total = count_dict.get("total", 0)
+    else:
+        total = 0
     
     # Get jobs
     query = f"""
@@ -1211,7 +1229,7 @@ async def list_jobs(
     params.extend([page_size, offset])
     results = await db.execute_all(query, tuple(params))
     
-    jobs = [dict(row) for row in results] if results else []
+    jobs = _rows_to_dicts(results)
     return jobs, total
 
 
@@ -1241,12 +1259,21 @@ async def get_job_stats(db: Database, user_id: Optional[str] = None) -> Dict[str
         """
         result = await db.execute(query, ())
     
-    return dict(result) if result else {
-        "total": 0,
-        "completed": 0,
-        "failed": 0,
-        "pending": 0,
-        "processing": 0
+    if not result:
+        return {
+            "total": 0,
+            "completed": 0,
+            "failed": 0,
+            "pending": 0,
+            "processing": 0,
+        }
+    stats = _jsproxy_to_dict(result)
+    return {
+        "total": stats.get("total", 0) or 0,
+        "completed": stats.get("completed", 0) or 0,
+        "failed": stats.get("failed", 0) or 0,
+        "pending": stats.get("pending", 0) or 0,
+        "processing": stats.get("processing", 0) or 0,
     }
 
 async def get_pending_jobs(
@@ -1281,7 +1308,7 @@ async def get_pending_jobs(
     """
     params = list(statuses) + [limit]
     results = await db.execute_all(query, tuple(params))
-    return [dict(row) for row in results] if results else []
+    return _rows_to_dicts(results)
 
 
 async def list_jobs_by_document(
@@ -1302,7 +1329,7 @@ async def list_jobs_by_document(
         """,
         (user_id, document_id, limit),
     )
-    return [dict(row) for row in rows] if rows else []
+    return _rows_to_dicts(rows)
 
 
 async def latest_job_by_type(db: Database, user_id: str, job_type: str) -> Optional[Dict[str, Any]]:
@@ -1315,7 +1342,7 @@ async def latest_job_by_type(db: Database, user_id: str, job_type: str) -> Optio
         """,
         (user_id, job_type),
     )
-    return dict(row) if row else None
+    return _jsproxy_to_dict(row) if row else None
 
 
 async def list_documents(
@@ -1573,9 +1600,25 @@ async def create_document(
     drive_published_folder_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Create a document row."""
+    # D1 doesn't accept Python None values directly; convert optionals to empty
+    # strings and use NULLIF in SQL where NULL is desired (see gotchas doc).
+    source_ref_val = source_ref if source_ref is not None else ""
+    raw_text_val = raw_text if raw_text is not None else ""
+    content_format_val = content_format if content_format is not None else ""
+    # Always store metadata/frontmatter as JSON text (never None)
+    metadata_text = json.dumps(metadata or {})
+    frontmatter_text = json.dumps(frontmatter or {})
+    latest_version_id_val = latest_version_id if latest_version_id is not None else ""
+    drive_folder_id_val = drive_folder_id if drive_folder_id is not None else ""
+    drive_drafts_folder_id_val = drive_drafts_folder_id if drive_drafts_folder_id is not None else ""
+    drive_media_folder_id_val = drive_media_folder_id if drive_media_folder_id is not None else ""
+    drive_published_folder_id_val = drive_published_folder_id if drive_published_folder_id is not None else ""
+    drive_file_id_val = drive_file_id if drive_file_id is not None else ""
+    drive_revision_id_val = drive_revision_id if drive_revision_id is not None else ""
+
     query = (
         "INSERT INTO documents (document_id, user_id, source_type, source_ref, raw_text, metadata, content_format, frontmatter, latest_version_id, drive_folder_id, drive_drafts_folder_id, drive_media_folder_id, drive_published_folder_id, drive_file_id, drive_revision_id) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *"
+        "VALUES (?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, NULLIF(?, ''), ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, '')) RETURNING *"
     )
     result = await db.execute(
         query,
@@ -1583,21 +1626,22 @@ async def create_document(
             document_id,
             user_id,
             source_type,
-            source_ref,
-            raw_text,
-            json.dumps(metadata or {}),
-            content_format,
-            json.dumps(frontmatter or {}) if frontmatter is not None else None,
-            latest_version_id,
-            drive_folder_id,
-            drive_drafts_folder_id,
-            drive_media_folder_id,
-            drive_published_folder_id,
-            drive_file_id,
-            drive_revision_id,
+            source_ref_val,
+            raw_text_val,
+            metadata_text,
+            content_format_val,
+            frontmatter_text,
+            latest_version_id_val,
+            drive_folder_id_val,
+            drive_drafts_folder_id_val,
+            drive_media_folder_id_val,
+            drive_published_folder_id_val,
+            drive_file_id_val,
+            drive_revision_id_val,
         ),
     )
-    return dict(result) if result else {}
+    # D1 returns JsProxy rows; normalize to plain dict using helper
+    return _jsproxy_to_dict(result) if result else {}
 
 
 async def get_document(db: Database, document_id: str, user_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
@@ -1605,7 +1649,11 @@ async def get_document(db: Database, document_id: str, user_id: Optional[str] = 
         row = await db.execute("SELECT * FROM documents WHERE document_id = ? AND user_id = ?", (document_id, user_id))
     else:
         row = await db.execute("SELECT * FROM documents WHERE document_id = ?", (document_id,))
-    return dict(row) if row else None
+    if not row:
+        return None
+    # D1 returns JsProxy objects; normalize to plain dict. For SQLite this is
+    # also safe because _jsproxy_to_dict falls back to regular dict conversion.
+    return _jsproxy_to_dict(row)
 
 
 async def update_document(
@@ -1727,7 +1775,7 @@ async def create_document_version(
                     json.dumps(assets or {}),
                 ),
             )
-            return dict(result) if result else {}
+            return _jsproxy_to_dict(result) if result else {}
         except DatabaseError as e:
             # Check if this is a UNIQUE constraint violation (race condition)
             if _is_unique_constraint_violation(e) and attempt < max_retries - 1:
@@ -1776,7 +1824,7 @@ async def list_document_versions(
         """,
         (document_id, user_id, max(1, min(limit, 50))),
     )
-    return [dict(r) for r in rows] if rows else []
+    return _rows_to_dicts(rows)
 
 
 async def get_document_version(
@@ -1790,7 +1838,7 @@ async def get_document_version(
         "SELECT * FROM document_versions WHERE document_id = ? AND version_id = ? AND user_id = ?",
         (document_id, version_id, user_id),
     )
-    return dict(row) if row else None
+    return _jsproxy_to_dict(row) if row else None
 
 
 async def create_document_export(
@@ -1818,14 +1866,17 @@ async def create_document_export(
             json.dumps(payload or {}),
         ),
     )
-    return dict(result) if result else {}
+    return _jsproxy_to_dict(result) if result else {}
 
 
 async def get_user_count(db: Database) -> int:
     """Get total user count."""
     query = "SELECT COUNT(*) as total FROM users"
     result = await db.execute(query, ())
-    return dict(result).get("total", 0) if result else 0
+    if not result:
+        return 0
+    count = _jsproxy_to_dict(result)
+    return int(count.get("total", 0) or 0)
 
 
 async def get_step_invocation(
@@ -1838,7 +1889,7 @@ async def get_step_invocation(
         "SELECT * FROM step_invocations WHERE idempotency_key = ? AND user_id = ?",
         (idempotency_key, user_id),
     )
-    return dict(row) if row else None
+    return _jsproxy_to_dict(row) if row else None
 
 
 async def save_step_invocation(
@@ -2461,7 +2512,7 @@ async def list_usage_events(
         "SELECT * FROM usage_events WHERE user_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?",
         (user_id, limit, offset),
     )
-    return [dict(r) for r in rows] if rows else []
+    return _rows_to_dicts(rows)
 
 
 async def get_usage_summary(
@@ -2480,21 +2531,15 @@ async def get_usage_summary(
         """,
         (user_id, f"-{int(window_days)} days"),
     )
+    row_dicts = _rows_to_dicts(rows)
     total_events = 0
     total_bytes = 0
     total_duration = 0.0
-    for r in (rows or []):
+    for r in row_dicts:
         total_events += 1
         try:
             metrics_raw = None
-            # Support sqlite3.Row, dict, or tuple ordering (metrics, event_type)
-            if isinstance(r, dict):
-                metrics_raw = r.get("metrics")
-            elif hasattr(r, "keys"):
-                # sqlite3.Row
-                metrics_raw = r["metrics"]
-            elif isinstance(r, (list, tuple)):
-                metrics_raw = r[0]
+            metrics_raw = r.get("metrics")
             # Parse JSON if needed
             m = metrics_raw
             if isinstance(m, str):
@@ -2530,24 +2575,19 @@ async def count_usage_events(db: Database, user_id: str) -> int:
     try:
         if row is None:
             return 0
+        if isinstance(row, dict) or hasattr(row, "keys"):
+            count_dict = _jsproxy_to_dict(row)
+            return int(count_dict.get("cnt", 0) or 0)
         # Some drivers may return a list/iterable for single-row queries
-        if isinstance(row, (list, tuple)) and row and not hasattr(row, "keys") and not isinstance(row, dict):
+        if isinstance(row, (list, tuple)) and row:
             first = row[0]
-            # If the first element is a mapping/row, use it directly
-            if isinstance(first, dict):
-                return int(first.get("cnt", 0))
-            if hasattr(first, "keys"):
-                return int(first["cnt"])  # sqlite3.Row-like
-            # If it's a scalar or tuple, treat as positional
-            return int(first if not isinstance(first, (list, tuple)) else first[0])
-        # Mapping-like (dict)
-        if isinstance(row, dict):
-            return int(row.get("cnt", 0))
-        # sqlite3.Row-like
-        if hasattr(row, "keys"):
-            return int(row["cnt"])  # sqlite3.Row
-        # tuple/list fallback
-        return int(row[0])
+            if isinstance(first, dict) or hasattr(first, "keys"):
+                count_dict = _jsproxy_to_dict(first)
+                return int(count_dict.get("cnt", 0) or 0)
+            if isinstance(first, (list, tuple)):
+                return int(first[0]) if first else 0
+            return int(first)
+        return int(row)
     except Exception:
         return 0
 
@@ -2570,7 +2610,7 @@ async def list_notifications(db: Database, user_id: str, after_id: str | None = 
     if after_id:
         row = await db.execute("SELECT created_at, id FROM notifications WHERE id = ?", (after_id,))
         if row:
-            d = dict(row)
+            d = _jsproxy_to_dict(row)
             cursor_created_at = d.get("created_at")
             cursor_id = d.get("id")
     query = (
@@ -2586,7 +2626,7 @@ async def list_notifications(db: Database, user_id: str, after_id: str | None = 
     query += " ORDER BY n.created_at DESC, n.id DESC LIMIT ?"
     params.append(limit)
     rows = await db.execute_all(query, tuple(params))
-    return [dict(r) for r in rows] if rows else []
+    return _rows_to_dicts(rows)
 
 
 async def mark_notification_seen(db: Database, user_id: str, notification_id: str) -> None:
@@ -2847,8 +2887,7 @@ async def list_pipeline_events(
     params.append(limit)
     rows = await db.execute_all(query, tuple(params))
     events: List[Dict[str, Any]] = []
-    for row in rows or []:
-        event = dict(row)
+    for event in _rows_to_dicts(rows):
         payload = event.get("data")
         if isinstance(payload, str) and payload:
             try:
