@@ -20,8 +20,20 @@ compatibility_flags = ["python_workers"]  # Required for Python Workers
 ENVIRONMENT = "development"  # Used by Settings.environment
 # For Cloudflare Workers production: set to "cloudflare" (requires D1 binding)
 # For local development: set to "development" (uses SQLite fallback)
-DEBUG = "false"             # Used by Settings.debug
+DEBUG = "true"             # Used by Settings.debug
 BASE_URL = "http://localhost:8787"  # OAuth redirect URI base (matches wrangler dev port)
+ENABLE_DRIVE_PIPELINE = "true"
+STATIC_FILES_DIR = "./static"
+CORS_ORIGINS = "http://localhost:8000,http://127.0.0.1:8000,http://localhost:8787,http://127.0.0.1:8787"
+JWT_USE_COOKIES = "true"
+QUEUE_NAME = "quill-jobs"
+DEAD_LETTER_QUEUE_NAME = "quill-dlq"
+USE_INLINE_QUEUE = "true"
+TRANSCRIPT_LANGS = "en,en-US,en-GB"
+OPENAI_API_BASE = "https://api.openai.com/v1"
+OPENAI_BLOG_MODEL = "gpt-5.1"
+OPENAI_BLOG_TEMPERATURE = "0.6"
+OPENAI_BLOG_MAX_OUTPUT_TOKENS = "2200"
 
 # D1 Database binding
 # The binding name "DB" must match what the code expects (see src/workers/runtime.py)

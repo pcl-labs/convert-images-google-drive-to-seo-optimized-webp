@@ -4,10 +4,8 @@
 {% from 'components/layout/public_footer.html' import public_footer %}
 {% from 'components/elements/card.html' import card %}
 
-{% set logo_src = url_for('static', path='logos/quill-logo.png') %}
-
 {% block shell_header %}
-  {{ public_header(active='home', logo_src=logo_src) }}
+  {{ public_header(active='home') }}
 {% endblock %}
 
 {% block content %}

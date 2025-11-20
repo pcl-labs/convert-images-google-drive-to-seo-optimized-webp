@@ -22,7 +22,7 @@
         {% from 'components/elements/button.html' import button %}
         {% if state.connected %}
           {% if s.key == 'drive' %}
-            <div x-data="{ submit(){ $refs.form && $refs.form.submit() } }" @open-drive-disconnect.window="submit()">
+            <div x-data="{ submit(){ $refs.form && $refs.form.submit() } }" @confirm-drive-disconnect.window="submit()">
               <form x-ref="form" method="post" action="/dashboard/integrations/drive/disconnect">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
                 {{ button('Disconnect', variant='destructive', attrs='type="button" @click="$dispatch(\'open-drive-disconnect\')"') }}

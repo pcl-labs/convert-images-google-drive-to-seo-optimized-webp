@@ -209,24 +209,36 @@ async def get_github_primary_email(access_token: str) -> Optional[str]:
     return None
 
 
-async def exchange_github_code(code: str) -> Dict[str, Any]:
+async def exchange_github_code(code: str, redirect_uri: Optional[str] = None) -> Dict[str, Any]:
     """Exchange GitHub OAuth code for access token.
     
     Uses pure HTTP requests via AsyncSimpleClient (no third-party auth libraries).
     This approach is Cloudflare Workers-compatible and avoids heavy dependencies.
+    
+    Args:
+        code: Authorization code from GitHub OAuth callback
+        redirect_uri: Redirect URI used in authorization request (required by RFC 6749 Section 4.1.3)
+    
+    Note: redirect_uri must match the redirect_uri used in the authorization request
+    for security validation per RFC 6749. If omitted, GitHub may reject the token exchange.
     """
     if not settings.github_client_id or not settings.github_client_secret:
         raise AuthenticationError("GitHub OAuth not configured")
     
     try:
+        data = {
+            "client_id": settings.github_client_id,
+            "client_secret": settings.github_client_secret,
+            "code": code,
+        }
+        # Add redirect_uri if provided (RFC 6749 Section 4.1.3 requires it when present in auth request)
+        if redirect_uri:
+            data["redirect_uri"] = redirect_uri
+        
         async with AsyncSimpleClient(timeout=10.0) as client:
             response = await client.post(
                 "https://github.com/login/oauth/access_token",
-                data={
-                    "client_id": settings.github_client_id,
-                    "client_secret": settings.github_client_secret,
-                    "code": code,
-                },
+                data=data,
                 headers={"Accept": "application/json"},
             )
             response.raise_for_status()
@@ -252,10 +264,10 @@ async def exchange_github_code(code: str) -> Dict[str, Any]:
         raise AuthenticationError(f"Failed to exchange GitHub code: HTTP {e.response.status_code}")
 
 
-async def authenticate_github(db: Database, code: str) -> tuple[str, Dict[str, Any]]:
+async def authenticate_github(db: Database, code: str, redirect_uri: Optional[str] = None) -> tuple[str, Dict[str, Any]]:
     """Authenticate user with GitHub OAuth and return JWT token and user info."""
     # Exchange code for access token
-    token_data = await exchange_github_code(code)
+    token_data = await exchange_github_code(code, redirect_uri=redirect_uri)
     access_token = token_data.get("access_token")
     if not access_token:
         raise AuthenticationError("No access token received from GitHub")

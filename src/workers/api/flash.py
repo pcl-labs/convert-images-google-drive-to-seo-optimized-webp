@@ -5,6 +5,9 @@ import logging
 from typing import Optional
 from fastapi import Request
 
+from .deps import ensure_db
+from .database import touch_user_session
+
 logger = logging.getLogger(__name__)
 
 
@@ -78,6 +81,16 @@ async def add_flash(
         # SessionMiddleware cache not available - that's OK, session will sync on next request
         pass
     
-    # Skip async DB write to avoid ASGI InvalidStateError
-    # The session will be persisted when SessionMiddleware touches it on the next request
+    # Persist session changes to database
+    # Handle DB errors gracefully to avoid breaking request flow
+    try:
+        db = ensure_db()
+        await touch_user_session(db, session_id, extra=extra_dict)
+    except Exception as exc:
+        # Log error but don't fail the request - flash message is already in cache
+        logger.warning(
+            "Failed to persist flash message to database: %s",
+            exc,
+            exc_info=True,
+        )
 

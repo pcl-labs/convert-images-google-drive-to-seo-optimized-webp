@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 _session_cache: Dict[str, Dict[str, Any]] = {}
 _session_cache_timestamps: Dict[str, float] = {}
 _SESSION_CACHE_TTL = 300  # 5 minutes cache TTL
+_SESSION_CACHE_MAX_SIZE = 1000  # Maximum number of cached sessions (LRU eviction)
 
 # Public routes that should not require DB access for basic rendering
 # These routes should degrade gracefully if DB is unavailable
@@ -120,7 +121,19 @@ class SessionMiddleware(BaseHTTPMiddleware):
         return _session_cache.get(session_id)
 
     def _set_session_in_cache(self, session_id: str, session: Dict[str, Any]) -> None:
-        """Store session in in-memory cache."""
+        """Store session in in-memory cache with LRU eviction."""
+        # LRU eviction: if cache is full, remove entry with oldest timestamp
+        if len(_session_cache) >= _SESSION_CACHE_MAX_SIZE:
+            # Find entry with oldest timestamp
+            oldest_session_id = min(
+                _session_cache_timestamps.keys(),
+                key=lambda sid: _session_cache_timestamps[sid]
+            )
+            # Remove oldest entry from both dicts to keep them in sync
+            _session_cache.pop(oldest_session_id, None)
+            _session_cache_timestamps.pop(oldest_session_id, None)
+        
+        # Insert new entry
         _session_cache[session_id] = session
         _session_cache_timestamps[session_id] = time.time()
 
@@ -431,7 +444,6 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if (
             path == "/health"
             or path.startswith("/static/")
-            or path == "/favicon.ico"
             or path == "/robots.txt"
         ):
             return await call_next(request)

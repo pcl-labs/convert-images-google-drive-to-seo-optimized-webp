@@ -1,12 +1,13 @@
 <aside x-data="{ open: false }" class="">
   {% from 'components/elements/icon.html' import icon %}
   {% macro nav_links(path) %}
-    {% set section = path.split('/', 2)[2] if path.startswith('/dashboard') and path|length > 11 else '' %}
+    {% set path_parts = path.split('/') %}
+    {% set section = path_parts[2] if path_parts|length > 2 and path.startswith('/dashboard') else '' %}
     <a href="/dashboard" class="flex items-center gap-2 px-3 py-2 rounded-md {{ 'bg-surfaceMuted text-content' if path == '/dashboard' else 'text-content hover:bg-surfaceMuted' }}">Dashboard</a>
-    <a href="/dashboard/documents" class="flex items-center gap-2 px-3 py-2 rounded-md {{ 'bg-surfaceMuted text-content' if section.startswith('documents') else 'text-content hover:bg-surfaceMuted' }}">Documents</a>
-    <a href="/dashboard/integrations" class="flex items-center gap-2 px-3 py-2 rounded-md {{ 'bg-surfaceMuted text-content' if section.startswith('integrations') else 'text-content hover:bg-surfaceMuted' }}">Integrations</a>
-    <a href="/dashboard/account" class="flex items-center gap-2 px-3 py-2 rounded-md {{ 'bg-surfaceMuted text-content' if section.startswith('account') else 'text-content hover:bg-surfaceMuted' }}">Account</a>
-    <a href="/dashboard/settings" class="flex items-center gap-2 px-3 py-2 rounded-md {{ 'bg-surfaceMuted text-content' if section.startswith('settings') else 'text-content hover:bg-surfaceMuted' }}">Settings</a>
+    <a href="/dashboard/documents" class="flex items-center gap-2 px-3 py-2 rounded-md {{ 'bg-surfaceMuted text-content' if section == 'documents' else 'text-content hover:bg-surfaceMuted' }}">Documents</a>
+    <a href="/dashboard/integrations" class="flex items-center gap-2 px-3 py-2 rounded-md {{ 'bg-surfaceMuted text-content' if section == 'integrations' else 'text-content hover:bg-surfaceMuted' }}">Integrations</a>
+    <a href="/dashboard/account" class="flex items-center gap-2 px-3 py-2 rounded-md {{ 'bg-surfaceMuted text-content' if section == 'account' else 'text-content hover:bg-surfaceMuted' }}">Account</a>
+    <a href="/dashboard/settings" class="flex items-center gap-2 px-3 py-2 rounded-md {{ 'bg-surfaceMuted text-content' if section == 'settings' else 'text-content hover:bg-surfaceMuted' }}">Settings</a>
   {% endmacro %}
   <div class="lg:hidden">
     <!-- Mobile header bar with menu button only -->
@@ -37,7 +38,6 @@
   <div class="hidden lg:flex lg:flex-col lg:w-64 lg:fixed lg:inset-y-0 bg-bg border-r border-border">
     <div class="h-14 flex items-center px-4 border-b border-border">
       <div class="flex items-center gap-2">
-        <img src="{{ url_for('static', path='logos/quill-logo.png') }}" alt="Quill" class="h-6 w-6 rounded-md object-cover" />
         <span class="text-content font-semibold">Quill</span>
       </div>
     </div>

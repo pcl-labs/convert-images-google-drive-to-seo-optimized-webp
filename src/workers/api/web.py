@@ -1009,8 +1009,9 @@ async def logout(request: Request, csrf_token: str = Form(...)) -> RedirectRespo
         from datetime import datetime, timezone
         expires = datetime(1970, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
         session_cookie_value = f'{settings.session_cookie_name}=""; expires={expires.strftime("%a, %d %b %Y %H:%M:%S GMT")}; Max-Age=0; Path=/; SameSite=lax; HttpOnly'
-        response.headers.append("Set-Cookie", session_cookie_value + (f"; Secure" if is_secure else ""))
-        response.headers.append("Set-Cookie", session_cookie_value + (f"; Secure" if not is_secure else ""))
+        if is_secure:
+            session_cookie_value += "; Secure"
+        response.headers.append("Set-Cookie", session_cookie_value)
 
     # Clear all authentication-related cookies
     # NOTE: Cloudflare Workers only sends ONE Set-Cookie header per response.
@@ -1600,7 +1601,7 @@ async def job_detail_partial(job_id: str, request: Request, user: dict = Depends
 
 
 @router.get("/dashboard/jobs", response_class=HTMLResponse)
-async def jobs_page(request: Request, user: dict = Depends(get_current_user), page: int = 1, status_filter_param: Optional[str] = None):
+async def jobs_page(request: Request, user: dict = Depends(get_current_user), page: int = 1, status: Optional[str] = None):
     # Handle DB initialization failures with explicit 503 for protected routes
     try:
         db = ensure_db()
@@ -1613,6 +1614,8 @@ async def jobs_page(request: Request, user: dict = Depends(get_current_user), pa
             ) from exc
         raise
     csrf = _get_csrf_token(request)
+    # Alias status parameter to avoid collision with imported status module
+    status_filter_param = status
     status_filter = None
     if status_filter_param:
         try:

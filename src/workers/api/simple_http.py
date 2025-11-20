@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, Mapping, MutableMapping, Optional, Union
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode, urljoin
+from urllib.parse import urlencode, urljoin, urlparse
 from urllib.request import Request, urlopen
 
 # Import fetch and Request from Cloudflare Workers (js module)
@@ -81,6 +81,21 @@ def _build_url(url: str, params: ParamsType) -> str:
     return f"{url}{separator}{query}"
 
 
+def _validate_url_scheme(url: str) -> None:
+    """Validate that URL scheme is http or https to prevent SSRF/local file access.
+    
+    Raises RequestError if scheme is missing or not allowed.
+    """
+    parsed = urlparse(url)
+    scheme = parsed.scheme.lower() if parsed.scheme else ""
+    
+    if not scheme:
+        raise RequestError(f"URL scheme is required. Got: {url}")
+    
+    if scheme not in ("http", "https"):
+        raise RequestError(f"Only http and https schemes are allowed. Got: {scheme}://...")
+
+
 def request(
     method: str,
     url: str,
@@ -98,6 +113,10 @@ def request(
     request_headers: Dict[str, str] = dict(headers or {})
     body = _prepare_body(data, json, request_headers)
     full_url = _build_url(url, params)
+    
+    # Validate URL scheme to prevent SSRF/local file access
+    _validate_url_scheme(full_url)
+    
     req = Request(full_url, data=body, headers=request_headers, method=method.upper())
     try:
         with urlopen(req, timeout=timeout) as resp:
@@ -159,57 +178,132 @@ async def _fetch_request(
     # Build URL with params
     full_url = _build_url(url, params)
     
+    # Validate URL scheme to prevent SSRF/local file access
+    _validate_url_scheme(full_url)
+    
     # Prepare headers and body using standard approach
     request_headers: Dict[str, str] = dict(headers or {})
     body = _prepare_body(data, json_body, request_headers)
     
-    # Build fetch options as Python dict first
-    fetch_options_dict = {
-        "method": method.upper(),
-    }
-    
-    # Convert headers dict to JavaScript object explicitly
-    if JSObject is not None and request_headers:
-        fetch_options_dict["headers"] = JSObject.fromEntries([
-            [k, v] for k, v in request_headers.items()
-        ])
-    else:
-        fetch_options_dict["headers"] = request_headers
-    
-    # Convert body from bytes to string for text-based content types
-    # Cloudflare Workers Python fetch API (via Pyodide) expects string for form-encoded and JSON
-    if body is not None:
-        content_type = request_headers.get("Content-Type", "")
-        if isinstance(body, bytes):
-            # For text-based content types, decode bytes to string
-            if content_type in ("application/x-www-form-urlencoded", "application/json"):
-                fetch_options_dict["body"] = body.decode("utf-8")
-            else:
-                # Keep binary data as bytes
-                fetch_options_dict["body"] = body
-        else:
-            fetch_options_dict["body"] = body
-    
-    # Convert entire fetch_options dict to JavaScript object
-    if JSObject is not None:
-        fetch_options = JSObject.fromEntries([
-            [k, v] for k, v in fetch_options_dict.items()
-        ])
-    else:
-        fetch_options = fetch_options_dict
-    
-    # Call fetch with URL and options
+    # Import AbortController and setTimeout from js module for timeout handling
     try:
-        response = await _worker_fetch(full_url, fetch_options)
-    except Exception as exc:
-        logger.error(
-            "Fetch call failed: url=%s, method=%s, error=%s",
-            full_url,
-            method.upper(),
-            exc,
-            exc_info=True,
-        )
-        raise
+        from js import AbortController, setTimeout, clearTimeout
+    except ImportError:
+        # Fallback if AbortController is not available
+        AbortController = None
+        setTimeout = None
+        clearTimeout = None
+    
+    # Create AbortController for timeout
+    controller = None
+    timeout_id = None
+    
+    try:
+        if AbortController is not None:
+            controller = AbortController.new()
+        
+        # Build fetch options as Python dict first
+        fetch_options_dict = {
+            "method": method.upper(),
+        }
+        
+        # Add abort signal to fetch options if controller is available
+        if controller is not None:
+            fetch_options_dict["signal"] = controller.signal
+        
+        # Convert headers dict to JavaScript object explicitly
+        if JSObject is not None and request_headers:
+            fetch_options_dict["headers"] = JSObject.fromEntries([
+                [k, v] for k, v in request_headers.items()
+            ])
+        else:
+            fetch_options_dict["headers"] = request_headers
+        
+        # Convert body from bytes to string for text-based content types
+        # Cloudflare Workers Python fetch API (via Pyodide) expects string for form-encoded and JSON
+        if body is not None:
+            content_type = request_headers.get("Content-Type", "")
+            if isinstance(body, bytes):
+                # For text-based content types, decode bytes to string
+                if content_type in ("application/x-www-form-urlencoded", "application/json"):
+                    fetch_options_dict["body"] = body.decode("utf-8")
+                else:
+                    # Keep binary data as bytes
+                    fetch_options_dict["body"] = body
+            else:
+                fetch_options_dict["body"] = body
+        
+        # Convert entire fetch_options dict to JavaScript object
+        if JSObject is not None:
+            fetch_options = JSObject.fromEntries([
+                [k, v] for k, v in fetch_options_dict.items()
+            ])
+        else:
+            fetch_options = fetch_options_dict
+        
+        # Set up timeout timer to abort the request
+        if controller is not None and setTimeout is not None:
+            def abort_request():
+                try:
+                    controller.abort()
+                except Exception:
+                    pass
+            
+            timeout_id = setTimeout(abort_request, int(timeout * 1000))
+        
+        # Call fetch with URL and options
+        try:
+            response = await _worker_fetch(full_url, fetch_options)
+            # Clear timeout immediately after successful fetch
+            if timeout_id is not None and clearTimeout is not None:
+                try:
+                    clearTimeout(timeout_id)
+                    timeout_id = None
+                except Exception:
+                    pass
+        except Exception as exc:
+            # Clear timeout on error as well
+            if timeout_id is not None and clearTimeout is not None:
+                try:
+                    clearTimeout(timeout_id)
+                    timeout_id = None
+                except Exception:
+                    pass
+            
+            # Check if error is due to abort (timeout)
+            # In JavaScript, aborted fetch throws DOMException with name "AbortError"
+            # In Pyodide, this might be wrapped, so check both the exception type and signal state
+            is_abort_error = False
+            if controller is not None:
+                try:
+                    # Check if signal is aborted
+                    if hasattr(controller.signal, 'aborted') and controller.signal.aborted:
+                        is_abort_error = True
+                    # Check exception name/type for AbortError
+                    exc_name = getattr(exc, 'name', None) or getattr(exc, '__class__', {}).get('__name__', '')
+                    if 'Abort' in str(exc_name) or 'AbortError' in str(exc):
+                        is_abort_error = True
+                except Exception:
+                    pass
+            
+            if is_abort_error:
+                raise RequestError(f"Request timeout after {timeout} seconds") from exc
+            
+            logger.error(
+                "Fetch call failed: url=%s, method=%s, error=%s",
+                full_url,
+                method.upper(),
+                exc,
+                exc_info=True,
+            )
+            raise
+    finally:
+        # Clean up timeout timer as final safety net
+        if timeout_id is not None and clearTimeout is not None:
+            try:
+                clearTimeout(timeout_id)
+            except Exception:
+                pass
     
     # Extract response data
     status = response.status

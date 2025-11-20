@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Request, HTTPException, status, Form
 from fastapi.responses import JSONResponse, RedirectResponse, Response, PlainTextResponse
 from typing import Optional
+import os
 import secrets
 import uuid
 from datetime import datetime, timezone, timedelta
@@ -21,7 +22,7 @@ from .auth import (
     _verify_google_id_token,
 )
 from .exceptions import AuthenticationError
-from .deps import ensure_db, get_queue_producer
+from .deps import ensure_db, get_queue_producer, get_current_user
 from .database import create_user_session, delete_user_session
 from .app_logging import get_logger
 from .database import create_job_extended, get_drive_watch_by_channel
@@ -35,10 +36,57 @@ router = APIRouter()
 logger = get_logger(__name__)
 
 
+def require_debug_mode(request: Request):
+    """Guard function to protect debug/test endpoints.
+    
+    Only allows access when:
+    1. settings.debug is True OR environment is "development"
+    2. User is authenticated (via get_current_user)
+    
+    Returns 404 in production or 401 if not authenticated.
+    """
+    # Check if debug mode is enabled
+    if not settings.debug and settings.environment != "development":
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Not found"
+        )
+    
+    # Require authentication
+    try:
+        user = getattr(request.state, "user", None)
+        if not user:
+            # Try to get user via get_current_user (will raise 401 if not authenticated)
+            # Note: We can't await here, so we check request.state directly
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required for debug endpoints"
+            )
+        return user
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required for debug endpoints"
+        )
+
+
 # Removed _is_secure_request - now using shared is_secure_request from utils
 
 
 def _get_github_oauth_redirect(request: Request) -> tuple[str, str]:
+    """Get GitHub OAuth authorization URL and state.
+    
+    Uses request.url for redirect_uri instead of BASE_URL to ensure it matches
+    what GitHub redirects to. This is important for:
+    - Development: request.url is the actual localhost URL
+    - Production behind proxy: BASE_URL may be set, but request.url ensures consistency
+    
+    Note: In production behind a proxy/load balancer, BASE_URL could be used for consistency,
+    but using request.url ensures the redirect_uri always matches the actual request origin,
+    which is critical for OAuth security validation.
+    """
     # Always use the actual request URL for redirect_uri to ensure it matches what GitHub redirects to
     # BASE_URL is only for production behind proxy/load balancer - in dev, use actual request URL
     redirect_uri = str(request.url.replace(path="/auth/github/callback", query=""))
@@ -63,6 +111,17 @@ def _build_github_oauth_response(request: Request, auth_url: str, state: str) ->
 
 
 def _google_login_redirect_uri(request: Request) -> str:
+    """Get Google OAuth redirect URI.
+    
+    Uses request.url for redirect_uri instead of BASE_URL to ensure it matches
+    what Google redirects to. This is important for:
+    - Development: request.url is the actual localhost URL
+    - Production behind proxy: BASE_URL may be set, but request.url ensures consistency
+    
+    Note: In production behind a proxy/load balancer, BASE_URL could be used for consistency,
+    but using request.url ensures the redirect_uri always matches the actual request origin,
+    which is critical for OAuth security validation.
+    """
     # Always use the actual request URL for redirect_uri to ensure it matches what Google redirects to
     # BASE_URL is only for production behind proxy/load balancer - in dev, use actual request URL
     redirect_uri = str(request.url.replace(path="/auth/google/login/callback", query=""))
@@ -194,7 +253,8 @@ async def root():
 
 
 @router.get("/test/fetch", tags=["Public"])
-async def test_fetch(url: Optional[str] = None, method: Optional[str] = None):
+async def test_fetch(request: Request, url: Optional[str] = None, method: Optional[str] = None):
+    require_debug_mode(request)  # Guard: require debug mode and authentication
     """
     Test endpoint to verify fetch API works via simple_http.
     Fetches a URL and returns the response status and headers.
@@ -257,7 +317,8 @@ async def test_fetch(url: Optional[str] = None, method: Optional[str] = None):
 
 
 @router.get("/debug/users", tags=["Public"])
-async def debug_users():
+async def debug_users(request: Request):
+    require_debug_mode(request)  # Guard: require debug mode and authentication
     """Debug endpoint to list all users in the database."""
     try:
         from .deps import ensure_db
@@ -287,7 +348,8 @@ async def debug_users():
 
 
 @router.get("/debug/sessions", tags=["Public"])
-async def debug_sessions(session_id: Optional[str] = None):
+async def debug_sessions(request: Request, session_id: Optional[str] = None):
+    require_debug_mode(request)  # Guard: require debug mode and authentication
     """Debug endpoint to list sessions in the database."""
     try:
         from .deps import ensure_db
@@ -333,7 +395,8 @@ async def debug_sessions(session_id: Optional[str] = None):
 
 
 @router.get("/debug/db-test", tags=["Public"])
-async def debug_db_test():
+async def debug_db_test(request: Request):
+    require_debug_mode(request)  # Guard: require debug mode and authentication
     """
     Debug endpoint to test database access and basic operations.
     Tests D1 connection, schema, and simple queries.
@@ -432,7 +495,8 @@ async def debug_db_test():
 
 
 @router.post("/debug/migrate-db", tags=["Public"])
-async def debug_migrate_db():
+async def debug_migrate_db(request: Request):
+    require_debug_mode(request)  # Guard: require debug mode and authentication
     """
     Debug endpoint to manually trigger database migration.
     Applies the full schema from migrations/schema.sql to D1.
@@ -475,6 +539,7 @@ async def debug_migrate_db():
 
 @router.get("/debug/cookie-test", tags=["Public"])
 async def debug_cookie_test(request: Request):
+    require_debug_mode(request)  # Guard: require debug mode and authentication
     """
     Debug endpoint to test cookie setting and reading.
     Sets a test cookie and shows what cookies are present in the request.
@@ -517,6 +582,7 @@ async def debug_cookie_test(request: Request):
 
 @router.get("/debug/cookie-redirect-test", tags=["Public"])
 async def debug_cookie_redirect_test(request: Request):
+    require_debug_mode(request)  # Guard: require debug mode and authentication
     """
     Debug endpoint to test cookie setting on RedirectResponse (like OAuth callback).
     Sets a cookie and redirects to /debug/cookie-read to test if cookie persists.
@@ -544,6 +610,7 @@ async def debug_cookie_redirect_test(request: Request):
 
 @router.get("/debug/cookie-read", tags=["Public"])
 async def debug_cookie_read(request: Request):
+    require_debug_mode(request)  # Guard: require debug mode and authentication
     """
     Debug endpoint to read cookies after they've been set.
     Call /debug/cookie-test first, then this endpoint to see if cookies persist.
@@ -561,6 +628,7 @@ async def debug_cookie_read(request: Request):
 
 @router.get("/debug/oauth-callback-test", tags=["Public"])
 async def debug_oauth_callback_test(request: Request):
+    require_debug_mode(request)  # Guard: require debug mode and authentication
     """
     Debug endpoint to test OAuth callback cookie setting.
     Simulates what happens in the OAuth callback to see if cookies are being set correctly.
@@ -625,6 +693,7 @@ async def debug_oauth_callback_test(request: Request):
 
 @router.get("/debug/oauth-callback-simulate", tags=["Public"])
 async def debug_oauth_callback_simulate(request: Request):
+    require_debug_mode(request)  # Guard: require debug mode and authentication
     """
     Debug endpoint that actually performs a redirect with cookie (like real OAuth callback).
     Use this to test if cookies persist through redirects in your browser.
@@ -667,6 +736,7 @@ async def debug_oauth_callback_simulate(request: Request):
 
 @router.get("/debug/auto-login", tags=["Public"])
 async def debug_auto_login(request: Request):
+    require_debug_mode(request)  # Guard: require debug mode and authentication
     """
     Auto-login using stored refresh token - generates JWT and sets cookie.
     Uses the refresh token from .env to get user info and create a session.
@@ -775,6 +845,7 @@ async def debug_auto_login(request: Request):
 
 @router.get("/debug/simulate-oauth-callback", tags=["Public"])
 async def debug_simulate_oauth_callback(request: Request, user_id: Optional[str] = None, email: Optional[str] = None):
+    require_debug_mode(request)  # Guard: require debug mode and authentication
     """
     Simulate OAuth callback flow - sets access_token cookie and redirects to dashboard.
     This allows testing cookie behavior without going through actual OAuth flow.
@@ -827,6 +898,7 @@ async def debug_simulate_oauth_callback(request: Request, user_id: Optional[str]
 
 @router.get("/debug/oauth-callback-debug", tags=["Public"])
 async def debug_oauth_callback_debug(request: Request):
+    require_debug_mode(request)  # Guard: require debug mode and authentication
     """
     Debug endpoint to check what happens during OAuth callback.
     This endpoint can be used to test cookie setting behavior.
@@ -900,7 +972,8 @@ async def debug_oauth_callback_debug(request: Request):
 
 
 @router.get("/debug/check-auth-config", tags=["Public"])
-async def debug_check_auth_config():
+async def debug_check_auth_config(request: Request):
+    require_debug_mode(request)  # Guard: require debug mode and authentication
     """
     Debug endpoint to check authentication configuration.
     Shows JWT settings, cookie settings, and OAuth configuration.
@@ -938,7 +1011,8 @@ async def debug_check_auth_config():
 
 
 @router.get("/debug/generate-test-token", tags=["Public"])
-async def debug_generate_test_token(user_id: Optional[str] = None, email: Optional[str] = None):
+async def debug_generate_test_token(request: Request, user_id: Optional[str] = None, email: Optional[str] = None):
+    require_debug_mode(request)  # Guard: require debug mode and authentication
     """
     Debug endpoint to generate a test JWT token for testing authentication.
     
@@ -973,6 +1047,7 @@ async def debug_generate_test_token(user_id: Optional[str] = None, email: Option
 
 @router.post("/debug/google-token", tags=["Public"])
 async def debug_google_token(request: Request):
+    require_debug_mode(request)  # Guard: require debug mode and authentication
     """
     Debug endpoint to test Google OAuth token functionality.
     
@@ -1208,6 +1283,7 @@ async def debug_google_token(request: Request):
 
 @router.get("/debug/auth-state", tags=["Public"])
 async def debug_auth_state(request: Request):
+    require_debug_mode(request)  # Guard: require debug mode and authentication
     """
     Debug endpoint to check authentication state and cookies.
     Shows what cookies are present, what the middleware sees, and JWT token details.
@@ -1566,7 +1642,9 @@ async def github_callback(code: str, state: str, request: Request):
     try:
         # Generate JWT directly from OAuth data without DB persistence
         # This works in Workers without requiring D1 database
-        token_data = await exchange_github_code(code)
+        # Get redirect_uri to match authorization request (RFC 6749 compliance)
+        redirect_uri = str(request.url.replace(path="/auth/github/callback", query=""))
+        token_data = await exchange_github_code(code, redirect_uri=redirect_uri)
         access_token = token_data.get("access_token")
         if not access_token:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="No access token received from GitHub")
@@ -1813,9 +1891,14 @@ async def google_login_callback(code: str, state: str, request: Request):
                     cookie_exc,
                     exc_info=True,
                 )
-                # Still try to return response even if cookie setting failed
-                response = RedirectResponse(url="/dashboard", status_code=status.HTTP_302_FOUND)
+                # Cookie setting failed - redirect to login with error
+                response = RedirectResponse(url="/login?error=cookie_failed", status_code=status.HTTP_302_FOUND)
+                response.delete_cookie(key=COOKIE_GOOGLE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
+                return response
+            
+            # Success path - clean up OAuth state and redirect
             response.delete_cookie(key=COOKIE_GOOGLE_OAUTH_STATE, path="/", samesite="lax", httponly=True, secure=is_secure)
+            logger.info("Google OAuth: Returning redirect response with access_token cookie")
             return response
         else:
             response = JSONResponse(content={"access_token": jwt_token, "token_type": "bearer", "user": user_response})

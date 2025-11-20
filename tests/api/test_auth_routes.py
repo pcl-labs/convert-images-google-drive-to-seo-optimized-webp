@@ -86,11 +86,7 @@ def test_auth_cookie_middleware_db_failure_continues(client):
         )
     
     # Create a JWT token without email (to trigger DB lookup in middleware)
-    user_data = {
-        "user_id": "test-user-123",
-        # No email - middleware will try to fetch from DB
-    }
-    token = generate_jwt_token(user_data)
+    token = generate_jwt_token("test-user-123")
     
     # Set the access_token cookie
     client.cookies.set("access_token", token)
@@ -121,11 +117,7 @@ def test_dashboard_db_failure_returns_503(client):
         )
     
     # Create a JWT token with email (so middleware doesn't need DB)
-    user_data = {
-        "user_id": "test-user-123",
-        "email": "test@example.com"
-    }
-    token = generate_jwt_token(user_data)
+    token = generate_jwt_token("test-user-123", email="test@example.com")
     
     # Set the access_token cookie
     client.cookies.set("access_token", token)
@@ -155,11 +147,7 @@ def test_documents_page_db_failure_returns_503(client):
         )
     
     # Create a JWT token with email
-    user_data = {
-        "user_id": "test-user-123",
-        "email": "test@example.com"
-    }
-    token = generate_jwt_token(user_data)
+    token = generate_jwt_token("test-user-123", email="test@example.com")
     
     # Set the access_token cookie
     client.cookies.set("access_token", token)
@@ -185,11 +173,7 @@ def test_jobs_page_db_failure_returns_503(client):
         )
     
     # Create a JWT token with email
-    user_data = {
-        "user_id": "test-user-123",
-        "email": "test@example.com"
-    }
-    token = generate_jwt_token(user_data)
+    token = generate_jwt_token("test-user-123", email="test@example.com")
     
     # Set the access_token cookie
     client.cookies.set("access_token", token)
@@ -209,11 +193,7 @@ def test_auth_cookie_middleware_with_email_no_db_lookup(client):
     from src.workers.api.auth import generate_jwt_token
     
     # Create a JWT token WITH email (should not trigger DB lookup)
-    user_data = {
-        "user_id": "test-user-123",
-        "email": "test@example.com"
-    }
-    token = generate_jwt_token(user_data)
+    token = generate_jwt_token("test-user-123", email="test@example.com")
     
     # Set the access_token cookie
     client.cookies.set("access_token", token)

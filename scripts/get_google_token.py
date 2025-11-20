@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Extract Google OAuth access token from database for testing.
     
 WARNING: This utility script prints tokens in plain text for testing purposes only.

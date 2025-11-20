@@ -442,21 +442,28 @@ def get_user_from_db():
 
 ## ASGI Middleware and Async Operations
 
-### ⚠️ **CRITICAL: Async DB Operations in Middleware Can Cause ASGI InvalidStateError**
+### ⚠️ **CRITICAL: Async DB Operations After call_next Can Cause ASGI InvalidStateError**
 
-**Problem:** Even async database operations performed BEFORE `call_next(request)` in middleware can cause `asyncio.exceptions.InvalidStateError: invalid state` errors in Cloudflare Workers Python's ASGI adapter, particularly on API endpoints that return JSON responses.
+**Problem:** Async database operations performed AFTER `call_next(request)` (after the response is generated) can cause `asyncio.exceptions.InvalidStateError: invalid state` errors in Cloudflare Workers Python's ASGI adapter. This occurs when async DB writes interfere with the ASGI Future state during response body send, particularly on API endpoints that return JSON responses and static file requests.
 
-**Example:**
+**Root Cause:**
+In our environment, async DB writes performed AFTER `call_next` caused the bug. The ASGI adapter's lifecycle management is strict - performing async operations after the response is generated but before returning it causes `InvalidStateError` when the ASGI Future tries to set the result during response body send.
+
+**Example of the Bug:**
 ```python
-# ⚠️ RISKY - May cause InvalidStateError on API endpoints
+# ⚠️ RISKY - Causes InvalidStateError on API endpoints
 class FlashMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: Callable):
-        if session and session_id:
-            # Async DB write before call_next
-            db = ensure_db()
-            await touch_user_session(db, session_id, extra=extra_dict)  # May cause ASGI error
+        # Read flash messages (synchronous)
+        request.state.flash_messages = flash_queue
         
         response = await call_next(request)
+        
+        # ❌ BUG: Async DB write AFTER call_next causes ASGI InvalidStateError
+        if needs_flash_clear:
+            db = ensure_db()
+            await touch_user_session(db, session_id, extra=extra_dict)  # Causes error
+        
         return response
 ```
 
@@ -467,14 +474,19 @@ File "/lib/python3.12/site-packages/asgi.py", line 193, in send
     result.set_result(resp)
 ```
 
-**Solution 1: Skip Middleware for API Endpoints**
+**The Fix:**
+The canonical fix (as implemented in FlashMiddleware) is to perform necessary async DB writes BEFORE `call_next`, or skip middleware processing for routes that don't need it. See `docs/DISABLED_FEATURES.md` lines 23-27, 96-98 for the canonical solution.
+
+**Safe Patterns:**
+
+1. **Skip Middleware for API/Static Routes**
 ```python
-# ✅ CORRECT - Skip middleware processing for API endpoints
+# ✅ SAFE - Skip middleware processing for API endpoints
 class FlashMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: Callable):
         path = request.url.path
-        if path.startswith("/api/"):
-            # API endpoints return JSON, don't need flash messages
+        if path.startswith("/api/") or path.startswith("/static/"):
+            # API/static endpoints don't need flash messages
             response = await call_next(request)
             return response
         
@@ -482,38 +494,64 @@ class FlashMiddleware(BaseHTTPMiddleware):
         # ... rest of middleware logic
 ```
 
-**Solution 2: Move Async Operations to After Response (If Possible)**
+2. **Perform Required DB Writes Before call_next**
 ```python
-# ✅ CORRECT - Do async work after response is generated (if acceptable)
+# ✅ SAFE - Perform async DB writes BEFORE call_next
 class FlashMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: Callable):
         # Read flash messages (synchronous)
         request.state.flash_messages = flash_queue
         
-        response = await call_next(request)
-        
-        # Do async DB write AFTER response (if acceptable for your use case)
-        # Note: This may cause stale data on next request, but avoids ASGI errors
+        # ✅ CORRECT: Do async DB write BEFORE call_next
         if needs_flash_clear:
+            db = ensure_db()
             await touch_user_session(db, session_id, extra=extra_dict)
         
+        response = await call_next(request)
         return response
 ```
 
+3. **Limit Async Work in Middleware**
+- Keep async operations minimal and necessary
+- Prefer synchronous cache updates when possible
+- Use in-memory caches to avoid DB reads in middleware
+
+**Risky Patterns:**
+
+1. **Fire-and-Forget Post-Response Operations**
+```python
+# ⚠️ RISKY - No guarantees, may cause ASGI errors
+response = await call_next(request)
+# Fire-and-forget async operation after response
+asyncio.create_task(some_async_operation())  # May interfere with ASGI lifecycle
+return response
+```
+
+2. **Heavy Async Work for JSON/Static Responses**
+```python
+# ⚠️ RISKY - Heavy async work in middleware for API endpoints
+async def dispatch(self, request: Request, call_next: Callable):
+    if request.url.path.startswith("/api/"):
+        # Heavy async DB operations here can still cause issues
+        await complex_db_operation()
+    response = await call_next(request)
+    return response
+```
+
 **When This Occurs:**
-- Middleware that performs async DB operations (D1 queries, updates)
+- Middleware that performs async DB operations (D1 queries, updates) AFTER `call_next`
 - API endpoints (`/api/*`) that return JSON responses
 - Static file requests (`/static/*`)
 - The error occurs during response body send, not during the async operation itself
 
 **Why It Happens:**
-Cloudflare Workers Python's ASGI adapter has strict lifecycle management. Async operations in middleware, even before `call_next`, can interfere with the ASGI Future state when the response is being sent, particularly for JSON responses and static files.
+Cloudflare Workers Python's ASGI adapter has strict lifecycle management. Async operations performed after the response is generated but before returning it interfere with the ASGI Future state when the response body is being sent.
 
 **Key Takeaway:** 
-- Skip middleware processing for API endpoints if they don't need the middleware functionality
-- If async DB operations are required, consider moving them to after `call_next` (if acceptable)
+- **Safe:** Skip middleware for `/api` and `/static` routes, limit async work in middleware, perform required DB writes BEFORE `call_next`
+- **Risky:** Fire-and-forget post-response operations without guarantees, heavy async work in middleware for JSON/static responses
 - Test middleware thoroughly on both HTML and JSON endpoints
-- SessionMiddleware works because it uses a different pattern - test your middleware carefully
+- For canonical fix details, see `docs/DISABLED_FEATURES.md` lines 23-27, 96-98
 
 ---
 

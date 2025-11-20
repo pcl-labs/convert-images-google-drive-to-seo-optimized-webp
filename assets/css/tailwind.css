@@ -66,13 +66,13 @@
 
   /* Buttons */
   .btn { @apply inline-flex items-center justify-center px-3 py-2 text-sm font-medium; border-radius: var(--radius-md); }
-  .btn-primary { @apply btn; background-color: rgb(var(--primary)); color: rgb(var(--primary-contrast)); }
+  .btn-primary { @apply inline-flex items-center justify-center px-3 py-2 text-sm font-medium; border-radius: var(--radius-md); background-color: rgb(var(--primary)); color: rgb(var(--primary-contrast)); }
   .btn-primary:hover { filter: brightness(1.05); }
-  .btn-secondary { @apply btn; background-color: rgb(var(--surface-muted)); color: rgb(var(--content)); border: 1px solid rgb(var(--border)); }
+  .btn-secondary { @apply inline-flex items-center justify-center px-3 py-2 text-sm font-medium; border-radius: var(--radius-md); background-color: rgb(var(--surface-muted)); color: rgb(var(--content)); border: 1px solid rgb(var(--border)); }
   .btn-secondary:hover { filter: brightness(1.05); }
-  .btn-destructive { @apply btn; background-color: rgb(var(--destructive)); color: rgb(var(--destructive-contrast)); }
+  .btn-destructive { @apply inline-flex items-center justify-center px-3 py-2 text-sm font-medium; border-radius: var(--radius-md); background-color: rgb(var(--destructive)); color: rgb(var(--destructive-contrast)); }
   .btn-destructive:hover { filter: brightness(1.05); }
-  .btn-ghost { @apply btn; background-color: transparent; color: rgb(var(--content)); border: 1px solid transparent; }
+  .btn-ghost { @apply inline-flex items-center justify-center px-3 py-2 text-sm font-medium; border-radius: var(--radius-md); background-color: transparent; color: rgb(var(--content)); border: 1px solid transparent; }
   .btn-ghost:hover { background-color: rgb(255 255 255 / 0.04); border-color: rgb(var(--border)); }
 
   /* Inputs */

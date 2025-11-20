@@ -1125,18 +1125,48 @@ async def providers_status(user: dict = Depends(get_current_user)):
 
 @router.get("/auth/me", response_model=UserResponse, tags=["Authentication"])
 async def get_current_user_info(request: Request):
-    # Get user from state set by AuthCookieMiddleware
-    user = getattr(request.state, "user", None)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication required",
-        )
+    """Get current authenticated user information.
+    
+    This endpoint uses get_current_user dependency internally for compatibility.
+    Architectural change: Uses Request parameter directly for Cloudflare Workers compatibility,
+    but calls get_current_user internally to honor its 401 behavior.
+    """
+    # Call get_current_user internally to honor its 401 behavior
+    # This maintains compatibility with existing clients while allowing Request parameter
+    user = await get_current_user(request)
+    
+    # Fetch created_at from database if not in user dict
+    created_at = None
+    if not user.get("created_at"):
+        try:
+            db = ensure_db()
+            db_user = await get_user_by_id(db, user["user_id"])
+            if db_user:
+                created_at_raw = db_user.get("created_at")
+                if created_at_raw:
+                    if isinstance(created_at_raw, datetime):
+                        created_at = created_at_raw
+                    else:
+                        # Parse string timestamp
+                        try:
+                            created_at = datetime.fromisoformat(str(created_at_raw).replace("Z", "+00:00"))
+                            if created_at.tzinfo is None:
+                                created_at = created_at.replace(tzinfo=timezone.utc)
+                        except (ValueError, AttributeError):
+                            pass
+        except Exception:
+            # If DB fetch fails, use current time as fallback
+            pass
+    
+    # Use current time as fallback if created_at not available
+    if created_at is None:
+        created_at = datetime.now(timezone.utc)
+    
     return UserResponse(
         user_id=user.get("user_id", "unknown"),
         github_id=user.get("github_id"),
         email=user.get("email"),
-        created_at=datetime.now(timezone.utc),
+        created_at=created_at,
     )
 
 
