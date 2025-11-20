@@ -945,6 +945,25 @@ def _render_version_partial(request: Request, document: dict, version: Optional[
 
 @router.get("/api/notifications")
 async def api_list_notifications(request: Request, user: dict = Depends(get_current_user), after_id: Optional[str] = None, limit: int = 50):
+    # In development, short-circuit notification polling to keep Wrangler logs and D1 usage quieter.
+    if settings.environment == "development":
+        return JSONResponse({"notifications": []}, headers={"Cache-Control": "no-store"})
+
+    # Lightweight diagnostic logging to trace notification polling in non-dev environments
+    try:
+        logger.debug(
+            "notifications_list_request",
+            extra={
+                "referer": request.headers.get("referer"),
+                "user_agent": request.headers.get("user-agent"),
+                "after_id": after_id,
+                "limit": limit,
+            },
+        )
+    except Exception:
+        # Logging must not interfere with request handling
+        pass
+
     db = ensure_db()
     notifs = await list_notifications(db, user["user_id"], after_id=after_id, limit=min(max(limit, 1), 100))
     return JSONResponse({"notifications": notifs}, headers={"Cache-Control": "no-store"})
