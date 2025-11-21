@@ -53,7 +53,11 @@ def _string_bindings_from_env(env: Any) -> Dict[str, str]:
             "BASE_URL", "CORS_ORIGINS", "RATE_LIMIT_PER_MINUTE", "RATE_LIMIT_PER_HOUR",
             "JWT_USE_COOKIES", "JWT_ALGORITHM", "JWT_EXPIRATION_HOURS",
             "USE_INLINE_QUEUE", "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN",
-            "CF_QUEUE_NAME", "CF_QUEUE_DLQ", "TRANSCRIPT_LANGS", "OPENAI_API_KEY"
+            "CF_QUEUE_NAME", "CF_QUEUE_DLQ", "TRANSCRIPT_LANGS",
+            # AI configuration
+            "OPENAI_API_KEY", "OPENAI_API_BASE", "OPENAI_BLOG_MODEL",
+            "OPENAI_BLOG_TEMPERATURE", "OPENAI_BLOG_MAX_OUTPUT_TOKENS",
+            "CF_AI_GATEWAY_TOKEN",
         ]
         
         for var_name in known_vars:
@@ -112,6 +116,7 @@ def apply_worker_env(env: Any) -> Settings:
         "CF_QUEUE_NAME",
         "CF_QUEUE_DLQ",
         "TRANSCRIPT_LANGS",
+        "CF_AI_GATEWAY_TOKEN",
         # OpenAI configuration (Workers-compatible)
         "OPENAI_API_KEY",
         "OPENAI_API_BASE",

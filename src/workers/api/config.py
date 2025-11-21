@@ -122,6 +122,7 @@ class Settings:
     cloudflare_api_token: Optional[str] = None
     cf_queue_name: Optional[str] = None
     cf_queue_dlq: Optional[str] = None
+    cf_ai_gateway_token: Optional[str] = None
 
     max_job_retries: int = 3
     job_timeout_seconds: int = 3600
