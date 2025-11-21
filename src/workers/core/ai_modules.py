@@ -637,8 +637,12 @@ async def compose_blog_from_text(
         )
         raise RuntimeError("Cloudflare AI Gateway configuration is missing")
 
-    gateway_base = "https://gateway.ai.cloudflare.com"
-    endpoint_path = f"/v1/{settings.cloudflare_account_id}/quill/compat/chat/completions"
+    # Use the OpenAI-compatible route configured in Cloudflare AI Gateway.
+    # Example from dashboard:
+    #   baseURL = "https://gateway.ai.cloudflare.com/v1/{account_id}/quill/openai"
+    # and then POST /chat/completions
+    gateway_base = f"https://gateway.ai.cloudflare.com/v1/{settings.cloudflare_account_id}/quill/openai"
+    endpoint_path = "/chat/completions"
     client = AsyncSimpleClient(base_url=gateway_base, timeout=25.0)
 
     try:
