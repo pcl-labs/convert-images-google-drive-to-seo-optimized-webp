@@ -265,7 +265,8 @@ async def ensure_document_drive_structure(
     media_folder_id = _require_drive_id(media_folder, "Document media folder")
 
     doc_title = sanitized
-    created_doc = await execute_google_request(docs_service.documents().create(body={"title": doc_title}))
+    # Use async Docs helper so this goes through AsyncSimpleClient/fetch in Workers.
+    created_doc = await docs_service.create_document_async(body={"title": doc_title})
     if not isinstance(created_doc, dict):
         raise RuntimeError(f"Docs create returned unexpected response type: {type(created_doc)!r}")
     doc_id = created_doc.get("documentId")

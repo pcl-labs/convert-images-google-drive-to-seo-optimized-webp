@@ -494,13 +494,45 @@ class GoogleDocsClient:
 
     def __init__(self, token: OAuthToken):
         self._session = GoogleAPISession("https://docs.googleapis.com/v1", token)
+        self._async_session: Optional[AsyncGoogleAPISession] = None
+        if _is_workers_runtime():  # pragma: no cover - Workers specific
+            self._async_session = AsyncGoogleAPISession("https://docs.googleapis.com/v1", token)
         self._documents_resource = _GoogleDocsDocumentsResource(self._session)
 
     def documents(self) -> _GoogleDocsDocumentsResource:
         return self._documents_resource
 
+    async def create_document_async(self, *, body: Dict[str, Any]) -> Dict[str, Any]:
+        """Async helper for POST /documents to create a Google Doc.
+
+        Uses AsyncGoogleAPISession when available (Workers runtime) so the
+        request goes through AsyncSimpleClient/fetch. Otherwise, executes the
+        synchronous session.request call in a worker thread.
+        """
+        path = "/documents"
+        if self._async_session:
+            return await self._async_session.request(
+                "POST",
+                path,
+                json_body=body,
+            )
+        response: SimpleResponse = await asyncio.to_thread(
+            self._session.request,
+            "POST",
+            path,
+            json=body,
+        )
+        if not response.content:
+            return {}
+        try:
+            return response.json()
+        except ValueError as exc:  # pragma: no cover - defensive guard
+            raise GoogleAPIError(f"Docs API returned invalid JSON: {response.text[:200]}") from exc
+
     def close(self) -> None:
         self._session.close()
+        if self._async_session is not None:
+            _run_or_schedule_close(self._async_session.aclose(), "Docs async session")
 
 
 class GoogleDriveRequest:
