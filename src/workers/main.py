@@ -68,15 +68,21 @@ class Default(WorkerEntrypoint):
     
     async def queue(self, batch, env, ctx):
         """Handle queue messages from Cloudflare Queues."""
-        # Import inside the handler to avoid startup CPU limit
+        # 1) Apply Worker env → os.environ before importing anything that
+        #    touches api.config.settings, mirroring the fetch() path ordering.
         from runtime import apply_worker_env
+
+        apply_worker_env(env)
+
+        # 2) Now that Settings.from_env can see JWT_SECRET_KEY and other
+        #    secrets via os.environ, it is safe to import modules that access
+        #    api.config.settings at import time.
         from api.database import Database
         from consumer import handle_queue_message
         from api.config import settings
         from api.cloudflare_queue import QueueProducer
         import json as _json
         
-        apply_worker_env(env)
         # D1 binding may not always be present on env for queue events in
         # certain runtimes; fall back to settings.d1_database if needed.
         db_binding = None
