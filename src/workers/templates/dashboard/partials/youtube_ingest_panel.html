@@ -50,7 +50,7 @@
   </div>
   <div class="surface-muted rounded-lg p-4 space-y-2" x-show="jobId" x-transition>
     <div class="flex flex-wrap items-center justify-between text-xs text-contentMuted gap-2">
-      <span>Live status</span>
+      <span>Job details</span>
       <div class="flex flex-wrap items-center gap-3">
         <span class="font-mono text-[11px] text-content">Job <span x-text="jobId"></span></span>
         <template x-if="jobLinks.job">
@@ -61,26 +61,9 @@
         </template>
       </div>
     </div>
-    <div class="mt-3 space-y-3" x-cloak>
-      <template x-if="events.length === 0">
-        <p class="text-sm text-contentMuted">Waiting for pipeline events...</p>
-      </template>
-      <template x-for="event in events" :key="event.event_id">
-        <div class="border border-border rounded-lg p-3 space-y-1">
-          <div class="flex items-center justify-between text-xs">
-            <span class="font-semibold" x-text="event.stage || event.event_type"></span>
-            <span class="text-contentMuted" x-text="event.created_at ? new Date(event.created_at).toLocaleTimeString() : ''"></span>
-          </div>
-          <div class="text-sm" x-text="event.message || '...' "></div>
-          <div class="text-xs text-contentMuted">
-            <span class="uppercase tracking-wide" x-text="event.status || ''"></span>
-            <template x-if="event.data && event.data.video_id">
-              <span class="ml-2" x-text="'Video ' + event.data.video_id"></span>
-            </template>
-          </div>
-        </div>
-      </template>
-    </div>
+    <p class="mt-3 text-sm text-contentMuted">
+      This job runs in the background. Use the Job API link above to check its latest status, or refresh the dashboard to see updated document details.
+    </p>
   </div>
 </div>
 <script>

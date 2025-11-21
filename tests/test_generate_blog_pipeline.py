@@ -8,11 +8,11 @@ from src.workers.api.database import (
     create_job_extended,
     get_job,
     get_document,
-    create_user,
     update_user_preferences,
 )
 from src.workers.api.models import JobType
 from src.workers.consumer import process_generate_blog_job
+from tests.conftest import create_test_user
 
 
 def test_process_generate_blog_job_creates_output(isolated_db):
@@ -20,7 +20,6 @@ def test_process_generate_blog_job_creates_output(isolated_db):
         db = isolated_db
         user_id = "pipeline-user"
         document_id = str(uuid.uuid4())
-        from tests.conftest import create_test_user
         await create_test_user(db, user_id=user_id, email="pipeline@example.com")
         await update_user_preferences(
             db,

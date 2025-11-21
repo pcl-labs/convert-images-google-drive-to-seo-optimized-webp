@@ -16,6 +16,7 @@ from src.workers.api.database import (
 from src.workers.api.protected import start_ingest_drive_job
 from src.workers.consumer import process_ingest_drive_job, process_drive_change_poll_job
 from src.workers.api.drive_docs import sync_drive_doc_for_document
+from tests.conftest import create_test_user
 
 
 class _StubRequest:
@@ -84,7 +85,6 @@ class _StubDriveService:
 async def test_start_ingest_drive_job_requires_file(isolated_db):
     db = isolated_db
     user_id = f"user-{uuid.uuid4()}"
-    from tests.conftest import create_test_user
     await create_test_user(db, user_id=user_id, email=f"{user_id}@example.com")
     document_id = str(uuid.uuid4())
     await create_document(
@@ -103,7 +103,6 @@ async def test_start_ingest_drive_job_requires_file(isolated_db):
 async def test_process_ingest_drive_job_persists_text(monkeypatch, isolated_db):
     db = isolated_db
     user_id = f"user-{uuid.uuid4()}"
-    from tests.conftest import create_test_user
     await create_test_user(db, user_id=user_id, email=f"{user_id}@example.com")
     document_id = str(uuid.uuid4())
     file_id = "1" * 44
@@ -148,7 +147,6 @@ async def test_process_ingest_drive_job_persists_text(monkeypatch, isolated_db):
 async def test_sync_drive_doc_for_document_updates_drive(monkeypatch, isolated_db):
     db = isolated_db
     user_id = f"user-{uuid.uuid4()}"
-    from tests.conftest import create_test_user
     await create_test_user(db, user_id=user_id, email=f"{user_id}@example.com")
     document_id = str(uuid.uuid4())
     file_id = "4" * 44
