@@ -157,9 +157,9 @@ def apply_worker_env(env: Any) -> Settings:
     # Settings.from_env() before Worker secrets are available
     from api.config import Settings, replace_settings
     import logging
-    
+
     logger = logging.getLogger(__name__)
-    
+
     # Instantiate a new Settings to evaluate BaseSettings sources with the
     # freshly injected os.environ values, then mutate the global instance.
     try:
@@ -173,7 +173,7 @@ def apply_worker_env(env: Any) -> Settings:
             "Settings validation failed: %s. "
             "This usually means a required environment variable or secret is missing. "
             "Check that all required secrets are set via 'wrangler secret put' or environment variables.",
-            exc
+            exc,
         )
         # Re-raise so the error is caught early rather than as a generic 500 later
         raise
@@ -182,7 +182,7 @@ def apply_worker_env(env: Any) -> Settings:
         logger.error(
             "Unexpected error during settings initialization: %s",
             exc,
-            exc_info=True
+            exc_info=True,
         )
         raise
 

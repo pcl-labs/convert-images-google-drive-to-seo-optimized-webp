@@ -72,7 +72,10 @@ class Default(WorkerEntrypoint):
         #    touches api.config.settings, mirroring the fetch() path ordering.
         from runtime import apply_worker_env
 
-        apply_worker_env(env)
+        # Use self.env here, just like fetch(), because that is where
+        # Cloudflare exposes Worker-wide secrets (including JWT_SECRET_KEY).
+        # The per-event env argument may not include all secrets.
+        apply_worker_env(self.env)
 
         # 2) Now that Settings.from_env can see JWT_SECRET_KEY and other
         #    secrets via os.environ, it is safe to import modules that access
