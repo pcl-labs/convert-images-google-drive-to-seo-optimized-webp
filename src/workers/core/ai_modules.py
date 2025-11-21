@@ -596,7 +596,7 @@ async def compose_blog(
                     {"role": "user", "content": user_prompt},
                 ],
                 temperature=temp_value,
-                max_tokens=settings.openai_blog_max_output_tokens,
+                max_completion_tokens=settings.openai_blog_max_output_tokens,
             )
             logger.info(
                 "openai_compose_blog_response",
