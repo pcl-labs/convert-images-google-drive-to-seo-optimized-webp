@@ -98,6 +98,18 @@
   {% call card(title='Debug · Document JSON') %}
     <pre class="whitespace-pre-wrap text-xs font-mono text-content overflow-auto">{{ document | tojson(indent=2) }}</pre>
   {% endcall %}
+  {% call card(title='Debug · Blog generation (payload & response)') %}
+    <div class="space-y-3 text-xs text-contentMuted" data-dev-only="true">
+      <details class="rounded-lg border border-border/70 bg-card/60 px-3 py-2" closed>
+        <summary class="cursor-pointer text-xs font-semibold text-content">Blog payload</summary>
+        <pre id="debug-blog-payload" class="mt-2 whitespace-pre-wrap text-[11px] font-mono text-content overflow-auto"></pre>
+      </details>
+      <details class="rounded-lg border border-border/70 bg-card/60 px-3 py-2" closed>
+        <summary class="cursor-pointer text-xs font-semibold text-content">Blog response</summary>
+        <pre id="debug-blog-response" class="mt-2 whitespace-pre-wrap text-[11px] font-mono text-content overflow-auto"></pre>
+      </details>
+    </div>
+  {% endcall %}
 </section>
 
 <script>
@@ -261,6 +273,13 @@
       payload.options.instructions = instructions;
     }
     window.__lastBlogGeneratePayload = payload;
+    if(!window.__blogPayloadHistory){
+      window.__blogPayloadHistory = [];
+    }
+    window.__blogPayloadHistory.push({ timestamp: Date.now(), payload });
+    if(window.__blogPayloadHistory.length > 5){
+      window.__blogPayloadHistory.shift();
+    }
     const debugEl = document.getElementById('debug-blog-payload');
     if(debugEl){
       try {
@@ -304,6 +323,13 @@
       const meta = extractContentMeta(data);
       renderDocFlash('success', meta);
       window.__lastBlogGenerateResponse = data;
+      if(!window.__blogResponseHistory){
+        window.__blogResponseHistory = [];
+      }
+      window.__blogResponseHistory.push({ timestamp: Date.now(), response: data });
+      if(window.__blogResponseHistory.length > 5){
+        window.__blogResponseHistory.shift();
+      }
       const debugResp = document.getElementById('debug-blog-response');
       if(debugResp){
         try {

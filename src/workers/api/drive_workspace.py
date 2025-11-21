@@ -145,7 +145,7 @@ async def _ensure_child_folder(drive_service, parent_id: str, name: str) -> dict
         params={"q": query, "pageSize": 1},
         fields="files(id,name,webViewLink)",
     )
-    files = resp.get("files") or []
+    files = (resp or {}).get("files") or []
     if files:
         return files[0]
     return await _create_drive_folder(drive_service, name, parent_id)

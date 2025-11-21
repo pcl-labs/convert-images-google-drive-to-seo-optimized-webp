@@ -452,6 +452,81 @@ def _format_chapters_for_prompt(chapters: List[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def _redact_http_body_for_logging(text: Optional[str], max_length: int = 1000) -> str:
+    """Return a redacted, length-bounded representation of an HTTP body for logging.
+
+    Attempts to parse JSON and mask values for sensitive keys. Falls back to
+    pattern-based redaction for bearer tokens and similar secrets. The result is
+    always truncated to ``max_length`` characters and this helper must never raise.
+    """
+    try:
+        if text is None:
+            return ""
+
+        raw = str(text)
+        if not raw:
+            return ""
+
+        # First try JSON to allow structured key-based redaction.
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            parsed = None
+
+        sensitive_keys = {
+            "password",
+            "token",
+            "access_token",
+            "refresh_token",
+            "authorization",
+            "api_key",
+            "secret",
+            "client_secret",
+            "email",
+            "ssn",
+        }
+
+        def _redact_obj(obj: Any) -> Any:
+            if isinstance(obj, dict):
+                redacted: Dict[str, Any] = {}
+                for k, v in obj.items():
+                    key_lower = str(k).lower()
+                    if key_lower in sensitive_keys:
+                        redacted[k] = "[REDACTED]"
+                    else:
+                        redacted[k] = _redact_obj(v)
+                return redacted
+            if isinstance(obj, list):
+                return [_redact_obj(item) for item in obj]
+            # For long primitives, keep a short preview only.
+            if isinstance(obj, str) and len(obj) > 256:
+                return obj[:128] + "…[TRUNCATED]"
+            return obj
+
+        if parsed is not None:
+            safe = json.dumps(_redact_obj(parsed), ensure_ascii=False)
+        else:
+            # Non-JSON body: apply regex-based redaction for common patterns.
+            safe = raw
+            patterns = [
+                # Bearer / authorization tokens
+                re.compile(r"bearer\s+[A-Za-z0-9\-_.=:+/]{10,}", re.IGNORECASE),
+                re.compile(r"authorization:\s*\S+", re.IGNORECASE),
+                # Generic API keys / tokens in key=value style
+                re.compile(r"(api[_-]?key|token|secret)\s*[:=]\s*[A-Za-z0-9\-_.=:+/]{8,}", re.IGNORECASE),
+                # Email addresses
+                re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"),
+            ]
+            for pat in patterns:
+                safe = pat.sub("[REDACTED]", safe)
+
+        if len(safe) > max_length:
+            return safe[: max_length - 3] + "..."
+        return safe
+    except Exception:
+        return "<non-textual-body>"
+
+
 async def compose_blog_from_text(
     text: str,
     tone: str = "informative",
@@ -462,10 +537,11 @@ async def compose_blog_from_text(
     model: Optional[str] = None,
     temperature: Optional[float] = None,
 ) -> Dict[str, Any]:
-    """One-step helper: go from raw text to a composed blog using a single OpenAI call.
+    """One-step helper: go from raw text to a composed blog via a single AI model call.
 
-    This reuses the existing outline + SEO helpers to provide structure, but does not
-    require a separate planner call.
+    This reuses the existing outline + SEO helpers to provide structure, and routes
+    the request through the configured AI Gateway/provider instead of making a
+    direct OpenAI SDK call.
     """
     clean_text = _coerce_text(text)
     if not clean_text:

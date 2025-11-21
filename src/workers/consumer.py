@@ -1504,7 +1504,6 @@ async def process_generate_blog_job(
         outline = generate_outline(text, max_sections=max_sections)
         chapters = organize_chapters(text, target_chapters=target_chapters)
         seo_meta = generate_seo_metadata(text, outline)
-        sections_from_plan: List[Dict[str, Any]] = []
         await record_usage_event(db, user_id, job_id, "outline", {"sections": len(outline)})
         await record_usage_event(db, user_id, job_id, "chapters", {"chapters": len(chapters)})
         await update_job_status(db, job_id, "processing", progress=_progress("plan"))
@@ -1590,15 +1589,11 @@ async def process_generate_blog_job(
 
         sections: List[Dict[str, Any]] = []
         for idx, chapter in enumerate(chapters):
-            base_section = {}
-            if sections_from_plan and idx < len(sections_from_plan):
-                candidate = sections_from_plan[idx] or {}
-                if isinstance(candidate, dict):
-                    base_section = dict(candidate)
+            safe_chapter = chapter or {}
             section = {
-                "order": base_section.get("order", idx),
-                "title": base_section.get("title") or chapter.get("title"),
-                "summary": base_section.get("summary") or chapter.get("summary"),
+                "order": idx,
+                "title": safe_chapter.get("title"),
+                "summary": safe_chapter.get("summary"),
             }
             if include_images and idx < len(image_prompts):
                 section["image_prompt"] = image_prompts[idx]
