@@ -1,10 +1,11 @@
-from src.workers.api.database import Database, record_usage_event, get_usage_summary, list_usage_events
+from src.workers.api.database import record_usage_event, get_usage_summary, list_usage_events
 import uuid
 import asyncio
+import pytest
 
 
-def test_usage_events_and_summary():
-    db = Database()
+def test_usage_events_and_summary(isolated_db):
+    db = isolated_db
 
     async def _run():
         user_id = f"u_{uuid.uuid4()}"

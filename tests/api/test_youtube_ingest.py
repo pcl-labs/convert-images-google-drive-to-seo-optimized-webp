@@ -106,10 +106,10 @@ def test_start_ingest_youtube_job_stores_metadata(monkeypatch, isolated_db):
             }
             metadata_bundle["metadata"]["url"] = "https://youtu.be/abc12345678"
 
-            def _fake_fetch(service, video_id):
+            async def _fake_fetch_async(service, video_id):
                 return metadata_bundle
 
-            monkeypatch.setattr("src.workers.api.protected.fetch_video_metadata", _fake_fetch)
+            monkeypatch.setattr("src.workers.api.protected.fetch_video_metadata_async", _fake_fetch_async)
 
             job = await start_ingest_youtube_job(db, stub_queue, user_id, "https://youtu.be/abc12345678")
 
@@ -169,10 +169,10 @@ def test_start_ingest_youtube_job_inline_executes(monkeypatch, isolated_db):
             }
             metadata_bundle["metadata"]["url"] = "https://youtu.be/inline123456"
 
-            def _fake_fetch(service, video_id):
+            async def _fake_fetch_async(service, video_id):
                 return metadata_bundle
 
-            monkeypatch.setattr("src.workers.api.protected.fetch_video_metadata", _fake_fetch)
+            monkeypatch.setattr("src.workers.api.protected.fetch_video_metadata_async", _fake_fetch_async)
 
             async def _fake_ingest(
                 db,
@@ -384,12 +384,12 @@ async def test_ingest_youtube_queue_flow(monkeypatch, isolated_db):
             },
         }
 
-        def _fake_fetch_metadata(service, video_id):
+        async def _fake_fetch_metadata_async(service, video_id):
             assert service is fake_service
             assert video_id == "queue123456"
             return metadata_bundle
 
-        monkeypatch.setattr("src.workers.api.protected.fetch_video_metadata", _fake_fetch_metadata)
+        monkeypatch.setattr("src.workers.api.protected.fetch_video_metadata_async", _fake_fetch_metadata_async)
 
         async def _fake_worker_ingest(
             db,
@@ -582,11 +582,11 @@ def test_ingest_youtube_retry_and_dlq(monkeypatch, isolated_db):
             },
         }
 
-        def _fake_meta(service, video_id):
+        async def _fake_meta_async(service, video_id):
             assert service is fake_service
             return metadata_bundle
 
-        monkeypatch.setattr("src.workers.api.protected.fetch_video_metadata", _fake_meta)
+        monkeypatch.setattr("src.workers.api.protected.fetch_video_metadata_async", _fake_meta_async)
         failing_process = AsyncMock(side_effect=RuntimeError("boom"))
         monkeypatch.setattr("src.workers.consumer.process_ingest_youtube_job", failing_process)
 

@@ -15,12 +15,13 @@ from src.workers.api.models import JobType
 from src.workers.consumer import process_generate_blog_job
 
 
-def test_process_generate_blog_job_creates_output():
+def test_process_generate_blog_job_creates_output(isolated_db):
     async def _run():
-        db = Database()
+        db = isolated_db
         user_id = "pipeline-user"
         document_id = str(uuid.uuid4())
-        await create_user(db, user_id, email="pipeline@example.com")
+        from tests.conftest import create_test_user
+        await create_test_user(db, user_id=user_id, email="pipeline@example.com")
         await update_user_preferences(
             db,
             user_id,

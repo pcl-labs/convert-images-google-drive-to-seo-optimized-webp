@@ -110,7 +110,6 @@
     }
     if(meta.jobId){
       links.job = `/v1/jobs/${meta.jobId}`;
-      links.stream = `/api/pipelines/stream?job_id=${meta.jobId}`;
     }
     return links;
   }
@@ -130,7 +129,6 @@
       document: 'Document API',
       version: 'Version API',
       job: 'Job API',
-      stream: 'Live stream',
     };
     const linkKeys = Object.keys(links);
     if(linkKeys.length){

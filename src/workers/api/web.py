@@ -943,80 +943,96 @@ def _render_version_partial(request: Request, document: dict, version: Optional[
     return templates.TemplateResponse("documents/partials/version_viewer.html", context)
 
 
-@router.get("/api/notifications")
-async def api_list_notifications(request: Request, user: dict = Depends(get_current_user), after_id: Optional[str] = None, limit: int = 50):
-    # In development, short-circuit notification polling to keep Wrangler logs and D1 usage quieter.
-    if settings.environment == "development":
-        return JSONResponse({"notifications": []}, headers={"Cache-Control": "no-store"})
+"""Notifications and streaming endpoints
 
-    # Lightweight diagnostic logging to trace notification polling in non-dev environments
-    try:
-        logger.debug(
-            "notifications_list_request",
-            extra={
-                "referer": request.headers.get("referer"),
-                "user_agent": request.headers.get("user-agent"),
-                "after_id": after_id,
-                "limit": limit,
-            },
-        )
-    except Exception:
-        # Logging must not interfere with request handling
-        pass
+The following routes are temporarily disabled for the MVP to reduce
+complexity in the Cloudflare Workers runtime. They are preserved here
+commented out so they can be re-enabled in a future iteration once the
+core Content API and document pipeline are fully stable.
 
-    db = ensure_db()
-    notifs = await list_notifications(db, user["user_id"], after_id=after_id, limit=min(max(limit, 1), 100))
-    return JSONResponse({"notifications": notifs}, headers={"Cache-Control": "no-store"})
+Disabled routes:
+- GET  /api/notifications
+- POST /api/notifications/{notification_id}/seen
+- POST /api/notifications/{notification_id}/dismiss
+- GET  /api/stream
+- GET  /api/pipelines/stream
+- GET  /dashboard/activity
+"""
 
-
-@router.post("/api/notifications/{notification_id}/seen")
-async def api_mark_seen(notification_id: str, request: Request, user: dict = Depends(get_current_user)):
-    # CSRF protection via header token for HTMX
-    cookie_token = request.cookies.get("csrf_token")
-    header_token = request.headers.get("X-CSRF-Token")
-    if cookie_token is None or header_token is None or not hmac.compare_digest(str(cookie_token), str(header_token)):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
-    db = ensure_db()
-    await mark_notification_seen(db, user["user_id"], notification_id)
-    
-    # Set flash message and redirect
-    await add_flash(request, "Marked seen", category="info")
-    return RedirectResponse(url="/dashboard/activity", status_code=status.HTTP_303_SEE_OTHER)
-
-
-@router.post("/api/notifications/{notification_id}/dismiss")
-async def api_dismiss(notification_id: str, request: Request, user: dict = Depends(get_current_user)):
-    # CSRF protection via header token for HTMX
-    cookie_token = request.cookies.get("csrf_token")
-    header_token = request.headers.get("X-CSRF-Token")
-    if cookie_token is None or header_token is None or not hmac.compare_digest(str(cookie_token), str(header_token)):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
-    db = ensure_db()
-    await dismiss_notification(db, user["user_id"], notification_id)
-    
-    # Set flash message and redirect
-    await add_flash(request, "Dismissed", category="info")
-    return RedirectResponse(url="/dashboard/activity", status_code=status.HTTP_303_SEE_OTHER)
-
-
-@router.get("/api/stream")
-async def api_stream(request: Request, user: dict = Depends(get_current_user)):
-    db = ensure_db()
-    session = getattr(request.state, "session", None)
-    return notifications_stream_response(request, db, user, session=session)
-
-
-@router.get("/api/pipelines/stream")
-async def api_pipeline_stream(request: Request, job_id: Optional[str] = None, user: dict = Depends(get_current_user)):
-    db = ensure_db()
-    return pipeline_stream_response(request, db, user, job_id=job_id)
-
-
-@router.get("/dashboard/activity", response_class=HTMLResponse)
-async def activity_page(request: Request, user: dict = Depends(get_current_user), after_id: Optional[str] = None):
-    db = ensure_db()
-    notifs = await list_notifications(db, user["user_id"], after_id=after_id, limit=50)
-    return templates.TemplateResponse("activity/index.html", {"request": request, "user": user, "notifications": notifs, "page_title": "Activity"})
+# @router.get("/api/notifications")
+# async def api_list_notifications(request: Request, user: dict = Depends(get_current_user), after_id: Optional[str] = None, limit: int = 50):
+#     # In development, short-circuit notification polling to keep Wrangler logs and D1 usage quieter.
+#     if settings.environment == "development":
+#         return JSONResponse({"notifications": []}, headers={"Cache-Control": "no-store"})
+#
+#     # Lightweight diagnostic logging to trace notification polling in non-dev environments
+#     try:
+#         logger.debug(
+#             "notifications_list_request",
+#             extra={
+#                 "referer": request.headers.get("referer"),
+#                 "user_agent": request.headers.get("user-agent"),
+#                 "after_id": after_id,
+#                 "limit": limit,
+#             },
+#         )
+#     except Exception:
+#         # Logging must not interfere with request handling
+#         pass
+#
+#     db = ensure_db()
+#     notifs = await list_notifications(db, user["user_id"], after_id=after_id, limit=min(max(limit, 1), 100))
+#     return JSONResponse({"notifications": notifs}, headers={"Cache-Control": "no-store"})
+#
+#
+# @router.post("/api/notifications/{notification_id}/seen")
+# async def api_mark_seen(notification_id: str, request: Request, user: dict = Depends(get_current_user)):
+#     # CSRF protection via header token for HTMX
+#     cookie_token = request.cookies.get("csrf_token")
+#     header_token = request.headers.get("X-CSRF-Token")
+#     if cookie_token is None or header_token is None or not hmac.compare_digest(str(cookie_token), str(header_token)):
+#         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
+#     db = ensure_db()
+#     await mark_notification_seen(db, user["user_id"], notification_id)
+#     
+#     # Set flash message and redirect
+#     await add_flash(request, "Marked seen", category="info")
+#     return RedirectResponse(url="/dashboard/activity", status_code=status.HTTP_303_SEE_OTHER)
+#
+#
+# @router.post("/api/notifications/{notification_id}/dismiss")
+# async def api_dismiss(notification_id: str, request: Request, user: dict = Depends(get_current_user)):
+#     # CSRF protection via header token for HTMX
+#     cookie_token = request.cookies.get("csrf_token")
+#     header_token = request.headers.get("X-CSRF-Token")
+#     if cookie_token is None or header_token is None or not hmac.compare_digest(str(cookie_token), str(header_token)):
+#         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
+#     db = ensure_db()
+#     await dismiss_notification(db, user["user_id"], notification_id)
+#     
+#     # Set flash message and redirect
+#     await add_flash(request, "Dismissed", category="info")
+#     return RedirectResponse(url="/dashboard/activity", status_code=status.HTTP_303_SEE_OTHER)
+#
+#
+# @router.get("/api/stream")
+# async def api_stream(request: Request, user: dict = Depends(get_current_user)):
+#     db = ensure_db()
+#     session = getattr(request.state, "session", None)
+#     return notifications_stream_response(request, db, user, session=session)
+#
+#
+# @router.get("/api/pipelines/stream")
+# async def api_pipeline_stream(request: Request, job_id: Optional[str] = None, user: dict = Depends(get_current_user)):
+#     db = ensure_db()
+#     return pipeline_stream_response(request, db, user, job_id=job_id)
+#
+#
+# @router.get("/dashboard/activity", response_class=HTMLResponse)
+# async def activity_page(request: Request, user: dict = Depends(get_current_user), after_id: Optional[str] = None):
+#     db = ensure_db()
+#     notifs = await list_notifications(db, user["user_id"], after_id=after_id, limit=50)
+#     return templates.TemplateResponse("activity/index.html", {"request": request, "user": user, "notifications": notifs, "page_title": "Activity"})
 
 
 @router.post("/auth/logout")
@@ -1660,8 +1676,9 @@ async def jobs_page(request: Request, user: dict = Depends(get_current_user), pa
     except HTTPException as exc:
         if exc.status_code == 500:
             logger.error("Jobs page: Database unavailable")
+            from fastapi import status as http_status
             raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Service temporarily unavailable"
             ) from exc
         raise

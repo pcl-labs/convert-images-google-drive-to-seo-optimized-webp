@@ -263,7 +263,6 @@
                 <p class="font-mono text-[11px] text-contentMuted break-all">{{ job.id }}</p>
                 <div class="flex flex-wrap gap-3 text-[11px] text-contentMuted">
                   <a href="/v1/jobs/{{ job.id }}" target="_blank" rel="noopener" class="text-primary hover:text-primary/80">Job API</a>
-                  <a href="/api/pipelines/stream?job_id={{ job.id }}" target="_blank" rel="noopener" class="text-primary hover:text-primary/80">Stream</a>
                   {% if job.document_id %}
                     <a href="/v1/documents/{{ job.document_id }}" target="_blank" rel="noopener" class="text-primary hover:text-primary/80">Document API</a>
                   {% endif %}
@@ -381,7 +380,6 @@
     }
     if(meta.jobId){
       links.job = `/v1/jobs/${meta.jobId}`;
-      links.stream = `/api/pipelines/stream?job_id=${meta.jobId}`;
     }
     return links;
   }
@@ -398,7 +396,7 @@
     title.textContent = meta && meta.message ? meta.message : (kind === 'success' ? 'Request completed.' : 'Request failed.');
     wrapper.appendChild(title);
     const links = buildContentLinks(meta);
-    const linkLabels = { document: 'Document API', version: 'Version API', job: 'Job API', stream: 'Live stream' };
+    const linkLabels = { document: 'Document API', version: 'Version API', job: 'Job API' };
     const linkKeys = Object.keys(links);
     if(linkKeys.length){
       const linkWrap = document.createElement('div');

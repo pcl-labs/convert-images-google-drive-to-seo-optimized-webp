@@ -1,10 +1,11 @@
 import uuid
-from src.workers.api.database import Database, create_document, get_document
+from src.workers.api.database import create_document, get_document
 import asyncio
+import pytest
 
 
-def test_create_and_get_document():
-    db = Database()
+def test_create_and_get_document(isolated_db):
+    db = isolated_db
     async def _run():
         try:
             document_id = str(uuid.uuid4())

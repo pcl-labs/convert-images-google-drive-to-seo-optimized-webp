@@ -19,16 +19,6 @@
               Job API
               <span class="sr-only">(opens in new tab)</span>
             </a>
-            <a
-              href="/api/pipelines/stream?job_id={{ job.id }}"
-              target="_blank"
-              rel="noopener noreferrer"
-              class="text-primary hover:text-primary/80"
-              aria-label="Stream (opens in new tab)"
-            >
-              Stream
-              <span class="sr-only">(opens in new tab)</span>
-            </a>
             {% if job.document_id %}
               <a
                 href="/v1/documents/{{ job.document_id }}"

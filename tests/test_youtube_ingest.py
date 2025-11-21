@@ -45,6 +45,10 @@ class StubQueue:
     async def send_generic(self, payload):
         self.messages.append(payload)
         return True
+    
+    async def send(self, payload):
+        """Alias for send_generic to match Cloudflare Queue API."""
+        return await self.send_generic(payload)
 
 
 class StubQueueProducer:
@@ -69,11 +73,12 @@ def _parse_metadata(raw):
     return raw
 
 
-def test_start_ingest_youtube_job_stores_metadata(monkeypatch):
+def test_start_ingest_youtube_job_stores_metadata(monkeypatch, isolated_db):
     async def _run():
-        db = Database()
+        db = isolated_db
         user_id = f"user-{uuid.uuid4()}"
-        await create_user(db, user_id=user_id, github_id=None, email=f"{user_id}@example.com")
+        from tests.conftest import create_test_user
+        await create_test_user(db, user_id=user_id, email=f"{user_id}@example.com")
 
         stub_queue = StubQueue()
         job = None
@@ -103,10 +108,10 @@ def test_start_ingest_youtube_job_stores_metadata(monkeypatch):
             }
             metadata_bundle["metadata"]["url"] = "https://youtu.be/abc12345678"
 
-            def _fake_fetch(service, video_id):
+            async def _fake_fetch_async(service, video_id):
                 return metadata_bundle
 
-            monkeypatch.setattr("src.workers.api.protected.fetch_video_metadata", _fake_fetch)
+            monkeypatch.setattr("src.workers.api.protected.fetch_video_metadata_async", _fake_fetch_async)
 
             job = await start_ingest_youtube_job(db, stub_queue, user_id, "https://youtu.be/abc12345678")
 
@@ -141,11 +146,12 @@ def test_start_ingest_youtube_job_stores_metadata(monkeypatch):
     asyncio.run(_run())
 
 
-def test_start_ingest_youtube_job_inline_executes(monkeypatch):
+def test_start_ingest_youtube_job_inline_executes(monkeypatch, isolated_db):
     async def _run():
-        db = Database()
+        db = isolated_db
         user_id = f"user-{uuid.uuid4()}"
-        await create_user(db, user_id=user_id, github_id=None, email=f"{user_id}@example.com")
+        from tests.conftest import create_test_user
+        await create_test_user(db, user_id=user_id, email=f"{user_id}@example.com")
 
         stub_queue = StubQueue()
         job = None
@@ -169,10 +175,10 @@ def test_start_ingest_youtube_job_inline_executes(monkeypatch):
             }
             metadata_bundle["metadata"]["url"] = "https://youtu.be/inline123456"
 
-            def _fake_fetch(service, video_id):
+            async def _fake_fetch_async(service, video_id):
                 return metadata_bundle
 
-            monkeypatch.setattr("src.workers.api.protected.fetch_video_metadata", _fake_fetch)
+            monkeypatch.setattr("src.workers.api.protected.fetch_video_metadata_async", _fake_fetch_async)
 
             async def _fake_ingest(
                 db,
@@ -347,11 +353,12 @@ def test_process_ingest_youtube_job_merges_metadata(monkeypatch):
     asyncio.run(_run())
 
 
-def test_ingest_youtube_queue_flow(monkeypatch):
+def test_ingest_youtube_queue_flow(monkeypatch, isolated_db):
     async def _run():
-        db = Database()
+        db = isolated_db
         user_id = f"user-{uuid.uuid4()}"
-        await create_user(db, user_id=user_id, github_id=None, email=f"{user_id}@example.com")
+        from tests.conftest import create_test_user
+        await create_test_user(db, user_id=user_id, email=f"{user_id}@example.com")
 
         stub_queue = StubQueue()
         job_row = None
@@ -378,12 +385,12 @@ def test_ingest_youtube_queue_flow(monkeypatch):
                 },
             }
 
-            def _fake_fetch_metadata(service, video_id):
+            async def _fake_fetch_metadata_async(service, video_id):
                 assert service is fake_service
                 assert video_id == "queue123456"
                 return metadata_bundle
 
-            monkeypatch.setattr("src.workers.api.protected.fetch_video_metadata", _fake_fetch_metadata)
+            monkeypatch.setattr("src.workers.api.protected.fetch_video_metadata_async", _fake_fetch_metadata_async)
 
             async def _fake_worker_ingest(
                 db,
@@ -458,13 +465,14 @@ def test_ingest_youtube_queue_flow(monkeypatch):
 
 
 @pytest.mark.autopilot_enabled
-def test_autopilot_helper_creates_generate_job(monkeypatch):
+def test_autopilot_helper_creates_generate_job(monkeypatch, isolated_db):
     async def _run():
-        db = Database()
+        db = isolated_db
         user_id = f"user-{uuid.uuid4()}"
         document_id = str(uuid.uuid4())
         pipeline_job_id = str(uuid.uuid4())
-        await create_user(db, user_id=user_id, github_id=None, email=f"{user_id}@example.com")
+        from tests.conftest import create_test_user
+        await create_test_user(db, user_id=user_id, email=f"{user_id}@example.com")
         await create_document(
             db,
             document_id=document_id,
@@ -548,11 +556,12 @@ def test_autopilot_helper_creates_generate_job(monkeypatch):
     asyncio.run(_run())
 
 
-def test_ingest_youtube_retry_and_dlq(monkeypatch):
+def test_ingest_youtube_retry_and_dlq(monkeypatch, isolated_db):
     async def _run():
-        db = Database()
+        db = isolated_db
         user_id = f"user-{uuid.uuid4()}"
-        await create_user(db, user_id=user_id, github_id=None, email=f"{user_id}@example.com")
+        from tests.conftest import create_test_user
+        await create_test_user(db, user_id=user_id, email=f"{user_id}@example.com")
         stub_queue = StubQueue()
         queue_producer = StubQueueProducer()
 
@@ -578,11 +587,11 @@ def test_ingest_youtube_retry_and_dlq(monkeypatch):
             },
         }
 
-        def _fake_meta(service, video_id):
+        async def _fake_meta_async(service, video_id):
             assert service is fake_service
             return metadata_bundle
 
-        monkeypatch.setattr("src.workers.api.protected.fetch_video_metadata", _fake_meta)
+        monkeypatch.setattr("src.workers.api.protected.fetch_video_metadata_async", _fake_meta_async)
         failing_process = AsyncMock(side_effect=RuntimeError("boom"))
         monkeypatch.setattr("src.workers.consumer.process_ingest_youtube_job", failing_process)
 

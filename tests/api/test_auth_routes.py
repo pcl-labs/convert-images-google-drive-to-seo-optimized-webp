@@ -178,8 +178,9 @@ def test_jobs_page_db_failure_returns_503(client):
     # Set the access_token cookie
     client.cookies.set("access_token", token)
     
-    # Patch ensure_db to fail in the route handler
-    with patch.object(deps, 'ensure_db', side_effect=failing_ensure_db):
+    # Patch ensure_db in the web module where it's actually used
+    from src.workers.api import web
+    with patch.object(web, 'ensure_db', side_effect=failing_ensure_db):
         response = client.get("/dashboard/jobs", follow_redirects=False)
     
     # Should return 503 Service Unavailable, not 500

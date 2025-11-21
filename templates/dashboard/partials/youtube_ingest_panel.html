@@ -31,9 +31,6 @@
           <template x-if="flash.links && flash.links.job">
             <a :href="flash.links.job" class="text-primary hover:text-primary/80" target="_blank" rel="noopener">Job API &rarr;</a>
           </template>
-          <template x-if="flash.links && flash.links.stream">
-            <a :href="flash.links.stream" class="text-primary hover:text-primary/80" target="_blank" rel="noopener">Live stream &rarr;</a>
-          </template>
         </div>
       </div>
     </template>
@@ -58,9 +55,6 @@
         <span class="font-mono text-[11px] text-content">Job <span x-text="jobId"></span></span>
         <template x-if="jobLinks.job">
           <a :href="jobLinks.job" class="text-primary hover:text-primary/80" target="_blank" rel="noopener">Job API</a>
-        </template>
-        <template x-if="jobLinks.stream">
-          <a :href="jobLinks.stream" class="text-primary hover:text-primary/80" target="_blank" rel="noopener">Stream</a>
         </template>
         <template x-if="jobLinks.document">
           <a :href="jobLinks.document" class="text-primary hover:text-primary/80" target="_blank" rel="noopener">Document API</a>
@@ -237,74 +231,12 @@ if(!window.__youtubeIngestInit){
         }
         if(meta.jobId){
           links.job = `/v1/jobs/${meta.jobId}`;
-          links.stream = `/api/pipelines/stream?job_id=${meta.jobId}`;
         }
         return links;
       },
       setJob(jobId){
-        if(this.es){
-          this.es.close();
-          this.es = null;
-        }
-        this.events = [];
         this.jobId = jobId || null;
-        if(this.jobId){
-          this.startStream();
-        }
       },
-      startStream(){
-        if(!this.jobId || this.connecting){
-          return;
-        }
-        this.connecting = true;
-        const url = `/api/pipelines/stream?job_id=${this.jobId}`;
-        this.es = new EventSource(url);
-        this.es.onopen = () => {
-          this.connecting = false;
-        };
-        this.es.onmessage = (evt) => {
-          try {
-            const payload = JSON.parse(evt.data || '{}');
-            if(payload.type !== 'pipeline.event' || !payload.data){
-              return;
-            }
-            if(this.jobId && payload.data.job_id !== this.jobId){
-              return;
-            }
-            this.upsertEvent(payload.data);
-          } catch (err) {
-            console.error('Pipeline stream parse error', err);
-          }
-        };
-        this.es.onerror = () => {
-          if(this.es){
-            this.es.close();
-            this.es = null;
-          }
-          this.connecting = false;
-          if(this.jobId){
-            setTimeout(() => this.startStream(), 2000);
-          }
-        };
-      },
-      upsertEvent(evt){
-        if(!evt){
-          return;
-        }
-        const idx = this.events.findIndex((item) => item.event_id === evt.event_id);
-        if(idx >= 0){
-          this.events.splice(idx, 1, evt);
-        } else {
-          this.events.push(evt);
-          this.events.sort((a, b) => (a.sequence || 0) - (b.sequence || 0));
-        }
-      },
-      destroy(){
-        if(this.es){
-          this.es.close();
-          this.es = null;
-        }
-      }
     }));
   });
   window.addEventListener('beforeunload', () => {
