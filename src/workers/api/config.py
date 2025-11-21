@@ -70,7 +70,11 @@ class Settings:
     - Reads from `.env` file (if present) and `os.environ`
     - `d1_database` is typically None, causing Database() to fall back to SQLite
     - `static_files_dir` can be set to a filesystem path for local dev
-    - `queue` and `dlq` are None when `USE_INLINE_QUEUE=true` (default)
+    - `use_inline_queue` defaults to False at the field level; __post_init__
+      normalizes any explicit value and then sets it to True when
+      `environment` is "development" (the default if ENV is unset) and
+      False when `environment` is "production". Other environments keep the
+      normalized value.
     
     **Cloudflare Workers:**
     - Reads from `os.environ` (populated by `wrangler.toml` vars + secrets)
