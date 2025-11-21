@@ -655,7 +655,9 @@ async def compose_blog_from_text(
                     {"role": "user", "content": user_prompt},
                 ],
                 "temperature": temp_value,
-                "max_completion_tokens": settings.openai_blog_max_output_tokens,
+                # Cloudflare compat endpoint expects the standard OpenAI schema:
+                # use max_tokens, not max_completion_tokens.
+                "max_tokens": settings.openai_blog_max_output_tokens,
             },
         )
         response.raise_for_status()
