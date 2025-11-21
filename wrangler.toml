@@ -28,7 +28,7 @@ DEAD_LETTER_QUEUE_NAME = "quill-dlq"
 USE_INLINE_QUEUE = "false"  # Ignored at runtime; environment controls inline vs queue
 TRANSCRIPT_LANGS = "en,en-US,en-GB"
 OPENAI_API_BASE = "https://api.openai.com/v1"
-OPENAI_BLOG_MODEL = "gpt-5.1"
+OPENAI_BLOG_MODEL = "gpt-4.1-mini"
 OPENAI_BLOG_TEMPERATURE = "0.6"
 OPENAI_BLOG_MAX_OUTPUT_TOKENS = "2200"
 
