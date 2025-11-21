@@ -9,12 +9,12 @@ import os
 import json
 
 try:
-    from openai import AsyncOpenAI, OpenAIError  # type: ignore
-except Exception:  # pragma: no cover - OpenAI optional during tests
-    AsyncOpenAI = None  # type: ignore
+    from openai import OpenAIError  # type: ignore
+except Exception:  # pragma: no cover - optional dependency during tests
     OpenAIError = Exception  # type: ignore
 
 from api.config import settings
+from .openai_client import get_async_openai_client
 
 logger = logging.getLogger(__name__)
 
@@ -491,8 +491,13 @@ def _should_use_openai() -> bool:
         return False
     if not settings.openai_api_key:
         return False
-    if AsyncOpenAI is None:
-        logger.debug("OpenAI client unavailable; falling back to stub composer")
+    # In Workers we always go through Cloudflare AI Gateway; require base URL + token
+    api_base = getattr(settings, "openai_api_base", None)
+    if not api_base:
+        logger.debug("OPENAI_API_BASE missing; falling back to stub composer")
+        return False
+    if "gateway.ai.cloudflare.com" in api_base and not getattr(settings, "cf_ai_gateway_token", None):
+        logger.debug("CF_AI_GATEWAY_TOKEN missing for AI Gateway; falling back to stub composer")
         return False
     return True
 
@@ -568,19 +573,12 @@ async def compose_blog(
             "chapters": len(chapters),
             "keywords": len(seo_metadata.get("keywords", [])),
             "prompt_length": len(user_prompt),
+            "openai_api_base": getattr(settings, "openai_api_base", None),
+            "ai_gateway_token_set": bool(getattr(settings, "cf_ai_gateway_token", None)),
         },
     )
     try:
-        if not settings.openai_api_key:
-            raise ValueError("OPENAI_API_KEY is required for AI blog generation")
-        if AsyncOpenAI is None:
-            raise RuntimeError("openai package is not installed")
-
-        client_kwargs: Dict[str, Any] = {"api_key": settings.openai_api_key}
-        if settings.openai_api_base:
-            client_kwargs["base_url"] = settings.openai_api_base
-
-        client = AsyncOpenAI(**client_kwargs)
+        client = get_async_openai_client(purpose="compose_blog")
     except Exception:
         logger.warning("openai_client_unavailable", exc_info=True)
         return _compose_blog_stub(chapters, tone=tone, model=model, temperature=temperature)
@@ -594,7 +592,7 @@ async def compose_blog(
                     {"role": "user", "content": user_prompt},
                 ],
                 temperature=temp_value,
-                max_completion_tokens=settings.openai_blog_max_output_tokens,
+                max_tokens=settings.openai_blog_max_output_tokens,
             )
             logger.info(
                 "openai_compose_blog_response",

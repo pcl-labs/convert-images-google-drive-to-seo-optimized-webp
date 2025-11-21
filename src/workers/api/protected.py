@@ -67,6 +67,7 @@ from core.drive_utils import extract_folder_id_from_input
 from core.google_clients import GoogleAPIError
 from core.youtube_api import fetch_video_metadata, fetch_video_metadata_async, YouTubeAPIError
 from core.youtube_captions import YouTubeCaptionsError
+from .simple_http import AsyncSimpleClient, HTTPStatusError, RequestError
 from .deps import (
     ensure_db,
     ensure_services,
@@ -1025,6 +1026,138 @@ async def debug_env():
             "blog_temperature": getattr(settings, "openai_blog_temperature", None),
             "blog_max_output_tokens": getattr(settings, "openai_blog_max_output_tokens", None),
         },
+        "ai_gateway_config": {
+            "cloudflare_account_id": getattr(settings, "cloudflare_account_id", None),
+            "token_set": bool(getattr(settings, "cf_ai_gateway_token", None)),
+            "openai_api_base": getattr(settings, "openai_api_base", None),
+        },
+    }
+
+
+@router.get("/api/v1/debug/ai-gateway-test", tags=["Debug"])
+async def debug_ai_gateway_test():
+    """Exercise Cloudflare AI Gateway chat completions using current Worker configuration.
+
+    This endpoint is intended for local/staging verification only and is
+    exposed via the Settings debug card. It performs a single chat.completions
+    call against the configured AI Gateway using the compat endpoint.
+    """
+
+    if not settings.cloudflare_account_id:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="CLOUDFLARE_ACCOUNT_ID is not configured",
+        )
+    if not getattr(settings, "cf_ai_gateway_token", None):
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="CF_AI_GATEWAY_TOKEN is not configured",
+        )
+
+    gateway_base = "https://gateway.ai.cloudflare.com"
+    endpoint_path = f"/v1/{settings.cloudflare_account_id}/quill/compat/chat/completions"
+
+    prompt = "Test request from Quill via Cloudflare AI Gateway. Respond with a short confirmation message."
+    model_name = "openai/gpt-4.1-mini"
+
+    client = AsyncSimpleClient(base_url=gateway_base, timeout=20.0)
+
+    logger.info(
+        "debug_ai_gateway_test_request",
+        extra={
+            "gateway_base": gateway_base,
+            "endpoint_path": endpoint_path,
+            "model": model_name,
+        },
+    )
+
+    try:
+        response = await client.post(
+            endpoint_path,
+            headers={
+                "Content-Type": "application/json",
+                "cf-aig-authorization": f"Bearer {settings.cf_ai_gateway_token}",
+            },
+            json={
+                "model": model_name,
+                "messages": [
+                    {"role": "user", "content": prompt},
+                ],
+            },
+        )
+        response.raise_for_status()
+    except HTTPStatusError as exc:
+        logger.error(
+            "debug_ai_gateway_test_http_error",
+            exc_info=True,
+            extra={
+                "status_code": exc.response.status_code,
+                "body": exc.response.text[:200],
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"AI Gateway returned HTTP {exc.response.status_code}",
+        ) from exc
+    except RequestError as exc:
+        logger.error(
+            "debug_ai_gateway_test_request_error",
+            exc_info=True,
+            extra={"error": str(exc)},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Failed to reach AI Gateway",
+        ) from exc
+    except Exception as exc:
+        logger.error(
+            "debug_ai_gateway_test_unexpected_error",
+            exc_info=True,
+            extra={"error": str(exc)},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unexpected error calling AI Gateway",
+        ) from exc
+
+    data: Dict[str, Any]
+    try:
+        data = response.json()
+    except Exception:
+        logger.error(
+            "debug_ai_gateway_test_invalid_json",
+            extra={"body_preview": response.text[:200]},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="AI Gateway returned invalid JSON",
+        )
+
+    reply_text: Optional[str] = None
+    try:
+        choices = data.get("choices") or []
+        if choices:
+            message = choices[0].get("message") or {}
+            reply_text = message.get("content")
+    except Exception:
+        reply_text = None
+
+    logger.info(
+        "debug_ai_gateway_test_response",
+        extra={
+            "model": model_name,
+            "has_reply": bool(reply_text),
+            "usage": data.get("usage"),
+        },
+    )
+
+    return {
+        "gateway_base": gateway_base,
+        "endpoint_path": endpoint_path,
+        "model": model_name,
+        "prompt": prompt,
+        "reply_preview": (reply_text or "")[:500],
+        "raw_usage": data.get("usage"),
     }
 
 

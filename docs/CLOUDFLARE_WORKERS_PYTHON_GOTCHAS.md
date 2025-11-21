@@ -369,7 +369,9 @@ await db.execute(
 
 ### ⚠️ **Environment Variables Must Be Injected via Runtime**
 
-**Problem:** `os.environ` is not automatically populated in Workers. Variables must be injected via `wrangler.toml` and the runtime.
+**Problem:** `os.environ` is not automatically populated in Workers. Variables must be injected via `wrangler.toml` / dashboard bindings **and** explicitly copied into `os.environ` by `runtime.apply_worker_env()`.
+
+If a variable is not whitelisted in `workers/runtime.py`, it will not appear in `Settings`, even if it exists as a Worker var/secret.
 
 **Solution:**
 ```python
@@ -384,7 +386,24 @@ import os
 api_key = os.environ.get("API_KEY")
 ```
 
-**Key Takeaway:** Always call `apply_worker_env()` before accessing environment variables.
+**Key Takeaway:**
+
+- Always call `apply_worker_env()` before accessing environment variables.
+- When adding a new env var that Settings should see:
+  1. Add a field to `api.config.Settings` (e.g. `cf_ai_gateway_token: Optional[str] = None`).
+  2. Add the environment key to `known_vars` in `workers/runtime.py` (so it is read from the Workers `env` object).
+  3. Add the environment key to the `allowed` set in `workers/runtime.py` (so it is copied into `os.environ`).
+  4. Configure the var/secret in `wrangler.toml` or the Cloudflare dashboard.
+
+Example (Cloudflare AI Gateway token):
+
+- Settings field: `cf_ai_gateway_token`
+- Worker env key: `CF_AI_GATEWAY_TOKEN`
+- `workers/runtime.py`:
+  - Add `"CF_AI_GATEWAY_TOKEN"` to `known_vars`.
+  - Add `"CF_AI_GATEWAY_TOKEN"` to the `allowed` set.
+
+Without these steps, `CF_AI_GATEWAY_TOKEN` will not be visible in `Settings`, even if it exists as a Worker secret or var.
 
 ---
 

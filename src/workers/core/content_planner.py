@@ -7,13 +7,13 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 try:
-    from openai import AsyncOpenAI, OpenAIError  # type: ignore
+    from openai import OpenAIError  # type: ignore
 except Exception:  # pragma: no cover - optional dependency during tests
-    AsyncOpenAI = None  # type: ignore
     OpenAIError = Exception  # type: ignore
 
 from api.config import settings
 from .ai_modules import generate_outline, organize_chapters, generate_seo_metadata
+from .openai_client import get_async_openai_client
 
 logger = logging.getLogger(__name__)
 
@@ -132,8 +132,8 @@ async def _plan_with_openai(
     temperature_override: Optional[float] = None,
     max_tokens_override: Optional[int] = None,
 ) -> Dict[str, Any]:
-    if not settings.openai_api_key or AsyncOpenAI is None:
-        raise RuntimeError("OPENAI_API_KEY missing or openai package unavailable")
+    if not settings.openai_api_key:
+        raise RuntimeError("OPENAI_API_KEY missing")
 
     planner_model = model_override or getattr(settings, "openai_planner_model", None) or settings.openai_blog_model or "gpt-5.1-mini"
     temperature = temperature_override if temperature_override is not None else getattr(settings, "openai_planner_temperature", 0.2)
@@ -172,9 +172,7 @@ async def _plan_with_openai(
         """
     ).strip()
 
-    client_kwargs: Dict[str, Any] = {"api_key": settings.openai_api_key}
-    if settings.openai_api_base:
-        client_kwargs["base_url"] = settings.openai_api_base
+    client = get_async_openai_client(purpose="planner")
     logger.info(
         "content_plan_openai_request",
         extra={
@@ -183,15 +181,16 @@ async def _plan_with_openai(
             "max_tokens": max_tokens,
             "text_length": len(trimmed_text),
             "has_instructions": bool(instructions),
+            "openai_api_base": getattr(settings, "openai_api_base", None),
+            "ai_gateway_token_set": bool(getattr(settings, "cf_ai_gateway_token", None)),
         },
     )
-    client = AsyncOpenAI(**client_kwargs)
     async with client:
         try:
             response = await client.chat.completions.create(
                 model=planner_model,
                 temperature=temperature,
-                max_completion_tokens=max_tokens,
+                max_tokens=max_tokens,
                 messages=[
                     {
                         "role": "system",
