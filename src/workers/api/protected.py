@@ -8,6 +8,7 @@ import json
 import asyncio
 from datetime import datetime, timezone
 from urllib.parse import urlparse
+import re
 
 from .config import settings
 from .exceptions import DatabaseError
@@ -111,6 +112,33 @@ def _validate_redirect_path(path: str, fallback: str) -> str:
         return fallback
     
     return path
+
+
+def _redact_http_body_for_logging(body: Optional[str]) -> str:
+    text = (body or "")
+    if not text:
+        return ""
+
+    # Redact common secret-like patterns (API keys, tokens, emails, long hex/base64, auth headers, file paths)
+    patterns = [
+        r"sk-[A-Za-z0-9]{20,}",  # API keys
+        r"(?:api|auth|session|access|refresh)_?token[=:\s]+[A-Za-z0-9._-]{10,}",
+        r"Bearer\s+[A-Za-z0-9._-]{10,}",
+        r"[A-Fa-f0-9]{32,}",  # long hex strings
+        r"[A-Za-z0-9+/]{32,}={0,2}",  # base64-like
+        r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}",  # emails
+        r"Authorization:[^\n]+",
+        r"(?:/|[A-Za-z]:\\)[^\s]{10,}",  # file paths
+    ]
+
+    redacted = text
+    for pattern in patterns:
+        redacted = re.sub(pattern, "[REDACTED]", redacted, flags=re.IGNORECASE)
+
+    if len(redacted) > 200:
+        redacted = redacted[:200]
+
+    return redacted
 
 
 def _parse_job_progress_model(progress_str: str) -> JobProgress:
@@ -1092,7 +1120,7 @@ async def debug_ai_gateway_test():
             exc_info=True,
             extra={
                 "status_code": exc.response.status_code,
-                "body": exc.response.text[:200],
+                "body": _redact_http_body_for_logging(getattr(exc.response, "text", None)),
             },
         )
         raise HTTPException(
@@ -1126,7 +1154,7 @@ async def debug_ai_gateway_test():
     except Exception:
         logger.error(
             "debug_ai_gateway_test_invalid_json",
-            extra={"body_preview": response.text[:200]},
+            extra={"body_preview": _redact_http_body_for_logging(getattr(response, "text", None))},
         )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,

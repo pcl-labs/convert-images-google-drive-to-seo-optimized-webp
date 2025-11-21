@@ -190,7 +190,7 @@ async def _plan_with_openai(
             response = await client.chat.completions.create(
                 model=planner_model,
                 temperature=temperature,
-                max_tokens=max_tokens,
+                max_completion_tokens=max_tokens,
                 messages=[
                     {
                         "role": "system",

@@ -7,6 +7,7 @@ import html
 import logging
 import os
 import json
+from urllib.parse import urlparse
 
 try:
     from openai import OpenAIError  # type: ignore
@@ -496,7 +497,10 @@ def _should_use_openai() -> bool:
     if not api_base:
         logger.debug("OPENAI_API_BASE missing; falling back to stub composer")
         return False
-    if "gateway.ai.cloudflare.com" in api_base and not getattr(settings, "cf_ai_gateway_token", None):
+
+    parsed = urlparse(api_base)
+    gateway_host = parsed.hostname
+    if gateway_host == "gateway.ai.cloudflare.com" and not getattr(settings, "cf_ai_gateway_token", None):
         logger.debug("CF_AI_GATEWAY_TOKEN missing for AI Gateway; falling back to stub composer")
         return False
     return True
