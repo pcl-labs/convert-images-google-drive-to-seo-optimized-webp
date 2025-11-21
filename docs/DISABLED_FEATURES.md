@@ -2,15 +2,16 @@
 
 This document tracks features that have been temporarily disabled to get the application working in Cloudflare Workers without errors.
 
-## Status: ✅ Green State Achieved
+## Status: ✅ Green State Achieved (Core Only)
 
 - `/auth/me` - Returns 200 with real user data
 - `/health` - Returns 200
 - `/test/fetch` - Returns 200 (fetch API working)
-- `/dashboard` - Returns 200 with full dashboard (auth working, DB calls enabled)
-- Live Updates/Notifications - ✅ Working via HTTP polling (migrated from SSE)
+- `/dashboard` - Returns 200 with core dashboard (auth working, DB calls enabled)
 - Sessions - ✅ Enabled and working
 - FlashMiddleware - ✅ Enabled and working (fixed ASGI error)
+
+> **Note:** Live notifications, activity feeds, and streaming endpoints are **not** part of the green MVP surface. See **Disabled Features** below for details.
 
 ## Disabled Middleware
 
@@ -72,12 +73,28 @@ This document tracks features that have been temporarily disabled to get the app
   - `FlashMiddleware` - Skips flash clear on DB failure
   - `AuthCookieMiddleware` - Continues with JWT claims only if DB unavailable
 
-### Frontend: SSE to HTTP Polling Migration
-**Files Modified:**
-- `src/workers/templates/base.html` - Replaced `EventSource('/api/stream')` SSE implementation with HTTP polling to `/api/notifications`
-- `src/workers/templates/components/overlays/toast.html` - Fixed Alpine.js regex error (removed extra backslashes)
+### Frontend: SSE / Notifications and Streams (Disabled for MVP)
+**Status:** Disabled for MVP
 
-**Reason:** SSE (Server-Sent Events) doesn't work in Cloudflare Workers Python - requires special `ctx` parameter that's not available. HTTP polling works reliably and provides same functionality.
+**Backend endpoints disabled:**
+- `GET  /api/notifications`
+- `POST /api/notifications/{notification_id}/seen`
+- `POST /api/notifications/{notification_id}/dismiss`
+- `GET  /api/stream`
+- `GET  /api/pipelines/stream`
+- `GET  /dashboard/activity`
+
+**Frontend impact:**
+- Live toasts fed by `/api/notifications` are considered experimental polish and not required for the core YouTube → blog + Drive flow.
+- Activity page at `/dashboard/activity` is disabled and not part of the MVP UX.
+
+**Reason:**
+- SSE (Server-Sent Events) and long-lived streams are a poor fit for Cloudflare Workers Python and add complexity.
+- For the MVP, we only need a stable Content API + dashboard, not real-time feeds.
+
+**Implementation notes:**
+- `src/workers/api/web.py` keeps the notification and streaming routes **commented out** so they can be re-enabled later.
+- Internal helpers and DB tables for notifications/pipeline events remain in place so future UI/UX work can build on them.
 
 ## Next Steps to Re-enable Features
 

@@ -26,7 +26,7 @@
       <div class="px-4 py-3 border-t border-border flex items-center justify-end gap-2">
         {% from 'components/elements/button.html' import button %}
         {{ button(cancel_text, variant='secondary', attrs='@click="closeModal()"') }}
-        {{ button(confirm_text, variant='primary', attrs='data-autofocus @click="$dispatch(\'confirm-{{ id }}\')"') }}
+        {{ button(confirm_text, variant='primary', attrs='data-autofocus @click="$dispatch(''confirm-' ~ id ~ '')"') }}
       </div>
     </div>
   </div>

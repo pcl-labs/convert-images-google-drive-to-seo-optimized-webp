@@ -25,7 +25,11 @@
 
   <div id="dashboard-flash"></div>
 
-  <div class="grid gap-4 lg:grid-cols-3">
+  <div class="space-y-4">
+    {% call card(title='Ingest YouTube Video') %}
+      {% include 'dashboard/partials/youtube_ingest_panel.html' %}
+    {% endcall %}
+
     {% call card(title='Link Drive Folder') %}
       <p class="text-xs text-contentMuted mb-2">Automatically build Quill workspace folders inside Drive.</p>
       <div class="flex items-center justify-between mb-3">
@@ -42,10 +46,6 @@
         {{ input('drive_source', label='Drive folder link or ID', placeholder='https://drive.google.com/drive/folders/...', attrs='required' + (' disabled' if not drive_connected else '')) }}
         {{ button('Register Document', variant='primary', attrs='type=\"submit\" class=\"w-full\"' + (' disabled' if not drive_connected else '')) }}
       </form>
-    {% endcall %}
-
-    {% call card(title='Ingest YouTube Video') %}
-      {% include 'dashboard/partials/youtube_ingest_panel.html' %}
     {% endcall %}
 
     {% call card(title='Paste Raw Text') %}
@@ -110,7 +110,6 @@
     }
     if(meta.jobId){
       links.job = `/v1/jobs/${meta.jobId}`;
-      links.stream = `/api/pipelines/stream?job_id=${meta.jobId}`;
     }
     return links;
   }
@@ -130,7 +129,6 @@
       document: 'Document API',
       version: 'Version API',
       job: 'Job API',
-      stream: 'Live stream',
     };
     const linkKeys = Object.keys(links);
     if(linkKeys.length){

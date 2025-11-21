@@ -65,12 +65,12 @@ def test_ingest_youtube_authed(authed_client, monkeypatch):
         },
     }
 
-    def _fake_fetch(service, video_id):
+    async def _fake_fetch_async(service, video_id):
         assert service is fake_service
         assert video_id == "abc12345678"
         return metadata_bundle
 
-    monkeypatch.setattr("src.workers.api.protected.fetch_video_metadata", _fake_fetch)
+    monkeypatch.setattr("src.workers.api.protected.fetch_video_metadata_async", _fake_fetch_async)
 
     async def _fake_ingest(db, job_id, user_id, document_id, video_id, metadata, frontmatter_payload, duration):
         return {

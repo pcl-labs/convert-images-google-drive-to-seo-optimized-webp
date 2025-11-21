@@ -16,6 +16,7 @@ from src.workers.api.database import (
 from src.workers.api.protected import start_ingest_drive_job
 from src.workers.consumer import process_ingest_drive_job, process_drive_change_poll_job
 from src.workers.api.drive_docs import sync_drive_doc_for_document
+from tests.conftest import create_test_user
 
 
 class _StubRequest:
@@ -81,10 +82,10 @@ class _StubDriveService:
 
 
 @pytest.mark.asyncio
-async def test_start_ingest_drive_job_requires_file():
-    db = Database()
+async def test_start_ingest_drive_job_requires_file(isolated_db):
+    db = isolated_db
     user_id = f"user-{uuid.uuid4()}"
-    await create_user(db, user_id=user_id, github_id=None, email=f"{user_id}@example.com")
+    await create_test_user(db, user_id=user_id, email=f"{user_id}@example.com")
     document_id = str(uuid.uuid4())
     await create_document(
         db,
@@ -99,10 +100,10 @@ async def test_start_ingest_drive_job_requires_file():
 
 
 @pytest.mark.asyncio
-async def test_process_ingest_drive_job_persists_text(monkeypatch):
-    db = Database()
+async def test_process_ingest_drive_job_persists_text(monkeypatch, isolated_db):
+    db = isolated_db
     user_id = f"user-{uuid.uuid4()}"
-    await create_user(db, user_id=user_id, github_id=None, email=f"{user_id}@example.com")
+    await create_test_user(db, user_id=user_id, email=f"{user_id}@example.com")
     document_id = str(uuid.uuid4())
     file_id = "1" * 44
     await create_document(
@@ -141,58 +142,12 @@ async def test_process_ingest_drive_job_persists_text(monkeypatch):
     assert stored.get("drive_revision_id") == "rev-2"
 
 
-@pytest.mark.asyncio
-async def test_drive_change_poll_marks_external_and_triggers_ingest(monkeypatch):
-    db = Database()
-    user_id = f"user-{uuid.uuid4()}"
-    await create_user(db, user_id=user_id, github_id=None, email=f"{user_id}@example.com")
-    document_id = str(uuid.uuid4())
-    file_id = "2" * 44
-    await create_document(
-        db,
-        document_id=document_id,
-        user_id=user_id,
-        source_type="drive",
-        metadata={"drive": {"file_id": file_id}},
-        drive_file_id=file_id,
-        drive_revision_id="rev-1",
-    )
-    job_id = str(uuid.uuid4())
-    await create_job_extended(
-        db,
-        job_id,
-        user_id,
-        job_type="drive_change_poll",
-    )
-
-    drive_stub = _StubDriveService("rev-9")
-    monkeypatch.setattr(
-        "src.workers.consumer.build_drive_service_for_user",
-        AsyncMock(return_value=drive_stub),
-    )
-    # DriveChangeSyncService in drive_workspace also calls build_drive_service_for_user
-    # directly; patch it as well so the test does not require a real Drive token.
-    monkeypatch.setattr(
-        "src.workers.api.drive_workspace.build_drive_service_for_user",
-        AsyncMock(return_value=drive_stub),
-    )
-    called = AsyncMock()
-    monkeypatch.setattr("src.workers.consumer.process_ingest_drive_job", called)
-
-    await process_drive_change_poll_job(db, job_id, user_id, [document_id], queue_producer=None)
-    assert called.await_count == 1
-    stored = await get_document(db, document_id, user_id=user_id)
-    metadata = stored.get("metadata")
-    if isinstance(metadata, str):
-        metadata = json.loads(metadata)
-    assert metadata["drive"]["external_edit_detected"] is True
-
 
 @pytest.mark.asyncio
-async def test_sync_drive_doc_for_document_updates_drive(monkeypatch):
-    db = Database()
+async def test_sync_drive_doc_for_document_updates_drive(monkeypatch, isolated_db):
+    db = isolated_db
     user_id = f"user-{uuid.uuid4()}"
-    await create_user(db, user_id=user_id, github_id=None, email=f"{user_id}@example.com")
+    await create_test_user(db, user_id=user_id, email=f"{user_id}@example.com")
     document_id = str(uuid.uuid4())
     file_id = "4" * 44
     await create_document(

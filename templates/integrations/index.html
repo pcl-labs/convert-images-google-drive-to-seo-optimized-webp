@@ -7,13 +7,16 @@
 
   <div id="integrations-grid"
        hx-get="/dashboard/integrations/partials/grid"
-       hx-trigger="load, every 6s"
+       hx-trigger="load"
        hx-swap="outerHTML">
     {% include 'integrations/partials/grid.html' %}
   </div>
   {% from 'components/overlays/modal.html' import modal %}
   {% call modal('drive-disconnect', title='Disconnect Google Drive', confirm_text='Disconnect', cancel_text='Cancel') %}
     <p class="text-content text-sm">Are you sure you want to disconnect Google Drive? Jobs requiring Drive access will no longer work until you reconnect.</p>
+  {% endcall %}
+  {% call modal('youtube-disconnect', title='Disconnect YouTube', confirm_text='Disconnect', cancel_text='Cancel') %}
+    <p class="text-content text-sm">Are you sure you want to disconnect YouTube? YouTube ingestion and metadata fetch will no longer work until you reconnect.</p>
   {% endcall %}
 {% endcall %}
 {% endblock %}

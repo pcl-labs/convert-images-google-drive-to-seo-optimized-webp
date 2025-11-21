@@ -5,32 +5,31 @@ from unittest.mock import AsyncMock, MagicMock
 
 
 @pytest.fixture
-def authed_client():
+def authed_client(isolated_db):
     from src.workers.api.main import app
     from src.workers.api.auth import generate_jwt_token
-    from src.workers.api.database import Database, create_user
     from src.workers.api.deps import set_db_instance, set_queue_producer
     from src.workers.api.cloudflare_queue import QueueProducer
+    from tests.conftest import create_test_user
     import asyncio
 
     client = TestClient(app)
 
-    # Create user in local SQLite so FK constraints pass
+    # Create user in isolated SQLite DB
     user_id = f"test_{uuid.uuid4()}"
     email = f"{user_id}@example.com"
-
-    async def _setup_user():
-        db = Database()
-        await create_user(db, user_id=user_id, github_id=None, email=email)
-        # Set up database instance for ensure_db()
-        set_db_instance(db)
-        # Set up a mock queue producer for ensure_services()
-        mock_queue = MagicMock()
-        mock_queue.send = AsyncMock(return_value=True)
-        queue_producer = QueueProducer(queue=mock_queue)
-        set_queue_producer(queue_producer)
-
-    asyncio.run(_setup_user())
+    
+    # Use create_test_user helper which ensures unique provider IDs
+    asyncio.run(create_test_user(isolated_db, user_id=user_id, email=email))
+    
+    # Set up database instance for ensure_db()
+    set_db_instance(isolated_db)
+    
+    # Set up a mock queue producer for ensure_services()
+    mock_queue = MagicMock()
+    mock_queue.send = AsyncMock(return_value=True)
+    queue_producer = QueueProducer(queue=mock_queue)
+    set_queue_producer(queue_producer)
 
     # Issue JWT and set as cookie (include email so middleware doesn't need DB lookup)
     token = generate_jwt_token(user_id=user_id, email=email)
@@ -68,12 +67,12 @@ def test_ingest_youtube_authed(authed_client, monkeypatch):
         },
     }
 
-    def _fake_fetch(service, video_id):
+    async def _fake_fetch_async(service, video_id):
         assert service is fake_service
         assert video_id == "abc12345678"
         return metadata_bundle
 
-    monkeypatch.setattr("src.workers.api.protected.fetch_video_metadata", _fake_fetch)
+    monkeypatch.setattr("src.workers.api.protected.fetch_video_metadata_async", _fake_fetch_async)
 
     async def _fake_ingest(db, job_id, user_id, document_id, video_id, metadata, frontmatter_payload, duration):
         return {

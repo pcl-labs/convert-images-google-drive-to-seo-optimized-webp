@@ -30,10 +30,8 @@ def test_inline_allowed_in_development():
 
 
 def test_inline_disallowed_in_production():
-    # Provide encryption_key to pass production validation, then test queue validation
-    # Valid Fernet key (32 bytes base64-encoded)
+    # Test that inline queue is not allowed in production
     kwargs = base_kwargs(environment="production", use_inline_queue=True)
-    kwargs["encryption_key"] = "VpfktYJB-hFBWpqy0JmD1Xz2h1m6D3-aMlPyOLEqLEA="  # Valid 32-byte Fernet key
     with pytest.raises(ValueError) as exc:
         Settings(**kwargs)
     assert "not allowed in production" in str(exc.value)
