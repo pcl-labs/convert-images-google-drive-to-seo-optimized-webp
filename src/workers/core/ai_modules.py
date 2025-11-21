@@ -9,13 +9,8 @@ import os
 import json
 from urllib.parse import urlparse
 
-try:
-    from openai import OpenAIError  # type: ignore
-except Exception:  # pragma: no cover - optional dependency during tests
-    OpenAIError = Exception  # type: ignore
-
 from api.config import settings
-from .openai_client import get_async_openai_client
+from api.simple_http import AsyncSimpleClient, HTTPStatusError, RequestError
 
 logger = logging.getLogger(__name__)
 
@@ -371,45 +366,6 @@ def organize_chapters(text: str, target_chapters: int = 4) -> List[Dict[str, Any
     return chapters
 
 
-def _compose_blog_stub(
-    chapters: List[Dict[str, str]],
-    tone: str = "informative",
-    *,
-    model: Optional[str] = None,
-    temperature: Optional[float] = None,
-) -> Dict[str, Any]:
-    """Fallback blog composer that mirrors old behavior (deterministic + offline)."""
-    if not chapters:
-        return {
-            "markdown": "",
-            "meta": {
-                "tone": tone,
-                "word_count": 0,
-                "engine": "stub",
-                "model": model or "stub",
-                "temperature": temperature,
-            },
-        }
-    parts = []
-    for chap in chapters:
-        title = chap.get("title") or "Section"
-        summary = chap.get("summary") or ""
-        parts.append(f"## {title}\n\n{summary}\n")
-    markdown = "\n".join(parts).strip()
-    word_count = len(markdown.split())
-    return {
-        "markdown": markdown,
-        "meta": {
-            "tone": tone,
-            "sections": len(chapters),
-            "word_count": word_count,
-            "engine": "stub",
-            "model": model or "stub",
-            "temperature": temperature,
-        },
-    }
-
-
 def default_title_from_outline(outline: List[Dict[str, str]]) -> str:
     if not outline:
         return "Untitled Draft"
@@ -487,25 +443,6 @@ def markdown_to_html(markdown_text: str) -> str:
     return "\n".join(lines)
 
 
-def _should_use_openai() -> bool:
-    if os.getenv("PYTEST_CURRENT_TEST"):
-        return False
-    if not settings.openai_api_key:
-        return False
-    # In Workers we always go through Cloudflare AI Gateway; require base URL + token
-    api_base = getattr(settings, "openai_api_base", None)
-    if not api_base:
-        logger.debug("OPENAI_API_BASE missing; falling back to stub composer")
-        return False
-
-    parsed = urlparse(api_base)
-    gateway_host = parsed.hostname
-    if gateway_host == "gateway.ai.cloudflare.com" and not getattr(settings, "cf_ai_gateway_token", None):
-        logger.debug("CF_AI_GATEWAY_TOKEN missing for AI Gateway; falling back to stub composer")
-        return False
-    return True
-
-
 def _format_chapters_for_prompt(chapters: List[Dict[str, Any]]) -> str:
     lines: List[str] = []
     for idx, chap in enumerate(chapters, start=1):
@@ -515,201 +452,193 @@ def _format_chapters_for_prompt(chapters: List[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-async def compose_blog(
-    chapters: List[Dict[str, str]],
+async def compose_blog_from_text(
+    text: str,
     tone: str = "informative",
-    seo_metadata: Optional[Dict[str, Any]] = None,
+    *,
+    length_hint: Optional[str] = None,
+    title_hint: Optional[str] = None,
     extra_context: Optional[Dict[str, Any]] = None,
     model: Optional[str] = None,
     temperature: Optional[float] = None,
 ) -> Dict[str, Any]:
-    """
-    Compose a long-form markdown blog post from structured chapters using OpenAI.
-    Falls back to the deterministic stub when OpenAI is unavailable (e.g., tests/offline).
-    """
-    seo_metadata = seo_metadata or {}
-    extra_context = extra_context or {}
-    if not chapters:
-        return _compose_blog_stub(chapters, tone=tone, model=model, temperature=temperature)
+    """One-step helper: go from raw text to a composed blog using a single OpenAI call.
 
-    if not _should_use_openai():
-        return _compose_blog_stub(chapters, tone=tone, model=model, temperature=temperature)
+    This reuses the existing outline + SEO helpers to provide structure, but does not
+    require a separate planner call.
+    """
+    clean_text = _coerce_text(text)
+    if not clean_text:
+        raise ValueError("compose_blog_from_text requires non-empty text")
 
-    prompt_outline = _format_chapters_for_prompt(chapters)
-    keywords = ", ".join(seo_metadata.get("keywords", []))
+    outline = generate_outline(clean_text, max_sections=5)
+    seo_meta = generate_seo_metadata(clean_text, outline)
+    if title_hint:
+        seo_meta["title"] = title_hint.strip() or seo_meta.get("title")
+
+    length_hint = (length_hint or "standard").strip().lower()
+    if length_hint not in {"short", "standard", "long"}:
+        length_hint = "standard"
+
+    # Map length_hint into textual guidance; we still rely on OPENAI_BLOG_MAX_OUTPUT_TOKENS
+    # to bound tokens.
+    if length_hint == "short":
+        length_req = "Length: 500-800 words."
+    elif length_hint == "long":
+        length_req = "Length: 1300-1700 words."
+    else:
+        length_req = "Length: 900-1200 words."
+
+    chapters = organize_chapters(clean_text, target_chapters=4)
+    prompt_outline = _format_chapters_for_prompt(chapters) if chapters else ""
+    keywords = ", ".join(seo_meta.get("keywords", []))
+
     system_prompt = (
         "You are Quill's senior marketing copywriter. "
-        "Given a structured outline plus SEO metadata, craft a comprehensive, engaging, "
-        "and factually consistent blog article. Always write in Markdown with a single H1 title "
-        "followed by well-structured H2/H3 sections, short paragraphs, scannable bullet lists, "
-        "and a concluding call-to-action."
+        "Given source text plus lightweight outline and SEO metadata, craft a comprehensive, "
+        "engaging, and factually consistent blog article. Always write in Markdown with a "
+        "single H1 title followed by well-structured H2/H3 sections, short paragraphs, "
+        "scannable bullet lists, and a concluding call-to-action."
     )
+
     requirements = [
         f"Tone: {tone}",
-        f"Primary title hint: {seo_metadata.get('title') or ''}",
-        f"Meta description guidance: {seo_metadata.get('description') or ''}",
-        f"Target keywords: {keywords or 'use best-fit based on outline'}",
-        "Length: 900-1200 words unless outline implies otherwise.",
+        f"Primary title hint: {seo_meta.get('title') or title_hint or ''}",
+        f"Meta description guidance: {seo_meta.get('description') or ''}",
+        f"Target keywords: {keywords or 'use best-fit based on the text'}",
+        length_req,
         "Add SEO-friendly subheadings, numbered/bullet lists where useful, and contextual transitions between sections.",
         "Do not include markdown frontmatter or HTML—return pure Markdown body.",
-        "Keep factual claims grounded in provided outline; do not invent statistics.",
+        "Keep factual claims grounded in the provided text; do not invent statistics.",
         "Close with a concise CTA tailored to the topic.",
     ]
-    if extra_context:
-        requirements.append(f"Additional context: {json.dumps(extra_context, default=str)[:800]}")
+    merged_context = dict(extra_context or {})
+    if merged_context:
+        requirements.append(f"Additional context: {json.dumps(merged_context, default=str)[:800]}")
 
-    user_prompt = (
-        "Generate a publication-ready blog article.\n\n"
-        "Outline:\n"
-        f"{prompt_outline}\n\n"
-        "Requirements:\n- " + "\n- ".join(req for req in requirements if req.strip())
-    )
+    user_prompt_parts: List[str] = [
+        "Generate a publication-ready blog article from the following source text.",
+        "\n\nSource text (may be truncated for length):\n",
+        clean_text,
+    ]
+    if prompt_outline:
+        user_prompt_parts.extend([
+            "\n\nHeuristic outline (for guidance only):\n",
+            prompt_outline,
+        ])
+    user_prompt_parts.extend([
+        "\n\nRequirements:\n- ",
+        "\n- ".join(req for req in requirements if req.strip()),
+    ])
+    user_prompt = "".join(user_prompt_parts)
 
-    # Resolve the OpenAI model to use for blog composition. GPT-5.1 is the current target default.
-    # See https://platform.openai.com/docs/models/gpt-5.1
+    # Resolve model / temperature from existing blog defaults
     model_name = (model or settings.openai_blog_model or "gpt-5.1").strip()
     temp_value = temperature if temperature is not None else settings.openai_blog_temperature
+
     logger.info(
-        "openai_compose_blog_request",
+        "openai_compose_blog_from_text_request",
         extra={
             "model": model_name,
             "temperature": temp_value,
-            "chapters": len(chapters),
-            "keywords": len(seo_metadata.get("keywords", [])),
+            "text_length": len(clean_text),
+            "keywords": len(seo_meta.get("keywords", [])),
             "prompt_length": len(user_prompt),
             "openai_api_base": getattr(settings, "openai_api_base", None),
             "ai_gateway_token_set": bool(getattr(settings, "cf_ai_gateway_token", None)),
         },
     )
-    try:
-        client = get_async_openai_client(purpose="compose_blog")
-    except Exception:
-        logger.warning("openai_client_unavailable", exc_info=True)
-        return _compose_blog_stub(chapters, tone=tone, model=model, temperature=temperature)
+
+    # Call Cloudflare AI Gateway compat endpoint directly using AsyncSimpleClient,
+    # mirroring the debug_ai_gateway_test endpoint.
+    if not settings.cloudflare_account_id or not getattr(settings, "cf_ai_gateway_token", None):
+        logger.error(
+            "ai_gateway_missing_config",
+            extra={
+                "has_account_id": bool(settings.cloudflare_account_id),
+                "has_token": bool(getattr(settings, "cf_ai_gateway_token", None)),
+            },
+        )
+        raise RuntimeError("Cloudflare AI Gateway configuration is missing")
+
+    gateway_base = "https://gateway.ai.cloudflare.com"
+    endpoint_path = f"/v1/{settings.cloudflare_account_id}/quill/compat/chat/completions"
+    client = AsyncSimpleClient(base_url=gateway_base, timeout=25.0)
 
     try:
-        async with client:
-            response = await client.chat.completions.create(
-                model=model_name,
-                messages=[
+        response = await client.post(
+            endpoint_path,
+            headers={
+                "Content-Type": "application/json",
+                "cf-aig-authorization": f"Bearer {settings.cf_ai_gateway_token}",
+            },
+            json={
+                "model": model_name,
+                "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-                temperature=temp_value,
-                max_completion_tokens=settings.openai_blog_max_output_tokens,
-            )
-            logger.info(
-                "openai_compose_blog_response",
-                extra={
-                    "model": model_name,
-                    "choices": len(response.choices or []),
-                    "usage": getattr(response, "usage", None),
-                },
-            )
-    except OpenAIError as exc:
-        logger.error(
-            "openai_compose_blog_failed",
-            exc_info=True,
-            extra={"model": model_name, "reason": getattr(exc, "message", str(exc))},
+                "temperature": temp_value,
+                "max_completion_tokens": settings.openai_blog_max_output_tokens,
+            },
         )
-        return _compose_blog_stub(chapters, tone=tone, model=model_name, temperature=temp_value)
-    except Exception:  # pragma: no cover - network/runtime edge cases
-        logger.error("openai_compose_blog_unexpected", exc_info=True, extra={"model": model_name})
-        return _compose_blog_stub(chapters, tone=tone, model=model_name, temperature=temp_value)
+        response.raise_for_status()
+    except HTTPStatusError as exc:
+        logger.error(
+            "gateway_compose_blog_http_error",
+            exc_info=True,
+            extra={
+                "status_code": exc.response.status_code,
+                "body": _redact_http_body_for_logging(getattr(exc.response, "text", None)),
+            },
+        )
+        raise
+    except RequestError as exc:
+        logger.error("gateway_compose_blog_request_error", exc_info=True, extra={"error": str(exc)})
+        raise
+    except Exception:
+        logger.error("gateway_compose_blog_unexpected_error", exc_info=True)
+        raise
 
-    # Safely extract markdown from standard OpenAI chat/completion response shapes
+    try:
+        data = response.json()
+    except Exception:
+        logger.error(
+            "gateway_compose_blog_invalid_json",
+            extra={"body_preview": _redact_http_body_for_logging(getattr(response, "text", None))},
+        )
+        raise
+
+    # Extract markdown text from compat JSON response: choices[0].message.content
     output_text: str = ""
-
-    if response is not None:
-        choices = getattr(response, "choices", None)
-        if isinstance(choices, list) and choices:
-            first = choices[0]
-            content: Any = None
-
-            # Chat-style response: choice.message.content
-            message = getattr(first, "message", None)
-            if message is not None and hasattr(message, "content"):
-                content = getattr(message, "content")
-
-            # Legacy completion: choice.text
-            if content is None and hasattr(first, "text"):
-                content = getattr(first, "text")
-
-            # Normalize various content shapes into a single string
+    try:
+        choices = data.get("choices") or []
+        if choices:
+            message = choices[0].get("message") or {}
+            content = message.get("content")
             if isinstance(content, str):
                 output_text = content
-            elif isinstance(content, list):
-                parts: List[str] = []
-                for item in content:
-                    if isinstance(item, str):
-                        parts.append(item)
-                    else:
-                        parts.append(str(item))
-                output_text = "\n".join(p for p in parts if p.strip())
-            elif isinstance(content, (dict, int, float, bool)):
-                output_text = str(content)
-
-    # Fallback: if nothing extracted, try any remaining best-effort attributes
-    if not output_text and response is not None:
-        candidate = getattr(response, "output_text", None)
-        if isinstance(candidate, list):
-            output_text = "\n".join(str(item) for item in candidate if str(item).strip())
-        elif isinstance(candidate, str):
-            output_text = candidate
-
-    # Final fallback: mirror legacy block-iterating behavior if still empty
-    if not output_text and response is not None:
-        output_chunks: List[str] = []
-        for item in getattr(response, "output", []) or []:
-            contents = getattr(item, "content", None)
-            if not contents:
-                continue
-            for block in contents:
-                text_obj = getattr(block, "text", None)
-                if hasattr(text_obj, "value"):
-                    output_chunks.append(str(text_obj.value))
-                elif isinstance(text_obj, str):
-                    output_chunks.append(text_obj)
-        if output_chunks:
-            output_text = "\n".join(output_chunks)
+    except Exception:
+        output_text = ""
 
     markdown = (output_text or "").strip()
     if not markdown:
-        return _compose_blog_stub(chapters, tone=tone, model=model_name, temperature=temp_value)
+        raise RuntimeError("compose_blog_from_text received empty content from AI Gateway response")
 
     word_count = len(markdown.split())
-    return {
-        "markdown": markdown,
-        "meta": {
-            "tone": tone,
-            "sections": len(chapters),
-            "word_count": word_count,
-            "engine": "openai",
-            "model": model_name,
-            "temperature": temp_value,
-        },
+    meta = {
+        "tone": tone,
+        "sections": len(chapters or []),
+        "word_count": word_count,
+        "engine": "openai",
+        "model": model_name,
+        "temperature": temp_value,
     }
-
-
-async def compose_from_plan(
-    plan: Dict[str, Any],
-    tone: str = "informative",
-    *,
-    model: Optional[str] = None,
-    temperature: Optional[float] = None,
-    extra_context: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
-    """Compose markdown output from a previously generated content plan."""
-    chapters = plan.get("chapters") or []
-    seo_meta = plan.get("seo") or {}
-    merged_context: Dict[str, Any] = dict(extra_context or {})
-    if plan.get("instructions"):
-        merged_context.setdefault("instructions", plan.get("instructions"))
-    return await compose_blog(
-        chapters,
-        tone=tone,
-        seo_metadata=seo_meta,
-        extra_context=merged_context or None,
-        model=model,
-        temperature=temperature,
-    )
+    # Merge in SEO metadata fields for convenience
+    meta.update({
+        "title": seo_meta.get("title"),
+        "description": seo_meta.get("description"),
+        "keywords": seo_meta.get("keywords"),
+        "slug": seo_meta.get("slug"),
+    })
+    return {"markdown": markdown, "meta": meta}

@@ -1099,6 +1099,7 @@ async def debug_ai_gateway_test():
         },
     )
 
+    started_at = datetime.now(timezone.utc)
     try:
         response = await client.post(
             endpoint_path,
@@ -1170,12 +1171,19 @@ async def debug_ai_gateway_test():
     except Exception:
         reply_text = None
 
+    # Derive basic diagnostics for easier debugging
+    status_code = getattr(response, "status_code", None)
+    duration_ms = int((datetime.now(timezone.utc) - started_at).total_seconds() * 1000)
+    raw_body_preview = _redact_http_body_for_logging(getattr(response, "text", None))
+
     logger.info(
         "debug_ai_gateway_test_response",
         extra={
             "model": model_name,
             "has_reply": bool(reply_text),
             "usage": data.get("usage"),
+            "status_code": status_code,
+            "duration_ms": duration_ms,
         },
     )
 
@@ -1186,6 +1194,9 @@ async def debug_ai_gateway_test():
         "prompt": prompt,
         "reply_preview": (reply_text or "")[:500],
         "raw_usage": data.get("usage"),
+        "status_code": status_code,
+        "duration_ms": duration_ms,
+        "raw_response_preview": raw_body_preview,
     }
 
 

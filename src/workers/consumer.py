@@ -64,12 +64,14 @@ from api.drive_workspace import DriveWorkspaceSyncService, link_document_drive_w
 from api.drive_docs import sync_drive_doc_for_document
 from api.drive_watch import ensure_drive_watch, watches_due_for_renewal
 from core.ai_modules import (
-    compose_from_plan,
     default_title_from_outline,
     generate_image_prompts,
     markdown_to_html,
+    compose_blog_from_text,
+    generate_outline,
+    organize_chapters,
+    generate_seo_metadata,
 )
-from core.content_planner import plan_content
 from api.notifications import notify_job
 from api.app_logging import setup_logging, get_logger
 from core.filename_utils import FILENAME_ID_SEPARATOR, sanitize_folder_name, parse_download_name, make_output_dir_name
@@ -1498,46 +1500,20 @@ async def process_generate_blog_job(
         content_type = str(options.get("content_type") or "generic_blog").strip() or "generic_blog"
         instructions = (options.get("instructions") or "").strip() or None
 
-        _log("Planning content")
-        await _stage_event(
-            "generate_blog.plan",
-            "running",
-            "Planning content",
-            data={"document_id": document_id, "content_type": content_type},
-        )
-        plan = await plan_content(
-            text,
-            content_type=content_type,
-            max_sections=max_sections,
-            target_chapters=target_chapters,
-            instructions=instructions,
-        )
-        outline = plan.get("outline") or []
-        chapters = plan.get("chapters") or []
-        sections_from_plan = plan.get("sections") or []
-        seo_meta = plan.get("seo") or {}
+        # Heuristic structure + SEO (no separate planner call)
+        outline = generate_outline(text, max_sections=max_sections)
+        chapters = organize_chapters(text, target_chapters=target_chapters)
+        seo_meta = generate_seo_metadata(text, outline)
+        sections_from_plan: List[Dict[str, Any]] = []
         await record_usage_event(db, user_id, job_id, "outline", {"sections": len(outline)})
         await record_usage_event(db, user_id, job_id, "chapters", {"chapters": len(chapters)})
         await update_job_status(db, job_id, "processing", progress=_progress("plan"))
         await _stage_event(
             "generate_blog.plan",
             "completed",
-            "Content plan ready",
+            "Heuristic content plan ready",
             data={"document_id": document_id, "sections": len(chapters), "content_type": content_type},
         )
-        planner_error = plan.get("planner_error")
-        if planner_error:
-            await _stage_event(
-                "generate_blog.plan",
-                "warning",
-                "Planner returned an error, using fallback structure",
-                data={
-                    "document_id": document_id,
-                    "planner_error": planner_error,
-                    "planner_attempts": plan.get("planner_attempts"),
-                    "planner_model": plan.get("planner_model"),
-                },
-            )
 
         _log("Composing markdown body")
         await _stage_event(
@@ -1546,20 +1522,29 @@ async def process_generate_blog_job(
             "Composing draft",
             data={"document_id": document_id},
         )
-        composed = await compose_from_plan(
-            plan,
+        composed = await compose_blog_from_text(
+            text,
             tone=tone,
             model=model_name,
             temperature=temperature_override,
+            extra_context={
+                "document_id": document_id,
+                "job_id": job_id,
+                "user_id": user_id,
+                "instructions": instructions,
+                "content_type": content_type,
+                "max_sections": max_sections,
+                "target_chapters": target_chapters,
+            },
         )
         markdown_body = composed.get("markdown", "")
-        word_count = composed.get("meta", {}).get("word_count", len(markdown_body.split()))
-        generator_meta = composed.get("meta", {})
+        meta = composed.get("meta", {})
+        word_count = meta.get("word_count", len(markdown_body.split()))
         generator_info = {
-            "engine": generator_meta.get("engine") or ("openai" if provider == "openai" else provider),
-            "model": generator_meta.get("model") or model_name,
+            "engine": meta.get("engine") or ("openai" if provider == "openai" else provider),
+            "model": meta.get("model") or model_name,
             "tone": tone,
-            "temperature": generator_meta.get("temperature") if generator_meta.get("temperature") is not None else temperature_override,
+            "temperature": meta.get("temperature") if meta.get("temperature") is not None else temperature_override,
             "provider": provider,
         }
         await record_usage_event(
@@ -1579,13 +1564,29 @@ async def process_generate_blog_job(
         html_body = markdown_to_html(markdown_body)
         image_prompts = generate_image_prompts(chapters) if include_images else []
 
-        frontmatter = {
-            "title": seo_meta.get("title") or default_title_from_outline(outline),
-            "description": seo_meta.get("description"),
-            "slug": seo_meta.get("slug") or f"{document_id[:8]}-draft",
-            "tags": seo_meta.get("keywords", []),
-            "hero_image": seo_meta.get("hero_image"),
-        }
+        # Preserve original document/frontmatter title for YouTube docs and
+        # treat the AI SEO title as a separate concept.
+        existing_frontmatter = _json_dict_field(doc.get("frontmatter"), {})
+        ai_title = seo_meta.get("title") or default_title_from_outline(outline)
+        is_youtube_source = (metadata.get("source") == "youtube")
+
+        if is_youtube_source:
+            # Keep the YouTube video title already stored in frontmatter.title.
+            frontmatter = dict(existing_frontmatter)
+        else:
+            # For non-YouTube docs, use the AI title as the canonical title.
+            frontmatter = dict(existing_frontmatter)
+            frontmatter["title"] = ai_title
+
+        # In all cases, refresh description/slug/tags/hero_image from SEO meta.
+        frontmatter.update(
+            {
+                "description": seo_meta.get("description"),
+                "slug": seo_meta.get("slug") or existing_frontmatter.get("slug") or f"{document_id[:8]}-draft",
+                "tags": seo_meta.get("keywords", []),
+                "hero_image": seo_meta.get("hero_image"),
+            }
+        )
 
         sections: List[Dict[str, Any]] = []
         for idx, chapter in enumerate(chapters):
@@ -1622,7 +1623,11 @@ async def process_generate_blog_job(
             "sections": sections,
             "seo": seo_meta,
             "assets": assets,
-            "plan": plan,
+            "plan": {
+                "outline": outline,
+                "chapters": chapters,
+                "seo": seo_meta,
+            },
             "options": {
                 "tone": tone,
                 "max_sections": max_sections,
@@ -1658,7 +1663,9 @@ async def process_generate_blog_job(
 
         metadata["latest_generation"] = {
             "job_id": job_id,
-            "title": frontmatter["title"],
+            # Track the AI-composed title here, even if the document/frontmatter
+            # keeps an external source title (e.g. YouTube video title).
+            "title": ai_title,
             "slug": frontmatter["slug"],
             "generated_at": pipeline_output["generated_at"],
             "version_id": version_id,
@@ -1675,7 +1682,9 @@ async def process_generate_blog_job(
         metadata["latest_chapters"] = chapters
         metadata["latest_sections"] = sections
         metadata["content_plan"] = {
-            **plan,
+            "outline": outline,
+            "chapters": chapters,
+            "seo": seo_meta,
             "generated_at": pipeline_output["generated_at"],
         }
         await update_document(

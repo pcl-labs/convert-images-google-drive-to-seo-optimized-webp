@@ -6,14 +6,8 @@ import textwrap
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-try:
-    from openai import OpenAIError  # type: ignore
-except Exception:  # pragma: no cover - optional dependency during tests
-    OpenAIError = Exception  # type: ignore
-
 from api.config import settings
 from .ai_modules import generate_outline, organize_chapters, generate_seo_metadata
-from .openai_client import get_async_openai_client
 
 logger = logging.getLogger(__name__)
 
@@ -87,29 +81,8 @@ async def plan_content(
     planner_attempts = 0
     planner_error: Optional[str] = None
     openai_payload: Dict[str, Any] = {}
-    while planner_attempts < 2:
-        planner_attempts += 1
-        try:
-            openai_payload = await _plan_with_openai(
-                text=text,
-                content_type=normalized_type,
-                max_sections=max_sections,
-                instructions=instructions,
-                model_override=planner_model,
-            )
-            planner_error = None
-            break
-        except Exception as exc:
-            planner_error = str(exc)
-            logger.warning(
-                "content_plan_openai_unavailable",
-                exc_info=True,
-                extra={"attempt": planner_attempts, "model": planner_model},
-            )
-            if planner_attempts >= 2:
-                openai_payload = {}
-                break
 
+    # Legacy OpenAI-backed planner has been removed; rely entirely on local heuristics.
     merged_plan = _merge_plans(
         normalized_type,
         fallback_plan,
@@ -120,119 +93,6 @@ async def plan_content(
     merged_plan["planner_attempts"] = planner_attempts
     merged_plan["planner_error"] = planner_error
     return merged_plan
-
-
-async def _plan_with_openai(
-    *,
-    text: str,
-    content_type: str,
-    max_sections: int,
-    instructions: Optional[str],
-    model_override: Optional[str] = None,
-    temperature_override: Optional[float] = None,
-    max_tokens_override: Optional[int] = None,
-) -> Dict[str, Any]:
-    if not settings.openai_api_key:
-        raise RuntimeError("OPENAI_API_KEY missing")
-
-    planner_model = model_override or getattr(settings, "openai_planner_model", None) or settings.openai_blog_model or "gpt-5.1-mini"
-    temperature = temperature_override if temperature_override is not None else getattr(settings, "openai_planner_temperature", 0.2)
-    max_tokens = max_tokens_override if max_tokens_override is not None else getattr(settings, "openai_planner_max_output_tokens", 1200)
-    trimmed_text = text.strip()
-    if len(trimmed_text) > 12000:
-        trimmed_text = trimmed_text[:12000]
-
-    user_prompt = textwrap.dedent(
-        f"""
-        You are Quill's planning system. Given a transcript, create a content plan for {content_type}.
-        Return JSON matching this schema shape (all fields are required, but you should populate them from the transcript):
-        {{
-          "intent": "why the article exists",
-          "audience": "who it targets",
-          "seo": {{"title":"", "description":"", "keywords": []}},
-          "sections": [
-            {{
-              "title": "human-readable heading",
-              "summary": "short paragraph summary",
-              "purpose": "intro|body|proof|cta|tips (pick the closest)",
-              "key_points": ["bullet one", "bullet two"],
-              "cta": false,
-              "call_to_action": "optional CTA copy"
-            }}
-          ],
-          "cta": {{"summary": "CTA wrap-up sentence", "action": "suggested action"}}
-        }}
-
-        Content type: {content_type}
-
-        Transcript:
-        {trimmed_text}
-
-        Additional guidance: {instructions or "Use the transcript context to plan the best structure."}
-        """
-    ).strip()
-
-    client = get_async_openai_client(purpose="planner")
-    logger.info(
-        "content_plan_openai_request",
-        extra={
-            "model": planner_model,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "text_length": len(trimmed_text),
-            "has_instructions": bool(instructions),
-            "openai_api_base": getattr(settings, "openai_api_base", None),
-            "ai_gateway_token_set": bool(getattr(settings, "cf_ai_gateway_token", None)),
-        },
-    )
-    async with client:
-        try:
-            response = await client.chat.completions.create(
-                model=planner_model,
-                temperature=temperature,
-                max_completion_tokens=max_tokens,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "Respond with valid JSON only. No prose. Plan the content structure.",
-                    },
-                    {"role": "user", "content": user_prompt},
-                ],
-            )
-        except OpenAIError as exc:
-            logger.warning(
-                "content_plan_openai_error",
-                exc_info=True,
-                extra={"model": planner_model, "reason": getattr(exc, "message", str(exc))},
-            )
-            raise
-        else:
-            logger.info(
-                "content_plan_openai_response",
-                extra={
-                    "model": planner_model,
-                    "choices": len(response.choices or []),
-                    "usage": getattr(response, "usage", None),
-                },
-            )
-
-    content = ""
-    if response.choices:
-        message = response.choices[0].message
-        if message and message.content:
-            if isinstance(message.content, str):
-                content = message.content
-            elif isinstance(message.content, list):
-                content = "".join(part.get("text", "") for part in message.content if isinstance(part, dict))
-    content = content.strip()
-    if not content:
-        raise RuntimeError("Planner returned empty content")
-    try:
-        payload = json.loads(content)
-    except json.JSONDecodeError as exc:
-        logger.warning("content_plan_openai_invalid_json", extra={"content_preview": content[:200]})
-        raise RuntimeError("Planner returned invalid JSON") from exc
-    return payload or {}
 
 
 def _merge_plans(

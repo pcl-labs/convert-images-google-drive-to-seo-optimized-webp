@@ -232,6 +232,33 @@ class GoogleDriveClient:
         response = self._metadata_session.request("GET", "/files", params=params)
         return response.json()
 
+    async def list_files_async(
+        self,
+        *,
+        params: Optional[Dict[str, Any]] = None,
+        fields: str = "files(id,name,webViewLink)",
+    ) -> Dict[str, Any]:
+        """Generic async /files list helper for Workers.
+
+        When AsyncGoogleAPISession is available (Workers runtime), use it so
+        requests go through AsyncSimpleClient/fetch. Otherwise, run the
+        existing synchronous client in a thread.
+        """
+        if params is None:
+            params = {}
+        if fields:
+            params = {**params, "fields": fields}
+        if self._async_metadata_session:
+            return await self._async_metadata_session.request("GET", "/files", params=params)
+        # Fallback: run sync request in a thread
+        response: SimpleResponse = await asyncio.to_thread(
+            self._metadata_session.request,
+            "GET",
+            "/files",
+            params=params,
+        )
+        return response.json()
+
     async def list_folder_files_async(
         self,
         folder_id: str,
@@ -316,6 +343,68 @@ class GoogleDriveClient:
 
     def get_file_metadata(self, file_id: str, fields: str = "id,name,mimeType") -> Dict[str, Any]:
         response = self._metadata_session.request("GET", f"/files/{file_id}", params={"fields": fields})
+        return response.json()
+
+    async def get_file_metadata_async(self, file_id: str, *, fields: str = "id,name,webViewLink") -> Dict[str, Any]:
+        """Async helper for GET /files/{fileId} metadata calls."""
+        params: Dict[str, Any] = {"fields": fields}
+        path = f"/files/{file_id}"
+        if self._async_metadata_session:
+            return await self._async_metadata_session.request("GET", path, params=params)
+        response: SimpleResponse = await asyncio.to_thread(
+            self._metadata_session.request,
+            "GET",
+            path,
+            params=params,
+        )
+        return response.json()
+
+    async def create_file_async(self, *, body: Dict[str, Any], fields: str = "id,name,webViewLink") -> Dict[str, Any]:
+        """Async helper for POST /files to create Drive folders/files."""
+        params: Dict[str, Any] = {"fields": fields}
+        if self._async_metadata_session:
+            return await self._async_metadata_session.request(
+                "POST",
+                "/files",
+                params=params,
+                json_body=body,
+            )
+        response: SimpleResponse = await asyncio.to_thread(
+            self._metadata_session.request,
+            "POST",
+            "/files",
+            params=params,
+            json=body,
+        )
+        return response.json()
+
+    async def update_file_async(
+        self,
+        file_id: str,
+        *,
+        body: Dict[str, Any],
+        fields: str = "id,headRevisionId,webViewLink",
+        extra_params: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Async helper for PATCH /files/{fileId} operations."""
+        params: Dict[str, Any] = {"fields": fields}
+        if extra_params:
+            params.update({k: v for k, v in extra_params.items() if v is not None})
+        path = f"/files/{file_id}"
+        if self._async_metadata_session:
+            return await self._async_metadata_session.request(
+                "PATCH",
+                path,
+                params=params,
+                json_body=body,
+            )
+        response: SimpleResponse = await asyncio.to_thread(
+            self._metadata_session.request,
+            "PATCH",
+            path,
+            params=params,
+            json=body,
+        )
         return response.json()
 
     def files(self) -> "_GoogleDriveFilesResource":

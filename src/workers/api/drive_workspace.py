@@ -91,9 +91,8 @@ async def _create_drive_folder(drive_service, name: str, parent: Optional[str] =
     }
     if parent:
         body["parents"] = [parent]
-    return await execute_google_request(
-        drive_service.files().create(body=body, fields="id,name,webViewLink")
-    )
+    # Use async Drive client helper so this goes through AsyncSimpleClient/fetch.
+    return await drive_service.create_file_async(body=body, fields="id,name,webViewLink")
 
 
 async def ensure_drive_workspace(db, user_id: str):
@@ -107,8 +106,9 @@ async def ensure_drive_workspace(db, user_id: str):
             "mimeType = 'application/vnd.google-apps.folder' and "
             "trashed = false and appProperties has { key='quill_workspace' and value='true' }"
         )
-        resp = await execute_google_request(
-            drive_service.files().list(q=query, pageSize=1, fields="files(id,name,webViewLink)")
+        resp = await drive_service.list_files_async(
+            params={"q": query, "pageSize": 1},
+            fields="files(id,name,webViewLink)",
         )
         files = (resp or {}).get("files") or []
         root = files[0] if files else None
@@ -141,8 +141,9 @@ async def _ensure_child_folder(drive_service, parent_id: str, name: str) -> dict
         f"'{parent_id}' in parents and trashed = false and "
         f"mimeType = 'application/vnd.google-apps.folder' and name = '{escaped_name}'"
     )
-    resp = await execute_google_request(
-        drive_service.files().list(q=query, pageSize=1, fields="files(id,name,webViewLink)")
+    resp = await drive_service.list_files_async(
+        params={"q": query, "pageSize": 1},
+        fields="files(id,name,webViewLink)",
     )
     files = resp.get("files") or []
     if files:
@@ -151,9 +152,7 @@ async def _ensure_child_folder(drive_service, parent_id: str, name: str) -> dict
 
 
 async def _fetch_folder_meta(drive_service, folder_id: str) -> dict:
-    return await execute_google_request(
-        drive_service.files().get(fileId=folder_id, fields="id,name,webViewLink")
-    )
+    return await drive_service.get_file_metadata_async(folder_id, fields="id,name,webViewLink")
 
 
 async def ensure_document_drive_structure(
@@ -273,13 +272,11 @@ async def ensure_document_drive_structure(
     if not isinstance(doc_id, str) or not doc_id.strip():
         raise RuntimeError("Failed to create Google Doc for Drive workspace: missing documentId")
 
-    drive_doc_meta = await execute_google_request(
-        drive_service.files().update(
-            fileId=doc_id,
-            addParents=base_folder_id,
-            removeParents="root",
-            fields="id, headRevisionId, webViewLink",
-        )
+    drive_doc_meta = await drive_service.update_file_async(
+        doc_id,
+        body={},
+        fields="id, headRevisionId, webViewLink",
+        extra_params={"addParents": base_folder_id, "removeParents": "root"},
     )
     if not isinstance(drive_doc_meta, dict) or "id" not in drive_doc_meta:
         raise RuntimeError(f"Drive update returned unexpected response: {drive_doc_meta!r}")
@@ -545,8 +542,9 @@ class DriveWorkspaceSyncService:
             if not file_id:
                 continue
             try:
-                drive_meta = await execute_google_request(
-                    drive_service.files().get(fileId=file_id, fields="id, headRevisionId, modifiedTime")
+                drive_meta = await drive_service.get_file_metadata_async(
+                    file_id,
+                    fields="id, headRevisionId, modifiedTime",
                 )
             except Exception as exc:
                 logger.error(
