@@ -84,7 +84,9 @@ from .ai_preferences import resolve_generate_blog_options
 
 logger = get_logger(__name__)
 
-router = APIRouter()
+router = APIRouter(
+    dependencies=[Depends(get_current_user)],
+)
 
 
 def _validate_redirect_path(path: str, fallback: str) -> str:
@@ -855,10 +857,16 @@ async def start_generate_blog_job(
             except Exception:
                 output = None
 
+        status_raw = final_row.get("status") or JobStatusEnum.COMPLETED.value
+        try:
+            status_enum = JobStatusEnum(status_raw)
+        except ValueError:
+            status_enum = JobStatusEnum.COMPLETED
+
         return JobStatus(
             job_id=job_id,
             user_id=user_id,
-            status=JobStatusEnum(final_row.get("status") or JobStatusEnum.COMPLETED.value),
+            status=status_enum,
             progress=progress,
             created_at=_parse_db_datetime(final_row.get("created_at")),
             completed_at=_parse_db_datetime(completed_at) if completed_at else None,
@@ -1010,6 +1018,13 @@ async def debug_env():
         "queue_bound": settings.queue is not None,
         "dlq_bound": settings.dlq is not None,
         "enable_notifications": getattr(settings, "enable_notifications", False),
+        "openai_config": {
+            "api_key_set": bool(getattr(settings, "openai_api_key", None)),
+            "api_base": getattr(settings, "openai_api_base", None),
+            "blog_model": getattr(settings, "openai_blog_model", None),
+            "blog_temperature": getattr(settings, "openai_blog_temperature", None),
+            "blog_max_output_tokens": getattr(settings, "openai_blog_max_output_tokens", None),
+        },
     }
 
 

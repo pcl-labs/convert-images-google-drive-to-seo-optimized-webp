@@ -204,8 +204,7 @@ class QueueProducer:
                 # Cloudflare's Queue binding lives on the JS side; passing a raw
                 # Python dict through Pyodide can trigger DataCloneError. To
                 # avoid this, serialize the message to JSON and send a string.
-                import json as _json  # local import to avoid polluting module namespace
-                payload = _json.dumps(message)
+                payload = json.dumps(message)
                 await self.queue.send(payload)
             else:
                 await self._send_via_cloudflare(message)

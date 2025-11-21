@@ -1412,29 +1412,32 @@ async def dashboard_regenerate_section(
         )
     req_model = GenerateBlogRequest(document_id=document_id, options=options)
     logger.info(
-        "web.document_generate_blog_post.begin",
+        "web.dashboard_regenerate_section.begin",
         extra={
             "document_id": document_id,
             "user_id": user["user_id"],
+            "section_index": section_index,
         },
     )
     try:
         status = await start_generate_blog_job(db, queue, user["user_id"], req_model)
         logger.info(
-            "web.document_generate_blog_post.complete",
+            "web.dashboard_regenerate_section.complete",
             extra={
                 "document_id": document_id,
                 "user_id": user["user_id"],
+                "section_index": section_index,
                 "job_id": getattr(status, "job_id", None),
                 "job_status": getattr(status, "status", None),
             },
         )
     except HTTPException as exc:
         logger.exception(
-            "web.document_generate_blog_post.http_error",
+            "web.dashboard_regenerate_section.http_error",
             extra={
                 "document_id": document_id,
                 "user_id": user["user_id"],
+                "section_index": section_index,
                 "status_code": exc.status_code,
             },
         )

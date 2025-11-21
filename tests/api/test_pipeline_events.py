@@ -9,12 +9,15 @@ from src.workers.api.database import (
     list_pipeline_events,
     ensure_notifications_schema,
 )
+from src.workers.api.config import settings as global_settings
 
 
 @pytest.mark.asyncio
 async def test_pipeline_events_round_trip(tmp_path, monkeypatch):
     db_path = tmp_path / "pipeline.db"
     monkeypatch.setenv("LOCAL_SQLITE_PATH", str(db_path))
+    monkeypatch.setenv("ENABLE_NOTIFICATIONS", "true")
+    monkeypatch.setattr(global_settings, "enable_notifications", True, raising=False)
     db = Database()
     await ensure_notifications_schema(db)
     await db.execute(

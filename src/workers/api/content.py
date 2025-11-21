@@ -120,7 +120,7 @@ async def blog_from_youtube(
     # local development produces completed jobs and versions without relying on
     # background queue consumers. The async flag is only honored when external
     # queues are in use.
-    manual_pipeline = not payload.async_request and settings.use_inline_queue
+    manual_pipeline = (not payload.async_request) or settings.use_inline_queue
     autopilot_enabled = not manual_pipeline
 
     ingest_status = await start_ingest_youtube_job(

@@ -15,11 +15,13 @@ if str(_workers_path) not in sys.path:
 
 from workers import WorkerEntrypoint
 import asgi
+import logging
 
 from runtime import apply_worker_env
 
 # Lazily initialize the FastAPI app the first time a request hits the worker
 app = None
+logger = logging.getLogger(__name__)
 
 
 class Default(WorkerEntrypoint):
@@ -125,4 +127,4 @@ class Default(WorkerEntrypoint):
 
         Delegate to the existing queue() implementation.
         """
-        return await self.queue(batch, env)
+        return await self.queue(batch, env, ctx)

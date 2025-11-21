@@ -152,8 +152,6 @@ class Settings:
             self.use_inline_queue = True
         elif self.environment == "production":
             self.use_inline_queue = False
-        # Drive pipeline is always enabled; we don't gate it on env vars.
-        self.enable_drive_pipeline = True
         self.enable_notifications = _bool(self.enable_notifications)
         # static_files_dir: None means use package-based loader (Worker-compatible)
         # If set to a path, mount_static_files() will try filesystem first, then fall back to package
@@ -183,8 +181,6 @@ class Settings:
         self.drive_watch_renewal_window_minutes = _int(self.drive_watch_renewal_window_minutes, 60)
         self.openai_blog_temperature = _float(self.openai_blog_temperature, 0.6)
         self.openai_blog_max_output_tokens = _int(self.openai_blog_max_output_tokens, 2200)
-        # Auto-generate behavior is always enabled alongside the Drive pipeline.
-        self.auto_generate_after_ingest = True
         if not self.jwt_secret_key:
             raise ValueError("JWT_SECRET_KEY is required")
         # In production we always require external queues; in development
