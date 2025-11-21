@@ -83,8 +83,11 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
         set_db_instance(db_instance)
 
         try:
-            await ensure_notifications_schema(db_instance)
-            app_logger.info("Notifications schema ensured")
+            if active_settings.enable_notifications:
+                await ensure_notifications_schema(db_instance)
+                app_logger.info("Notifications schema ensured")
+            else:
+                app_logger.info("Notifications disabled; skipping schema ensure")
             await ensure_sessions_schema(db_instance)
             app_logger.info("Session schema ensured")
             # Apply full schema to ensure all tables exist

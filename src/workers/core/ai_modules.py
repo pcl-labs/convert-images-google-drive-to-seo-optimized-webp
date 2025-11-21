@@ -560,6 +560,16 @@ async def compose_blog(
     # See https://platform.openai.com/docs/models/gpt-5.1
     model_name = (model or settings.openai_blog_model or "gpt-5.1").strip()
     temp_value = temperature if temperature is not None else settings.openai_blog_temperature
+    logger.info(
+        "openai_compose_blog_request",
+        extra={
+            "model": model_name,
+            "temperature": temp_value,
+            "chapters": len(chapters),
+            "keywords": len(seo_metadata.get("keywords", [])),
+            "prompt_length": len(user_prompt),
+        },
+    )
     try:
         if not settings.openai_api_key:
             raise ValueError("OPENAI_API_KEY is required for AI blog generation")
@@ -585,6 +595,14 @@ async def compose_blog(
                 ],
                 temperature=temp_value,
                 max_completion_tokens=settings.openai_blog_max_output_tokens,
+            )
+            logger.info(
+                "openai_compose_blog_response",
+                extra={
+                    "model": model_name,
+                    "choices": len(response.choices or []),
+                    "usage": getattr(response, "usage", None),
+                },
             )
     except OpenAIError as exc:
         logger.error(

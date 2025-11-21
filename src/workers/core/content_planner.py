@@ -175,6 +175,16 @@ async def _plan_with_openai(
     client_kwargs: Dict[str, Any] = {"api_key": settings.openai_api_key}
     if settings.openai_api_base:
         client_kwargs["base_url"] = settings.openai_api_base
+    logger.info(
+        "content_plan_openai_request",
+        extra={
+            "model": planner_model,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "text_length": len(trimmed_text),
+            "has_instructions": bool(instructions),
+        },
+    )
     client = AsyncOpenAI(**client_kwargs)
     async with client:
         try:
@@ -197,6 +207,15 @@ async def _plan_with_openai(
                 extra={"model": planner_model, "reason": getattr(exc, "message", str(exc))},
             )
             raise
+        else:
+            logger.info(
+                "content_plan_openai_response",
+                extra={
+                    "model": planner_model,
+                    "choices": len(response.choices or []),
+                    "usage": getattr(response, "usage", None),
+                },
+            )
 
     content = ""
     if response.choices:

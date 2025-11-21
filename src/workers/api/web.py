@@ -1355,9 +1355,33 @@ async def dashboard_generate_blog(
         return _render_flash(request, f"Invalid options: {exc}", "error", status.HTTP_400_BAD_REQUEST)
     req_model = GenerateBlogRequest(document_id=document_id, options=options)
     db, queue = ensure_services()
+    logger.info(
+        "web.document_generate_blog.begin",
+        extra={
+            "document_id": document_id,
+            "user_id": user["user_id"],
+        },
+    )
     try:
-        await start_generate_blog_job(db, queue, user["user_id"], req_model)
+        status = await start_generate_blog_job(db, queue, user["user_id"], req_model)
+        logger.info(
+            "web.document_generate_blog.complete",
+            extra={
+                "document_id": document_id,
+                "user_id": user["user_id"],
+                "job_id": getattr(status, "job_id", None),
+                "job_status": getattr(status, "status", None),
+            },
+        )
     except HTTPException as exc:
+        logger.exception(
+            "web.document_generate_blog.http_error",
+            extra={
+                "document_id": document_id,
+                "user_id": user["user_id"],
+                "status_code": exc.status_code,
+            },
+        )
         detail = exc.detail if isinstance(exc.detail, str) else "Failed to queue job"
         return _render_flash(request, detail, "error", exc.status_code)
     return _render_flash(request, "Blog generation job queued", "success")
@@ -1387,9 +1411,36 @@ async def dashboard_regenerate_section(
             status.HTTP_400_BAD_REQUEST,
         )
     req_model = GenerateBlogRequest(document_id=document_id, options=options)
+    logger.info(
+        "web.dashboard_regenerate_section.begin",
+        extra={
+            "document_id": document_id,
+            "user_id": user["user_id"],
+            "section_index": section_index,
+        },
+    )
     try:
-        await start_generate_blog_job(db, queue, user["user_id"], req_model)
+        status = await start_generate_blog_job(db, queue, user["user_id"], req_model)
+        logger.info(
+            "web.dashboard_regenerate_section.complete",
+            extra={
+                "document_id": document_id,
+                "user_id": user["user_id"],
+                "section_index": section_index,
+                "job_id": getattr(status, "job_id", None),
+                "job_status": getattr(status, "status", None),
+            },
+        )
     except HTTPException as exc:
+        logger.exception(
+            "web.dashboard_regenerate_section.http_error",
+            extra={
+                "document_id": document_id,
+                "user_id": user["user_id"],
+                "section_index": section_index,
+                "status_code": exc.status_code,
+            },
+        )
         detail = exc.detail if isinstance(exc.detail, str) else "Failed to queue job"
         return _render_flash(request, detail, "error", exc.status_code)
     return _render_flash(request, f"Regeneration queued for section {section_index + 1}", "success")

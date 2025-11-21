@@ -16,5 +16,33 @@
       <div id="api-key-result" class="space-y-2"></div>
     </div>
   {% endcall %}
+
+  {% call card(title='Debug links') %}
+    <div class="space-y-3 text-sm">
+      <div>
+        <p class="text-slate-500">Environment, queue, and OpenAI configuration for the current Worker.</p>
+        <a
+          href="/api/v1/debug/env"
+          target="_blank"
+          rel="noreferrer"
+          class="inline-flex items-center text-blue-600 hover:text-blue-700 underline"
+        >
+          Open /api/v1/debug/env
+        </a>
+      </div>
+
+      <div>
+        <p class="text-slate-500">Google integrations (YouTube &amp; Drive) connectivity diagnostics.</p>
+        <a
+          href="/debug/google"
+          target="_blank"
+          rel="noreferrer"
+          class="inline-flex items-center text-blue-600 hover:text-blue-700 underline"
+        >
+          Open /debug/google
+        </a>
+      </div>
+    </div>
+  {% endcall %}
 {% endcall %}
 {% endblock %}

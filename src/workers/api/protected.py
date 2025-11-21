@@ -77,13 +77,16 @@ from core.url_utils import parse_youtube_video_id
 from .drive_workspace import ensure_drive_workspace, ensure_document_drive_structure, link_document_drive_workspace
 from .drive_docs import sync_drive_doc_for_document
 from .youtube_ingest import ingest_youtube_document, build_outline_from_chapters
+from consumer import process_generate_blog_job
 from .database import get_usage_summary, list_usage_events, count_usage_events
 from fastapi import Query
 from .ai_preferences import resolve_generate_blog_options
 
 logger = get_logger(__name__)
 
-router = APIRouter()
+router = APIRouter(
+    dependencies=[Depends(get_current_user)],
+)
 
 
 def _validate_redirect_path(path: str, fallback: str) -> str:
@@ -754,6 +757,164 @@ async def start_ingest_text_job(
     )
 
 
+async def start_generate_blog_job(
+    db,
+    queue,
+    user_id: str,
+    req: GenerateBlogRequest,
+) -> JobStatus:
+    document_id = req.document_id
+    logger.info(
+        "start_generate_blog_job.begin",
+        extra={
+            "document_id": document_id,
+            "user_id": user_id,
+            "inline_mode": settings.use_inline_queue,
+        },
+    )
+    doc = await _load_document_for_user(db, document_id, user_id)
+    text = (doc.get("raw_text") or "").strip()
+    if not text:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Document is missing raw text to generate from")
+    user_prefs = await get_user_preferences(db, user_id)
+    resolved_options = resolve_generate_blog_options(req.options, user_prefs)
+    job_id = str(uuid.uuid4())
+    job_row = await create_job_extended(
+        db,
+        job_id,
+        user_id,
+        job_type=JobType.GENERATE_BLOG.value,
+        document_id=document_id,
+        payload={"options": resolved_options},
+    )
+
+    # In inline mode we run the full blog generation pipeline synchronously,
+    # mirroring the behavior of inline YouTube ingest so that dev runs can
+    # produce completed jobs and versions without a background consumer.
+    if settings.use_inline_queue:
+        logger.info(
+            "start_generate_blog_job.inline_start",
+            extra={
+                "job_id": job_id,
+                "document_id": document_id,
+                "user_id": user_id,
+            },
+        )
+        try:
+            await process_generate_blog_job(
+                db,
+                job_id,
+                user_id,
+                document_id,
+                options=resolved_options,
+            )
+        except HTTPException:
+            logger.exception(
+                "start_generate_blog_job.inline_http_error",
+                extra={
+                    "job_id": job_id,
+                    "document_id": document_id,
+                    "user_id": user_id,
+                },
+            )
+            raise
+        except Exception as exc:
+            logger.exception(
+                "inline_generate_blog_failed",
+                extra={
+                    "job_id": job_id,
+                    "document_id": document_id,
+                    "user_id": user_id,
+                    "error": str(exc),
+                },
+            )
+            raise HTTPException(
+                status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to generate blog inline.",
+            ) from exc
+
+        final_row = await get_job(db, job_id, user_id)
+        if not final_row:
+            raise HTTPException(
+                status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Job not found after inline blog generation.",
+            )
+        logger.info(
+            "start_generate_blog_job.inline_complete",
+            extra={
+                "job_id": job_id,
+                "document_id": document_id,
+                "user_id": user_id,
+                "status": final_row.get("status"),
+            },
+        )
+        progress = _parse_job_progress_model(final_row.get("progress", "{}"))
+        completed_at = final_row.get("completed_at")
+        output = final_row.get("output")
+        if isinstance(output, str):
+            try:
+                output = json.loads(output)
+            except Exception:
+                output = None
+
+        status_raw = final_row.get("status") or JobStatusEnum.COMPLETED.value
+        try:
+            status_enum = JobStatusEnum(status_raw)
+        except ValueError:
+            status_enum = JobStatusEnum.COMPLETED
+
+        return JobStatus(
+            job_id=job_id,
+            user_id=user_id,
+            status=status_enum,
+            progress=progress,
+            created_at=_parse_db_datetime(final_row.get("created_at")),
+            completed_at=_parse_db_datetime(completed_at) if completed_at else None,
+            job_type=JobType.GENERATE_BLOG.value,
+            document_id=document_id,
+            output=output,
+        )
+
+    payload = {
+        "job_id": job_id,
+        "user_id": user_id,
+        "job_type": JobType.GENERATE_BLOG.value,
+        "document_id": document_id,
+        "options": resolved_options,
+    }
+    enqueued, enqueue_exception, should_fail = await enqueue_job_with_guard(
+        queue,
+        job_id,
+        user_id,
+        payload,
+        allow_inline_fallback=False,
+    )
+    if should_fail:
+        detail = "Queue unavailable or enqueue failed; background processing is required in production."
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=detail)
+    if not enqueued:
+        logger.warning(
+            "generate_blog_job_enqueued_false",
+            extra={
+                "job_id": job_id,
+                "user_id": user_id,
+                "event": "job.enqueue_failed",
+                "reason": "queue unavailable or enqueue failed",
+                "enqueue_exception": (str(enqueue_exception) if enqueue_exception else None),
+            },
+        )
+    progress = _parse_job_progress_model(progress_str=job_row.get("progress", "{}"))
+    return JobStatus(
+        job_id=job_id,
+        user_id=user_id,
+        status=JobStatusEnum.PENDING,
+        progress=progress,
+        created_at=_parse_db_datetime(job_row.get("created_at")),
+        job_type=JobType.GENERATE_BLOG.value,
+        document_id=document_id,
+    )
+
+
 @router.get("/debug/google", tags=["Debug"])
 async def debug_google_integrations(
     request: Request,
@@ -847,6 +1008,24 @@ async def debug_google_integrations(
     )
 
     return results
+
+
+@router.get("/api/v1/debug/env", tags=["Debug"])
+async def debug_env():
+    return {
+        "environment": settings.environment,
+        "use_inline_queue": settings.use_inline_queue,
+        "queue_bound": settings.queue is not None,
+        "dlq_bound": settings.dlq is not None,
+        "enable_notifications": getattr(settings, "enable_notifications", False),
+        "openai_config": {
+            "api_key_set": bool(getattr(settings, "openai_api_key", None)),
+            "api_base": getattr(settings, "openai_api_base", None),
+            "blog_model": getattr(settings, "openai_blog_model", None),
+            "blog_temperature": getattr(settings, "openai_blog_temperature", None),
+            "blog_max_output_tokens": getattr(settings, "openai_blog_max_output_tokens", None),
+        },
+    }
 
 
 @router.get("/auth/github/status", tags=["Authentication"])
@@ -1404,62 +1583,6 @@ async def start_optimize_job(
         progress=progress,
         created_at=_parse_db_datetime(job_row.get("created_at")),
         job_type=JobType.OPTIMIZE_DRIVE.value,
-        document_id=document_id,
-    )
-
-
-async def start_generate_blog_job(
-    db,
-    queue,
-    user_id: str,
-    req: GenerateBlogRequest,
-) -> JobStatus:
-    document_id = req.document_id
-    doc = await _load_document_for_user(db, document_id, user_id)
-    text = (doc.get("raw_text") or "").strip()
-    if not text:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Document is missing raw text to generate from")
-    user_prefs = await get_user_preferences(db, user_id)
-    resolved_options = resolve_generate_blog_options(req.options, user_prefs)
-    job_id = str(uuid.uuid4())
-    job_row = await create_job_extended(
-        db,
-        job_id,
-        user_id,
-        job_type=JobType.GENERATE_BLOG.value,
-        document_id=document_id,
-        payload={"options": resolved_options},
-    )
-    payload = {
-        "job_id": job_id,
-        "user_id": user_id,
-        "job_type": JobType.GENERATE_BLOG.value,
-        "document_id": document_id,
-        "options": resolved_options,
-    }
-    enqueued, enqueue_exception, should_fail = await enqueue_job_with_guard(queue, job_id, user_id, payload, allow_inline_fallback=False)
-    if should_fail:
-        detail = "Queue unavailable or enqueue failed; background processing is required in production."
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=detail)
-    if not enqueued:
-        logger.warning(
-            "generate_blog_job_enqueued_false",
-            extra={
-                "job_id": job_id,
-                "user_id": user_id,
-                "event": "job.enqueue_failed",
-                "reason": "queue unavailable or enqueue failed",
-                "enqueue_exception": (str(enqueue_exception) if enqueue_exception else None),
-            },
-        )
-    progress = _parse_job_progress_model(progress_str=job_row.get("progress", "{}"))
-    return JobStatus(
-        job_id=job_id,
-        user_id=user_id,
-        status=JobStatusEnum.PENDING,
-        progress=progress,
-        created_at=_parse_db_datetime(job_row.get("created_at")),
-        job_type=JobType.GENERATE_BLOG.value,
         document_id=document_id,
     )
 

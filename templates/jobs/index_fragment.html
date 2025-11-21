@@ -1,8 +1,0 @@
-<div id="jobs-page-root"
-     data-jobs-page
-     hx-get="{{ request.url.path }}{% if request.query_params %}?{{ request.query_params|urlencode }}{% endif %}"
-     hx-target="#jobs-page-root"
-     hx-swap="outerHTML"
-     hx-trigger="refreshJobs">
-  {% include 'jobs/partials/index_content.html' %}
-</div>

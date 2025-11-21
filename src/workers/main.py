@@ -15,11 +15,13 @@ if str(_workers_path) not in sys.path:
 
 from workers import WorkerEntrypoint
 import asgi
+import logging
 
 from runtime import apply_worker_env
 
 # Lazily initialize the FastAPI app the first time a request hits the worker
 app = None
+logger = logging.getLogger(__name__)
 
 
 class Default(WorkerEntrypoint):
@@ -64,7 +66,7 @@ class Default(WorkerEntrypoint):
         """
         return await self.fetch(request)
     
-    async def queue(self, batch, env):
+    async def queue(self, batch, env, ctx):
         """Handle queue messages from Cloudflare Queues."""
         # Import inside the handler to avoid startup CPU limit
         from runtime import apply_worker_env
@@ -72,15 +74,37 @@ class Default(WorkerEntrypoint):
         from consumer import handle_queue_message
         from api.config import settings
         from api.cloudflare_queue import QueueProducer
+        import json as _json
         
         apply_worker_env(env)
-        db = Database(db=env.DB)
+        # D1 binding may not always be present on env for queue events in
+        # certain runtimes; fall back to settings.d1_database if needed.
+        db_binding = None
+        if env is not None and hasattr(env, "DB"):
+            db_binding = env.DB
+        else:
+            db_binding = settings.d1_database
+
+        db = Database(db=db_binding)
         queue_producer = QueueProducer(queue=settings.queue, dlq=settings.dlq)
         
         # Process each message in the batch
         for message in batch.messages:
             try:
-                await handle_queue_message(message.body, db, queue_producer)
+                body = message.body
+                # Messages sent via the Python QueueProducer are JSON strings
+                # when using the JS Queue binding. Decode back into a dict so
+                # consumer.handle_queue_message always sees a Python mapping.
+                if isinstance(body, str):
+                    try:
+                        parsed = _json.loads(body)
+                    except Exception:
+                        parsed = {"raw_body": body}
+                    payload = parsed
+                else:
+                    payload = body
+
+                await handle_queue_message(payload, db, queue_producer)
             except Exception:
                 logger.exception(
                     "Error processing queue message",
@@ -103,4 +127,4 @@ class Default(WorkerEntrypoint):
 
         Delegate to the existing queue() implementation.
         """
-        return await self.queue(batch, env)
+        return await self.queue(batch, env, ctx)
