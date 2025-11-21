@@ -10,9 +10,53 @@ from src.workers.api.database import (
     get_job,
     get_document,
     update_user_preferences,
+    update_job_status,
+    set_job_output,
 )
-from src.workers.api.models import JobType
+from src.workers.api.models import JobType, JobStatusEnum, GenerateBlogRequest, GenerateBlogOptions
 from src.workers.consumer import process_generate_blog_job
+from src.workers.api import protected as protected_module
+
+
+def test_start_generate_blog_job_runs_inline(monkeypatch, isolated_db):
+    async def _run():
+        db = isolated_db
+        user_id = "inline-user"
+        document_id = str(uuid.uuid4())
+        await create_test_user(db, user_id=user_id, email="inline@example.com")
+        await create_document(
+            db,
+            document_id=document_id,
+            user_id=user_id,
+            source_type="text",
+            source_ref=None,
+            raw_text="Inline test content for blog generation.",
+            metadata={"title": "Inline Test"},
+        )
+
+        async def fake_process_generate_blog_job(db, job_id, user_id, document_id, options=None, pipeline_job_id=None):
+            await update_job_status(db, job_id, JobStatusEnum.COMPLETED.value, progress={"stage": "completed"})
+            await set_job_output(
+                db,
+                job_id,
+                {
+                    "frontmatter": {"title": "Inline Draft"},
+                    "body": {"mdx": "# Inline Draft", "html": "<h1>Inline Draft</h1>"},
+                },
+            )
+
+        monkeypatch.setattr(protected_module.settings, "use_inline_queue", True)
+        monkeypatch.setattr(protected_module, "process_generate_blog_job", fake_process_generate_blog_job)
+
+        request = GenerateBlogRequest(document_id=document_id, options=GenerateBlogOptions())
+        status = await protected_module.start_generate_blog_job(db, None, user_id, request)
+
+        assert status.status == JobStatusEnum.COMPLETED
+        job_row = await get_job(db, status.job_id, user_id)
+        assert job_row is not None
+        assert job_row["status"] == "completed"
+
+    asyncio.run(_run())
 
 
 def test_process_generate_blog_job_creates_output(isolated_db):

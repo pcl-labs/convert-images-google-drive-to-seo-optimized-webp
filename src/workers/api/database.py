@@ -2839,7 +2839,7 @@ async def record_pipeline_event(
             payload,
         ),
     )
-    if notify_level:
+    if notify_level and settings.enable_notifications:
         context = dict(notify_context or {})
         context.setdefault("job_id", job_id)
         if data and "data" not in context:

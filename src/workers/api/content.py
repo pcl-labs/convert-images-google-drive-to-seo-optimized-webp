@@ -116,6 +116,10 @@ async def blog_from_youtube(
     if payload.instructions and not options_model.instructions:
         options_model.instructions = payload.instructions
     autopilot_options = options_model.model_dump(exclude_none=True) or None
+    # In inline dev mode we always run the full pipeline synchronously so that
+    # local development produces completed jobs and versions without relying on
+    # background queue consumers. The async flag is only honored when external
+    # queues are in use.
     manual_pipeline = not payload.async_request and settings.use_inline_queue
     autopilot_enabled = not manual_pipeline
 
@@ -131,7 +135,11 @@ async def blog_from_youtube(
     if not document_id:
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to create document for YouTube URL")
 
-    if payload.async_request or not settings.use_inline_queue:
+    # When using external queues we can truly enqueue and return 202. In
+    # inline mode we instead run the pipeline synchronously so localhost
+    # behaves like a full end-to-end environment without a separate
+    # consumer.
+    if payload.async_request and not settings.use_inline_queue:
         job_payload = _job_response(
             resolved_mode,
             resolved_format,
@@ -196,7 +204,9 @@ async def blog_from_text(
         GenerateBlogRequest(document_id=document_id, options=options_model),
     )
 
-    if payload.async_request or not settings.use_inline_queue:
+    # Honor async only when queues are in play; in inline mode we run the
+    # blog pipeline synchronously so dev sees completed jobs and versions.
+    if payload.async_request and not settings.use_inline_queue:
         job_payload = _job_response(
             resolved_mode,
             resolved_format,
@@ -248,7 +258,9 @@ async def blog_from_document(
         GenerateBlogRequest(document_id=payload.document_id, options=options_model),
     )
 
-    if payload.async_request or not settings.use_inline_queue:
+    # For blog-from-document, only treat the request as async when queues are
+    # enabled. In inline mode we always run synchronously.
+    if payload.async_request and not settings.use_inline_queue:
         job_payload = _job_response(
             resolved_mode,
             resolved_format,

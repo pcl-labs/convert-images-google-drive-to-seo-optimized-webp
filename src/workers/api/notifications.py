@@ -2,6 +2,7 @@ import uuid
 from typing import Optional, Dict, Any
 
 from .database import Database, create_notification
+from .config import settings
 
 _ALLOWED_LEVELS = {"success", "error", "info"}
 
@@ -17,6 +18,8 @@ async def notify_activity(
     event_id: Optional[str] = None,
 ) -> None:
     """Emit a generic activity notification."""
+    if not settings.enable_notifications:
+        return
     if level not in _ALLOWED_LEVELS:
         raise ValueError(f"Invalid level '{level}'. Allowed: {sorted(_ALLOWED_LEVELS)}")
     notif_id = str(uuid.uuid4())

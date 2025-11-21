@@ -113,7 +113,7 @@ class Settings:
     kv_namespace: Optional[Any] = None
     assets: Optional[Any] = None  # Cloudflare Assets binding for static files
 
-    use_inline_queue: bool = True
+    use_inline_queue: bool = False
     cloudflare_account_id: Optional[str] = None
     cloudflare_api_token: Optional[str] = None
     cf_queue_name: Optional[str] = None
@@ -125,6 +125,7 @@ class Settings:
     cors_origins: List[str] = field(default_factory=lambda: ["http://localhost:8000"])
     transcript_langs: List[str] = field(default_factory=lambda: ["en"])
     enable_drive_pipeline: bool = True
+    enable_notifications: bool = False
     auto_generate_after_ingest: bool = True
     drive_webhook_url: Optional[str] = None
     drive_webhook_secret: Optional[str] = None
@@ -142,8 +143,18 @@ class Settings:
         self.environment = (self.environment or "development").lower()
         self.debug = _bool(self.debug)
         self.jwt_use_cookies = _bool(self.jwt_use_cookies)
+        # Normalize any explicit USE_INLINE_QUEUE value first, then
+        # override it based on environment so behavior is predictable:
+        # - development => inline queue (no Cloudflare Queue required)
+        # - production  => external queue (Cloudflare Queue required)
         self.use_inline_queue = _bool(self.use_inline_queue)
-        self.enable_drive_pipeline = _bool(self.enable_drive_pipeline)
+        if self.environment == "development":
+            self.use_inline_queue = True
+        elif self.environment == "production":
+            self.use_inline_queue = False
+        # Drive pipeline is always enabled; we don't gate it on env vars.
+        self.enable_drive_pipeline = True
+        self.enable_notifications = _bool(self.enable_notifications)
         # static_files_dir: None means use package-based loader (Worker-compatible)
         # If set to a path, mount_static_files() will try filesystem first, then fall back to package
         if self.static_files_dir:
@@ -172,12 +183,16 @@ class Settings:
         self.drive_watch_renewal_window_minutes = _int(self.drive_watch_renewal_window_minutes, 60)
         self.openai_blog_temperature = _float(self.openai_blog_temperature, 0.6)
         self.openai_blog_max_output_tokens = _int(self.openai_blog_max_output_tokens, 2200)
-        self.auto_generate_after_ingest = _bool(self.auto_generate_after_ingest)
+        # Auto-generate behavior is always enabled alongside the Drive pipeline.
+        self.auto_generate_after_ingest = True
         if not self.jwt_secret_key:
             raise ValueError("JWT_SECRET_KEY is required")
+        # In production we always require external queues; in development
+        # we always run inline, so Cloudflare queue credentials are not
+        # required there.
         if self.environment == "production" and self.use_inline_queue:
             raise ValueError("USE_INLINE_QUEUE=true is not allowed in production")
-        if not self.use_inline_queue:
+        if not self.use_inline_queue and self.environment == "production":
             if not self.cloudflare_account_id:
                 raise ValueError("CLOUDFLARE_ACCOUNT_ID is required when USE_INLINE_QUEUE=false")
             if not self.cloudflare_api_token:
