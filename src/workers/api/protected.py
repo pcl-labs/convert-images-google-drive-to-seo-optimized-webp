@@ -39,6 +39,9 @@ from .models import (
     ChunkAndEmbedResponse,
     TranscriptSearchRequest,
     TranscriptSearchResponse,
+    ProjectGenerateBlogRequest,
+    ProjectBlog,
+    GenerateProjectBlogResponse,
 )
 from .database import (
     create_job_extended,
@@ -811,17 +814,18 @@ async def create_project_for_youtube(req: CreateProjectRequest, user: dict = Dep
     # Reuse the existing ingest orchestration to avoid duplicating logic.
     # Disable autopilot so we don't start blog generation from this path.
     _, queue = ensure_services()
+    youtube_url_str = str(req.youtube_url)
     job_status = await start_ingest_youtube_job(
         db,
         queue,
         user["user_id"],
-        req.youtube_url,
+        youtube_url_str,
         autopilot_enabled=False,
     )
     document_id = job_status.document_id
     # Create project row and mark transcript_ready if we already have text.
     try:
-        project_row = await create_project(db, user["user_id"], document_id, str(req.youtube_url))
+        project_row = await create_project(db, user["user_id"], document_id, youtube_url_str)
         doc = await get_document(db, document_id, user_id=user["user_id"])
         if doc and (doc.get("raw_text") or "").strip():
             updated = await update_project_status(
@@ -1206,6 +1210,214 @@ async def search_project_transcript(
         project_id=project_id,
         query=req.query,
         matches=matches_payload,
+    )
+
+
+@router.post(
+    "/api/v1/projects/{project_id}/blog/generate",
+    response_model=GenerateProjectBlogResponse,
+    tags=["Projects"],
+)
+async def generate_project_blog(
+    project_id: str,
+    req: ProjectGenerateBlogRequest,
+    user: dict = Depends(get_current_user),
+):
+    db, queue = ensure_services()
+    project = await get_project(db, project_id, user["user_id"])
+    if not project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+    doc = await get_document(db, project["document_id"], user_id=user["user_id"])
+    if not doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    text = (doc.get("raw_text") or "").strip()
+    if not text:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Project document is missing transcript text to generate from",
+        )
+
+    user_prefs = await get_user_preferences(db, user["user_id"])
+    options_model = req.options or GenerateBlogOptions()
+    resolved_options = resolve_generate_blog_options(options_model, user_prefs)
+
+    job_id = str(uuid.uuid4())
+    await create_job_extended(
+        db,
+        job_id,
+        user["user_id"],
+        job_type=JobType.GENERATE_BLOG.value,
+        document_id=project["document_id"],
+        payload={"options": resolved_options, "project_id": project_id},
+    )
+
+    # Inline mode: run the blog job synchronously, mirroring start_generate_blog_job.
+    if settings.use_inline_queue:
+        logger.info(
+            "generate_project_blog.inline_start",
+            extra={
+                "job_id": job_id,
+                "project_id": project_id,
+                "document_id": project["document_id"],
+                "user_id": user["user_id"],
+            },
+        )
+        try:
+            await process_generate_blog_job(
+                db,
+                job_id,
+                user["user_id"],
+                project["document_id"],
+                options=resolved_options,
+            )
+        except HTTPException:
+            logger.exception(
+                "generate_project_blog.inline_http_error",
+                extra={
+                    "job_id": job_id,
+                    "project_id": project_id,
+                    "document_id": project["document_id"],
+                    "user_id": user["user_id"],
+                },
+            )
+            raise
+        except Exception as exc:
+            logger.exception(
+                "generate_project_blog.inline_failed",
+                extra={
+                    "job_id": job_id,
+                    "project_id": project_id,
+                    "document_id": project["document_id"],
+                    "user_id": user["user_id"],
+                    "error": str(exc),
+                },
+            )
+            raise HTTPException(
+                status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to generate blog inline for project.",
+            ) from exc
+
+        final_row = await get_job(db, job_id, user["user_id"])
+        if not final_row:
+            raise HTTPException(
+                status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Job not found after inline project blog generation.",
+            )
+        logger.info(
+            "generate_project_blog.inline_complete",
+            extra={
+                "job_id": job_id,
+                "project_id": project_id,
+                "document_id": project["document_id"],
+                "user_id": user["user_id"],
+                "status": final_row.get("status"),
+            },
+        )
+
+        # In inline mode we also advance the project status so dev flows
+        # behave like background-consumer flows, but only when the job
+        # actually completed successfully.
+        final_status = (final_row.get("status") or "").lower()
+        if final_status in {JobStatusEnum.COMPLETED.value, "completed"}:
+            try:
+                updated = await update_project_status(db, project_id, user["user_id"], "blog_generated")
+                if updated:
+                    project["status"] = "blog_generated"
+            except Exception:
+                logger.warning(
+                    "generate_project_blog.inline_status_update_failed",
+                    exc_info=True,
+                    extra={"project_id": project_id, "user_id": user["user_id"], "job_id": job_id},
+                )
+        else:
+            logger.warning(
+                "generate_project_blog.inline_status_not_completed",
+                extra={
+                    "project_id": project_id,
+                    "user_id": user["user_id"],
+                    "job_id": job_id,
+                    "final_status": final_row.get("status"),
+                },
+            )
+
+        return GenerateProjectBlogResponse(
+            job_id=job_id,
+            blog=None,
+            project=project,
+        )
+
+    # Non-inline mode: enqueue for background consumer processing.
+    payload = {
+        "job_id": job_id,
+        "user_id": user["user_id"],
+        "job_type": JobType.GENERATE_BLOG.value,
+        "document_id": project["document_id"],
+        "options": resolved_options,
+        "project_id": project_id,
+    }
+    enqueued, enqueue_exception, should_fail = await enqueue_job_with_guard(
+        queue,
+        job_id,
+        user["user_id"],
+        payload,
+        allow_inline_fallback=False,
+    )
+    if should_fail:
+        detail = "Queue unavailable or enqueue failed; background processing is required in production."
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=detail)
+    if not enqueued:
+        logger.warning(
+            "generate_project_blog_job_enqueued_false",
+            extra={
+                "job_id": job_id,
+                "user_id": user["user_id"],
+                "project_id": project_id,
+                "event": "job.enqueue_failed",
+                "reason": "queue unavailable or enqueue failed",
+                "enqueue_exception": (str(enqueue_exception) if enqueue_exception else None),
+            },
+        )
+
+    return GenerateProjectBlogResponse(
+        job_id=job_id,
+        blog=None,
+        project=project,
+    )
+
+
+@router.get(
+    "/api/v1/projects/{project_id}/blog",
+    response_model=ProjectBlog,
+    tags=["Projects"],
+)
+async def get_project_blog(project_id: str, user: dict = Depends(get_current_user)):
+    db = ensure_db()
+    project = await get_project(db, project_id, user["user_id"])
+    if not project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+    doc = await get_document(db, project["document_id"], user_id=user["user_id"])
+    if not doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    latest_version_id = doc.get("latest_version_id")
+    if not latest_version_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No blog generated for this project yet")
+
+    version_row = await get_document_version(db, doc["document_id"], latest_version_id, user["user_id"])
+    if not version_row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Blog version not found")
+
+    payload = _version_payload(version_row)
+    return ProjectBlog(
+        project_id=project_id,
+        document_id=payload["document_id"],
+        version_id=payload["version_id"],
+        status=project.get("status"),
+        frontmatter=payload["frontmatter"],
+        body_mdx=payload["body_mdx"],
+        outline=payload["outline"],
+        created_at=payload["created_at"],
     )
 
 

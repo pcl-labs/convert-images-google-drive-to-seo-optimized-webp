@@ -382,3 +382,26 @@ class TranscriptSearchResponse(BaseModel):
     project_id: str
     query: str
     matches: List[TranscriptSearchMatch]
+
+
+class ProjectGenerateBlogRequest(BaseModel):
+    options: Optional[GenerateBlogOptions] = None
+
+
+class ProjectBlog(BaseModel):
+    project_id: str
+    document_id: str
+    version_id: str
+    status: ProjectStatusEnum
+    frontmatter: Optional[Dict[str, Any]] = None
+    body_mdx: Optional[str] = None
+    outline: Optional[Any] = None
+    created_at: datetime
+
+    model_config = ConfigDict(use_enum_values=True)
+
+
+class GenerateProjectBlogResponse(BaseModel):
+    job_id: Optional[str] = None
+    blog: Optional[ProjectBlog] = None
+    project: Project
