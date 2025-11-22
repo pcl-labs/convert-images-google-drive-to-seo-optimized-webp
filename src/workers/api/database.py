@@ -1852,22 +1852,21 @@ async def update_document_latest_version_if_match(
     Returns True if latest_version_id ends up set to new_version_id, False otherwise.
     Works for both D1 and SQLite via the Database wrapper.
     """
-    await db.execute(
+    result = await db.execute(
         """
         UPDATE documents
         SET latest_version_id = ?, updated_at = datetime('now')
         WHERE document_id = ? AND (latest_version_id IS ? OR latest_version_id = ?)
+        RETURNING latest_version_id
         """,
         (new_version_id, document_id, expected_version_id, expected_version_id),
     )
 
-    row = await db.execute(
-        "SELECT latest_version_id FROM documents WHERE document_id = ?",
-        (document_id,),
-    )
-    if not row:
+    if not result:
+        # No row matched the expected latest_version_id; treat as conflict.
         return False
-    doc = _jsproxy_to_dict(row)
+
+    doc = _jsproxy_to_dict(result)
     return doc.get("latest_version_id") == new_version_id
 
 
