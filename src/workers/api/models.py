@@ -283,3 +283,64 @@ class IngestDriveRequest(BaseModel):
 
 class DriveChangePollRequest(BaseModel):
     document_ids: Optional[List[str]] = None
+
+
+class Project(BaseModel):
+    project_id: str
+    document_id: str
+    user_id: str
+    youtube_url: Optional[str]
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class CreateProjectRequest(BaseModel):
+    youtube_url: str = Field(..., min_length=10, max_length=500)
+
+
+class ProjectResponse(BaseModel):
+    project: Project
+    document: Optional[Dict[str, Any]] = None
+
+
+class TranscriptChunk(BaseModel):
+    chunk_id: str
+    chunk_index: int
+    start_char: int
+    end_char: int
+    text_preview: str
+
+
+class TranscriptResponse(BaseModel):
+    project_id: str
+    text: str
+    chunks: List[TranscriptChunk]
+    metadata: Optional[Dict[str, Any]] = None
+
+
+class ChunkAndEmbedResponse(BaseModel):
+    project_id: str
+    chunks_created: int
+    embeddings_stored: int
+    status: str
+
+
+class TranscriptSearchRequest(BaseModel):
+    query: str = Field(..., min_length=1, max_length=2000)
+    limit: int = Field(5, ge=1, le=20)
+
+
+class TranscriptSearchMatch(BaseModel):
+    chunk_id: Optional[str] = None
+    chunk_index: int
+    start_char: int
+    end_char: int
+    text_preview: str
+    score: Optional[float] = None
+
+
+class TranscriptSearchResponse(BaseModel):
+    project_id: str
+    query: str
+    matches: List[TranscriptSearchMatch]

@@ -360,7 +360,6 @@ CREATE TABLE IF NOT EXISTS step_invocations (
     request_hash TEXT NOT NULL,
     response_body TEXT NOT NULL,
     status_code INTEGER NOT NULL,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (idempotency_key, user_id)
 );
 
@@ -375,3 +374,46 @@ CREATE INDEX IF NOT EXISTS idx_step_invocations_user_hash ON step_invocations(us
 -- - Service layer should sanitize response_body to avoid storing PII/secrets.
 --   Only non-sensitive metadata should be stored. Keys such as email, tokens, passwords,
 --   api_key, authorization, secret, client_secret must be redacted or omitted.
+
+-- Projects table for YouTube-to-blog workflow
+CREATE TABLE IF NOT EXISTS projects (
+    project_id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    document_id TEXT NOT NULL UNIQUE,
+    youtube_url TEXT,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN (
+        'pending',
+        'transcript_ready',
+        'embedded',
+        'blog_generated',
+        'failed'
+    )),
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+    FOREIGN KEY (document_id) REFERENCES documents(document_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_projects_user
+  ON projects(user_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_projects_status
+  ON projects(status);
+
+-- Transcript chunks linked to projects/documents
+CREATE TABLE IF NOT EXISTS transcript_chunks (
+    chunk_id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    document_id TEXT NOT NULL,
+    chunk_index INTEGER NOT NULL,
+    start_char INTEGER NOT NULL,
+    end_char INTEGER NOT NULL,
+    text_preview TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE,
+    FOREIGN KEY (document_id) REFERENCES documents(document_id) ON DELETE CASCADE,
+    UNIQUE(project_id, chunk_index)
+);
+
+CREATE INDEX IF NOT EXISTS idx_transcript_chunks_project
+  ON transcript_chunks(project_id, chunk_index);
