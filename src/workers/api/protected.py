@@ -51,6 +51,7 @@ from .models import (
     ProjectVersionsResponse,
     ProjectVersionDetail,
     ProjectBlogDiff,
+    ProjectActivityResponse,
 )
 from .database import (
     create_job_extended,

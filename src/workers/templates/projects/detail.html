@@ -52,61 +52,128 @@
     if(!root) return;
     const projectId = root.dataset.projectId;
     if(!projectId) return;
+    const tabs = root.querySelectorAll('[data-sections-tab]');
+    const panels = root.querySelectorAll('[data-sections-panel]');
+    const detailIndex = root.querySelector('#section-detail-index');
+    const detailTitle = root.querySelector('#section-detail-title');
+    const detailMeta = root.querySelector('#section-detail-meta');
+    const detailBody = root.querySelector('#section-detail-body');
+    const askModal = document.getElementById('section-ask-changes-modal');
+    const askTextarea = document.getElementById('ask-changes-textarea');
+    const askSectionLabel = document.getElementById('ask-changes-section-label');
+    let currentSectionId = null;
+
+    function switchTab(name){
+      tabs.forEach((tab) => {
+        const key = tab.getAttribute('data-sections-tab');
+        const isActive = key === name;
+        tab.classList.toggle('text-primary', isActive);
+        tab.classList.toggle('border-primary', isActive);
+        tab.classList.toggle('text-contentMuted', !isActive);
+        tab.classList.toggle('border-transparent', !isActive);
+        tab.setAttribute('aria-selected', isActive ? 'true' : 'false');
+      });
+      panels.forEach((panel) => {
+        const key = panel.getAttribute('data-sections-panel');
+        panel.classList.toggle('hidden', key !== name);
+      });
+    }
+
+    function updateDetailFromRow(row){
+      if(!row || !detailIndex || !detailTitle || !detailMeta || !detailBody){
+        return;
+      }
+      const sectionId = row.getAttribute('data-section-id');
+      const index = Number(row.getAttribute('data-section-index') || '0');
+      const title = row.getAttribute('data-section-title') || 'Untitled section';
+      const words = row.getAttribute('data-section-words') || '0';
+      const preview = row.getAttribute('data-section-preview') || 'No content yet.';
+      currentSectionId = sectionId;
+      detailIndex.textContent = `Section ${index + 1}`;
+      detailTitle.textContent = title;
+      detailMeta.textContent = `${words} words`;
+      detailBody.textContent = preview;
+    }
+
+    function openAskModal(){
+      if(!askModal || !currentSectionId){
+        dispatchToast('error', 'Select a section first.');
+        return;
+      }
+      const activeRow = root.querySelector(
+        `button[data-action="select-section"][data-section-id="${CSS.escape(currentSectionId)}"]`
+      );
+      const index = activeRow ? Number(activeRow.getAttribute('data-section-index') || '0') : 0;
+      const title = activeRow ? (activeRow.getAttribute('data-section-title') || 'Untitled section') : 'Section';
+      if(askSectionLabel){
+        askSectionLabel.textContent = `Section ${index + 1} · ${title}`;
+      }
+      if(askTextarea){
+        askTextarea.value = '';
+        askTextarea.focus();
+      }
+      askModal.classList.remove('hidden');
+    }
+
+    function closeAskModal(){
+      if(!askModal) return;
+      askModal.classList.add('hidden');
+    }
 
     root.addEventListener('click', async (event) => {
       const target = event.target;
       if(!(target instanceof HTMLElement)) return;
+
+      // Tabs: Summary / Full diff
+      const tab = target.closest('button[data-sections-tab]');
+      if(tab){
+        const key = tab.getAttribute('data-sections-tab') || 'summary';
+        switchTab(key);
+        return;
+      }
+
       const action = target.dataset.action;
       if(!action) return;
 
-      const article = target.closest('article[data-section-id]');
-      if(!article) return;
-      const sectionId = article.dataset.sectionId;
-      const editor = article.querySelector('[data-section-editor]');
-      const textarea = editor ? editor.querySelector('textarea') : null;
-      const preview = article.querySelector('[data-section-preview]');
-
-      if(action === 'edit-section'){
-        if(editor){
-          editor.classList.remove('hidden');
-          editor.setAttribute('aria-hidden', 'false');
-        }
-        if(target){
-          target.setAttribute('aria-expanded', 'true');
-        }
-        if(textarea){ textarea.focus(); }
+      if(action === 'select-section'){
+        const row = target.closest('button[data-section-id]');
+        if(!row) return;
+        updateDetailFromRow(row);
+        switchTab('detail');
         return;
       }
 
-      if(action === 'cancel-edit'){
-        if(editor){
-          editor.classList.add('hidden');
-          editor.setAttribute('aria-hidden', 'true');
-        }
-        const toggle = article.querySelector('[data-action="edit-section"]');
-        if(toggle){
-          toggle.setAttribute('aria-expanded', 'false');
-        }
-        if(textarea){ textarea.value = ''; }
+      if(action === 'back-to-summary'){
+        switchTab('summary');
         return;
       }
 
-      if(action === 'apply-edit'){
-        if(!textarea) return;
-        const instructions = (textarea.value || '').trim();
+      if(action === 'open-ask-changes'){
+        openAskModal();
+        return;
+      }
+
+      if(action === 'close-ask-changes'){
+        closeAskModal();
+        return;
+      }
+
+      if(action === 'submit-ask-changes'){
+        if(!currentSectionId || !askTextarea) return;
+        const instructions = (askTextarea.value || '').trim();
         if(!instructions){
-          dispatchToast('error', 'Please describe how you want this section changed.');
+          dispatchToast('error', 'Please describe the changes you want.');
           return;
         }
-        const applyBtn = target;
-        applyBtn.disabled = true;
-        applyBtn.textContent = 'Applying…';
+        const btn = target;
+        btn.disabled = true;
+        btn.textContent = 'Applying…';
         try {
           const res = await fetch(`/api/v1/projects/${projectId}/blog/sections/patch`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             credentials: 'same-origin',
-            body: JSON.stringify({ section_id: sectionId, instructions }),
+            body: JSON.stringify({ section_id: currentSectionId, instructions }),
           });
           if(res.status === 409){
             dispatchToast('error', 'Blog has been updated since this section was loaded; please reload and retry.');
@@ -118,31 +185,43 @@
           }
           const data = await res.json();
           const body = data && data.section && (data.section.body_mdx || data.section.body_html || '');
-          if(preview && typeof body === 'string'){
+          if(typeof body === 'string'){
             let trimmed = body.trim();
             if(trimmed.length > 800){
               trimmed = trimmed.slice(0, 800) + '…';
             }
-            preview.textContent = trimmed || 'No content yet.';
+            // Update detail view
+            if(detailBody){
+              detailBody.textContent = trimmed || 'No content yet.';
+            }
+            // Update summary row preview
+            const row = root.querySelector(
+              `button[data-action="select-section"][data-section-id="${CSS.escape(currentSectionId)}"]`
+            );
+            if(row){
+              const previewEl = row.querySelector('p.text-[11px].text-contentMuted');
+              if(previewEl){
+                previewEl.textContent = trimmed || 'No content yet.';
+              }
+              row.setAttribute('data-section-preview', trimmed || 'No content yet.');
+            }
           }
-          if(editor){
-            editor.classList.add('hidden');
-            editor.setAttribute('aria-hidden', 'true');
-          }
-          const toggle = article.querySelector('[data-action="edit-section"]');
-          if(toggle){
-            toggle.setAttribute('aria-expanded', 'false');
-          }
-          textarea.value = '';
           dispatchToast('success', 'Section updated.');
+          closeAskModal();
         } catch (err) {
           dispatchToast('error', 'Unexpected error updating section.');
         } finally {
-          applyBtn.disabled = false;
-          applyBtn.textContent = 'Apply changes';
+          btn.disabled = false;
+          btn.textContent = 'Apply with AI';
         }
       }
     });
+
+    // Ensure initial detail view has sensible state based on first row, if any.
+    const firstRow = root.querySelector('button[data-action="select-section"]');
+    if(firstRow){
+      updateDetailFromRow(firstRow);
+    }
   }
 
   function setupActivityRefresh(){
