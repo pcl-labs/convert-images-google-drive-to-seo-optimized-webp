@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Tuple, Optional
 import json
 
-from ..api.database import get_document, get_document_version
+from api.database import get_document, get_document_version
 
 
 def _coerce_sections(raw: Any) -> List[Dict[str, Any]]:

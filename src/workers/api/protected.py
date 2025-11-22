@@ -73,6 +73,8 @@ from .database import (
     update_project_status,
     create_transcript_chunk,
     list_transcript_chunks,
+    update_document,
+    create_document_version,
 )
 from .notifications import notify_job
 from .auth import create_user_api_key
@@ -109,6 +111,7 @@ from consumer import process_generate_blog_job
 from .database import get_usage_summary, list_usage_events, count_usage_events
 from fastapi import Query
 from .ai_preferences import resolve_generate_blog_options
+from core.ai_modules import markdown_to_html
 from core.sections import (
     extract_sections_from_version,
     find_section_by_id,
@@ -1461,8 +1464,8 @@ async def list_project_blog_sections(
         section_id = str(section.get("section_id"))
         index = int(section.get("index", 0))
         title = section.get("title")
-        # For now, derive word_count from summary/title as a cheap approximation.
-        text_for_wc = section.get("summary") or title or ""
+        # Prefer actual section body when available; fall back to summary/title.
+        text_for_wc = section.get("body_mdx") or section.get("summary") or title or ""
         wc = _word_count(text_for_wc)
         summaries.append(
             ProjectSectionSummary(
@@ -1478,6 +1481,228 @@ async def list_project_blog_sections(
         document_id=version_row.get("document_id"),
         version_id=version_row.get("version_id"),
         sections=summaries,
+    )
+
+
+@router.post(
+    "/api/v1/projects/{project_id}/blog/sections/patch",
+    response_model=PatchSectionResponse,
+    tags=["Projects"],
+)
+async def patch_project_blog_section(
+    project_id: str,
+    req: PatchSectionRequest,
+    user: dict = Depends(get_current_user),
+):
+    db = ensure_db()
+    project = await get_project(db, project_id, user["user_id"])
+    if not project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+    version_row = await get_latest_version_for_project(db, project, user["user_id"])
+    if not version_row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No blog generated for this project yet")
+
+    sections = extract_sections_from_version(version_row)
+    try:
+        _, target_section = find_section_by_id(sections, req.section_id)
+    except KeyError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Section not found")
+
+    # Use section summary/title as the primary editable text for now.
+    current_text = (target_section.get("body_mdx") or target_section.get("summary") or target_section.get("title") or "").strip()
+
+    # Embed current section text to query transcript chunks for context.
+    transcript_snippets: list[str] = []
+    try:
+        vectors = await embed_texts([current_text or req.instructions])
+        if vectors and isinstance(vectors[0], list):
+            query_vec = vectors[0]
+            hits = await query_project_chunks(project_id=project_id, query_vector=query_vec, limit=5)
+            existing_chunks = await list_transcript_chunks(db, project_id, user["user_id"])
+            by_index = {int(c["chunk_index"]): c for c in existing_chunks}
+            for hit in hits or []:
+                meta = hit.get("metadata") or {}
+                idx = meta.get("chunk_index")
+                hit_id = str(hit.get("id") or "")
+                if idx is None and hit_id.startswith(f"{project_id}:"):
+                    try:
+                        _, _, idx_str = hit_id.rsplit(":", 2)
+                        idx = int(idx_str)
+                    except (TypeError, ValueError):
+                        continue
+                try:
+                    idx_int = int(idx)
+                except (TypeError, ValueError):
+                    continue
+                chunk_row = by_index.get(idx_int)
+                if not chunk_row:
+                    continue
+                preview = (chunk_row.get("text_preview") or "").strip()
+                if preview:
+                    transcript_snippets.append(preview)
+    except Exception:
+        # Embeddings / vector search are best-effort; log and continue without context.
+        logger.warning(
+            "patch_section.transcript_context_failed",
+            exc_info=True,
+            extra={"project_id": project_id, "section_id": req.section_id},
+        )
+
+    # Build AI prompt to rewrite this section only.
+    system_prompt = (
+        "You are editing ONE section of a blog post generated from a transcript. "
+        "Rewrite only this section's MDX body according to the user's instructions. "
+        "Do not add or remove sections, headings, or frontmatter. Return ONLY the new MDX body for this section."
+    )
+
+    user_prompt_parts: list[str] = []
+    user_prompt_parts.append("Current section title: " + str(target_section.get("title") or "(untitled)"))
+    user_prompt_parts.append("\n\nCurrent section text (may be summary/body):\n" + (current_text or ""))
+    user_prompt_parts.append("\n\nInstructions for this section:\n" + req.instructions.strip())
+    if transcript_snippets:
+        joined_snippets = "\n\n".join(transcript_snippets[:3])
+        user_prompt_parts.append("\n\nRelevant transcript snippets (for context only):\n" + joined_snippets)
+    user_prompt_parts.append("\n\nReturn ONLY the rewritten MDX body for this section.")
+    user_prompt = "".join(user_prompt_parts)
+
+    model_name = (settings.openai_blog_model or "gpt-4.1-mini").strip()
+    temp_value = settings.openai_blog_temperature
+
+    if not settings.cloudflare_account_id or not getattr(settings, "cf_ai_gateway_token", None):
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="AI Gateway configuration is missing")
+
+    gateway_base = f"https://gateway.ai.cloudflare.com/v1/{settings.cloudflare_account_id}/quill/openai"
+    endpoint_path = "/chat/completions"
+    client = AsyncSimpleClient(base_url=gateway_base, timeout=25.0)
+
+    try:
+        response = await client.post(
+            endpoint_path,
+            headers={
+                "Content-Type": "application/json",
+                "cf-aig-authorization": f"Bearer {settings.cf_ai_gateway_token}",
+            },
+            json={
+                "model": model_name,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "temperature": temp_value,
+            },
+        )
+        response.raise_for_status()
+    except HTTPStatusError as exc:
+        logger.error(
+            "patch_section.gateway_http_error",
+            exc_info=True,
+            extra={"status_code": exc.response.status_code},
+        )
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="AI section edit failed") from exc
+    except RequestError as exc:
+        logger.error("patch_section.gateway_request_error", exc_info=True, extra={"error": str(exc)})
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="AI section edit failed") from exc
+    except Exception as exc:
+        logger.error("patch_section.gateway_unexpected_error", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="AI section edit failed") from exc
+
+    try:
+        data = response.json()
+    except Exception as exc:
+        logger.error("patch_section.invalid_json", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="AI response malformed") from exc
+
+    new_section_body: str = ""
+    try:
+        choices = data.get("choices") or []
+        if choices:
+            message = choices[0].get("message") or {}
+            content = message.get("content")
+            if isinstance(content, str):
+                new_section_body = content.strip()
+            elif isinstance(content, list):
+                parts: list[str] = []
+                for part in content:
+                    if isinstance(part, dict):
+                        txt = part.get("text") or part.get("content")
+                        if isinstance(txt, str):
+                            parts.append(txt)
+                new_section_body = "".join(parts).strip()
+    except Exception:
+        new_section_body = ""
+
+    if not new_section_body:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="AI returned empty section body")
+
+    # Build updated sections list with the new body for the target section.
+    updated_sections: list[dict] = []
+    for s in sections:
+        s_copy = dict(s)
+        if s_copy.get("section_id") == req.section_id:
+            s_copy["body_mdx"] = new_section_body
+        updated_sections.append(s_copy)
+
+    # Rebuild body_mdx as a simple concatenation of headings + section bodies.
+    doc_frontmatter = _json_field(version_row.get("frontmatter"), {})
+    title = None
+    if isinstance(doc_frontmatter, dict):
+        title = doc_frontmatter.get("title")
+    body_lines: list[str] = []
+    if title:
+        body_lines.append(f"# {title}\n")
+    for s in updated_sections:
+        heading = s.get("title") or f"Section {int(s.get("index", 0)) + 1}"
+        body = s.get("body_mdx") or s.get("summary") or ""
+        body_lines.append(f"## {heading}\n\n{body}\n")
+    new_body_mdx = "\n".join(body_lines).strip()
+
+    document_id = version_row.get("document_id")
+    if not document_id:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Version missing document_id")
+
+    content_format = version_row.get("content_format") or "mdx"
+    outline = _json_field(version_row.get("outline"), [])
+    chapters = _json_field(version_row.get("chapters"), [])
+    assets = _json_field(version_row.get("assets"), {})
+    if isinstance(assets, dict):
+        generator_block = assets.get("generator") or {}
+        if not isinstance(generator_block, dict):
+            generator_block = {}
+        generator_block.setdefault("source", "patch_section")
+        assets["generator"] = generator_block
+    body_html = markdown_to_html(new_body_mdx)
+
+    # Persist new version and update latest_version_id on the document.
+    new_version_row = await create_document_version(
+        db,
+        document_id=document_id,
+        user_id=user["user_id"],
+        content_format=content_format,
+        frontmatter=doc_frontmatter or {},
+        body_mdx=new_body_mdx,
+        body_html=body_html,
+        outline=outline or [],
+        chapters=chapters or [],
+        sections=updated_sections,
+        assets=assets or {},
+    )
+    new_version_id = new_version_row.get("version_id")
+    if new_version_id:
+        await update_document(db, document_id, {"latest_version_id": new_version_id})
+
+    detail = ProjectSectionDetail(
+        section_id=req.section_id,
+        index=int(target_section.get("index", 0)),
+        title=target_section.get("title"),
+        body_mdx=new_section_body,
+    )
+
+    return PatchSectionResponse(
+        project_id=project_id,
+        document_id=document_id,
+        version_id=new_version_id or version_row.get("version_id"),
+        section=detail,
     )
 
 
@@ -1566,6 +1791,136 @@ async def get_project_blog_version(
         created_at=_parse_db_datetime(row.get("created_at")),
         frontmatter=frontmatter,
         body_mdx=row.get("body_mdx"),
+        outline=outline,
+        sections=sections,
+    )
+
+
+@router.get(
+    "/api/v1/projects/{project_id}/blog/diff",
+    response_model=ProjectBlogDiff,
+    tags=["Projects"],
+)
+async def diff_project_blog_versions(
+    project_id: str,
+    from_version_id: str,
+    to_version_id: str,
+    user: dict = Depends(get_current_user),
+):
+    db = ensure_db()
+    project = await get_project(db, project_id, user["user_id"])
+    if not project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+    document_id = project.get("document_id")
+    if not document_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project is missing document reference")
+
+    from_row = await get_document_version(db, document_id, from_version_id, user["user_id"])
+    to_row = await get_document_version(db, document_id, to_version_id, user["user_id"])
+    if not from_row or not to_row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="One or both versions not found")
+
+    # Compute changed section_ids by comparing normalized section bodies/summaries.
+    from_sections = extract_sections_from_version(from_row)
+    to_sections = extract_sections_from_version(to_row)
+    from_map = {s.get("section_id"): (s.get("body_mdx") or s.get("summary") or "") for s in from_sections}
+    to_map = {s.get("section_id"): (s.get("body_mdx") or s.get("summary") or "") for s in to_sections}
+    all_ids = set(from_map.keys()) | set(to_map.keys())
+    changed_sections: list[str] = []
+    for sec_id in sorted(all_ids):
+        if (from_map.get(sec_id) or "") != (to_map.get(sec_id) or ""):
+            changed_sections.append(str(sec_id))
+
+    # Build a simple unified diff of the full MDX bodies.
+    from_body = (from_row.get("body_mdx") or "").splitlines(keepends=True)
+    to_body = (to_row.get("body_mdx") or "").splitlines(keepends=True)
+    diff_lines = list(
+        difflib.unified_diff(
+            from_body,
+            to_body,
+            fromfile=from_version_id,
+            tofile=to_version_id,
+            lineterm="",
+        )
+    )
+    diff_text = "\n".join(diff_lines) if diff_lines else ""
+
+    return ProjectBlogDiff(
+        project_id=project_id,
+        document_id=document_id,
+        from_version_id=from_version_id,
+        to_version_id=to_version_id,
+        changed_sections=changed_sections,
+        diff_body_mdx=diff_text or None,
+    )
+
+
+@router.post(
+    "/api/v1/projects/{project_id}/blog/versions/{version_id}/revert",
+    response_model=ProjectVersionDetail,
+    tags=["Projects"],
+)
+async def revert_project_blog_version(
+    project_id: str,
+    version_id: str,
+    user: dict = Depends(get_current_user),
+):
+    db = ensure_db()
+    project = await get_project(db, project_id, user["user_id"])
+    if not project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+    document_id = project.get("document_id")
+    if not document_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project is missing document reference")
+
+    source_row = await get_document_version(db, document_id, version_id, user["user_id"])
+    if not source_row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Blog version not found")
+
+    frontmatter = _json_field(source_row.get("frontmatter"), {})
+    outline = _json_field(source_row.get("outline"), [])
+    chapters = _json_field(source_row.get("chapters"), [])
+    sections = _json_field(source_row.get("sections"), [])
+    assets = _json_field(source_row.get("assets"), {})
+
+    if isinstance(assets, dict):
+        generator_block = assets.get("generator") or {}
+        if not isinstance(generator_block, dict):
+            generator_block = {}
+        generator_block.setdefault("source", "revert")
+        assets["generator"] = generator_block
+
+    content_format = source_row.get("content_format") or "mdx"
+    body_mdx = source_row.get("body_mdx") or ""
+    body_html = source_row.get("body_html") or markdown_to_html(body_mdx)
+
+    new_row = await create_document_version(
+        db,
+        document_id=document_id,
+        user_id=user["user_id"],
+        content_format=content_format,
+        frontmatter=frontmatter or {},
+        body_mdx=body_mdx,
+        body_html=body_html,
+        outline=outline or [],
+        chapters=chapters or [],
+        sections=sections or [],
+        assets=assets or {},
+    )
+    new_version_id = new_row.get("version_id")
+    if new_version_id:
+        await update_document(db, document_id, {"latest_version_id": new_version_id})
+
+    return ProjectVersionDetail(
+        project_id=project_id,
+        document_id=document_id,
+        version_id=new_row.get("version_id"),
+        version=int(new_row.get("version", 0)),
+        created_at=_parse_db_datetime(new_row.get("created_at")),
+        frontmatter=frontmatter,
+        body_mdx=new_row.get("body_mdx"),
         outline=outline,
         sections=sections,
     )

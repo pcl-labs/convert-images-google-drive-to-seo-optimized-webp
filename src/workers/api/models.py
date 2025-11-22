@@ -409,9 +409,9 @@ class GenerateProjectBlogResponse(BaseModel):
 
 class ProjectSectionSummary(BaseModel):
     section_id: str
-    index: int
+    index: int = Field(ge=0)
     title: Optional[str] = None
-    word_count: Optional[int] = None
+    word_count: Optional[int] = Field(default=None, ge=0)
 
 
 class ProjectSectionListResponse(BaseModel):
@@ -423,14 +423,14 @@ class ProjectSectionListResponse(BaseModel):
 
 class ProjectSectionDetail(BaseModel):
     section_id: str
-    index: int
+    index: int = Field(ge=0)
     title: Optional[str] = None
-    body_mdx: str
+    body_mdx: str = Field(..., max_length=20000)
 
 
 class PatchSectionRequest(BaseModel):
     section_id: str
-    instructions: str
+    instructions: str = Field(..., min_length=1, max_length=2000)
 
 
 class PatchSectionResponse(BaseModel):
@@ -442,7 +442,7 @@ class PatchSectionResponse(BaseModel):
 
 class ProjectVersionSummary(BaseModel):
     version_id: str
-    version: int
+    version: int = Field(ge=0)
     created_at: datetime
     source: Optional[str] = None
     title: Optional[str] = None
