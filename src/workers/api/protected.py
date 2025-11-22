@@ -1663,7 +1663,7 @@ def _rebuild_body_with_patched_section(
     if title:
         body_lines.append(f"# {title}\n")
     for s in updated_sections:
-        heading = s.get("title") or f"Section {int(s.get("index", 0)) + 1}"
+        heading = s.get("title") or f"Section {int(s.get('index', 0)) + 1}"
         body = s.get("body_mdx") or s.get("summary") or ""
         body_lines.append(f"## {heading}\n\n{body}\n")
     new_body_mdx = "\n".join(body_lines).strip()
