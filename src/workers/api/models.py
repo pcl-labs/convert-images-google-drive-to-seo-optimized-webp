@@ -405,3 +405,71 @@ class GenerateProjectBlogResponse(BaseModel):
     job_id: Optional[str] = None
     blog: Optional[ProjectBlog] = None
     project: Project
+
+
+class ProjectSectionSummary(BaseModel):
+    section_id: str
+    index: int
+    title: Optional[str] = None
+    word_count: Optional[int] = None
+
+
+class ProjectSectionListResponse(BaseModel):
+    project_id: str
+    document_id: str
+    version_id: str
+    sections: List[ProjectSectionSummary]
+
+
+class ProjectSectionDetail(BaseModel):
+    section_id: str
+    index: int
+    title: Optional[str] = None
+    body_mdx: str
+
+
+class PatchSectionRequest(BaseModel):
+    section_id: str
+    instructions: str
+
+
+class PatchSectionResponse(BaseModel):
+    project_id: str
+    document_id: str
+    version_id: str
+    section: ProjectSectionDetail
+
+
+class ProjectVersionSummary(BaseModel):
+    version_id: str
+    version: int
+    created_at: datetime
+    source: Optional[str] = None
+    title: Optional[str] = None
+
+
+class ProjectVersionsResponse(BaseModel):
+    project_id: str
+    document_id: str
+    versions: List[ProjectVersionSummary]
+
+
+class ProjectVersionDetail(BaseModel):
+    project_id: str
+    document_id: str
+    version_id: str
+    version: int
+    created_at: datetime
+    frontmatter: Optional[Dict[str, Any]] = None
+    body_mdx: Optional[str] = None
+    outline: Optional[Any] = None
+    sections: Optional[Any] = None
+
+
+class ProjectBlogDiff(BaseModel):
+    project_id: str
+    document_id: str
+    from_version_id: str
+    to_version_id: str
+    changed_sections: List[str]
+    diff_body_mdx: Optional[str] = None

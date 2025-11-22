@@ -14,6 +14,10 @@ VECTORIZE_INDEX_NAME = "quill-transcripts-v2"
 
 def _vectorize_base_url() -> str:
     if not settings.cloudflare_account_id:
+        logger.error(
+            "vectorize_missing_account_id",
+            extra={"has_account_id": bool(settings.cloudflare_account_id)},
+        )
         raise RuntimeError("CLOUDFLARE_ACCOUNT_ID is required for Vectorize operations")
     return f"https://api.cloudflare.com/client/v4/accounts/{settings.cloudflare_account_id}"
 
@@ -21,6 +25,13 @@ def _vectorize_base_url() -> str:
 def _auth_headers() -> Dict[str, str]:
     token = getattr(settings, "cloudflare_api_token", None) or getattr(settings, "CLOUDFLARE_API_TOKEN", None)
     if not token:
+        logger.error(
+            "vectorize_missing_api_token",
+            extra={
+                "has_cloudflare_api_token": bool(getattr(settings, "cloudflare_api_token", None)),
+                "has_CLOUDFLARE_API_TOKEN": bool(getattr(settings, "CLOUDFLARE_API_TOKEN", None)),
+            },
+        )
         raise RuntimeError("CLOUDFLARE_API_TOKEN is required for Vectorize operations")
     return {
         "Authorization": f"Bearer {token}",
@@ -94,10 +105,18 @@ async def store_embeddings(
         response = await client.post(endpoint_path, headers=headers, json=body)
         response.raise_for_status()
     except HTTPStatusError as exc:
+        body_preview = None
+        try:
+            body_preview = getattr(exc.response, "text", None)
+        except Exception:
+            body_preview = None
         logger.error(
             "vectorize_upsert_http_error",
             exc_info=True,
-            extra={"status_code": exc.response.status_code},
+            extra={
+                "status_code": getattr(exc.response, "status_code", None),
+                "body": body_preview,
+            },
         )
         raise
     except RequestError as exc:
@@ -151,10 +170,18 @@ async def query_project_chunks(
         response = await client.post(endpoint_path, headers=headers, json=body)
         response.raise_for_status()
     except HTTPStatusError as exc:
+        body_preview = None
+        try:
+            body_preview = getattr(exc.response, "text", None)
+        except Exception:
+            body_preview = None
         logger.error(
             "vectorize_query_http_error",
             exc_info=True,
-            extra={"status_code": exc.response.status_code},
+            extra={
+                "status_code": getattr(exc.response, "status_code", None),
+                "body": body_preview,
+            },
         )
         raise
     except RequestError as exc:

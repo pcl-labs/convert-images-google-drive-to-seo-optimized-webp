@@ -74,10 +74,17 @@ binding = "DLQ"  # Must match WORKER_DLQ_BINDING in src/workers/runtime.py
 #   wrangler secret put OPENAI_API_KEY          # OpenAI API key (optional, for AI features)
 #
 # For production with Cloudflare Queues (USE_INLINE_QUEUE=false):
-#   wrangler secret put CLOUDFLARE_ACCOUNT_ID   # Cloudflare account ID
-#   wrangler secret put CLOUDFLARE_API_TOKEN    # API token with Queues:Edit permission
+#   wrangler secret put CLOUDFLARE_ACCOUNT_ID   # Cloudflare account ID (required for Queues and Vectorize)
+#   wrangler secret put CLOUDFLARE_API_TOKEN    # API token with Queues:Edit AND AI:Vectorize permissions
+#                                                # This token is used for both Queue operations and Vectorize embeddings
 #   wrangler secret put CF_QUEUE_NAME           # Queue name (default: "quill-jobs")
 #   wrangler secret put CF_QUEUE_DLQ            # DLQ name (default: "quill-dlq")
+#
+# Note: CLOUDFLARE_API_TOKEN must have Vectorize permissions for transcript chunk-and-embed to work.
+# Create token in Cloudflare Dashboard → My Profile → API Tokens with:
+#   - AI:Vectorize Read/Write (or custom permission for Vectorize)
+#   - Queues:Edit (for queue operations)
+#   - Restricted to account: fa3dc6c06433f6b0ea78d95bce23ad91
 #
 # See docs/CLOUDFLARE_WORKERS.md for complete setup instructions.
 

@@ -42,6 +42,15 @@ from .models import (
     ProjectGenerateBlogRequest,
     ProjectBlog,
     GenerateProjectBlogResponse,
+    ProjectSectionSummary,
+    ProjectSectionListResponse,
+    ProjectSectionDetail,
+    PatchSectionRequest,
+    PatchSectionResponse,
+    ProjectVersionSummary,
+    ProjectVersionsResponse,
+    ProjectVersionDetail,
+    ProjectBlogDiff,
 )
 from .database import (
     create_job_extended,
@@ -100,6 +109,13 @@ from consumer import process_generate_blog_job
 from .database import get_usage_summary, list_usage_events, count_usage_events
 from fastapi import Query
 from .ai_preferences import resolve_generate_blog_options
+from core.sections import (
+    extract_sections_from_version,
+    find_section_by_id,
+    get_latest_version_for_project,
+    _word_count,
+)
+import difflib
 
 logger = get_logger(__name__)
 
@@ -1419,6 +1435,161 @@ async def get_project_blog(project_id: str, user: dict = Depends(get_current_use
         outline=payload["outline"],
         created_at=payload["created_at"],
     )
+
+
+@router.get(
+    "/api/v1/projects/{project_id}/blog/sections",
+    response_model=ProjectSectionListResponse,
+    tags=["Projects"],
+)
+async def list_project_blog_sections(
+    project_id: str,
+    user: dict = Depends(get_current_user),
+):
+    db = ensure_db()
+    project = await get_project(db, project_id, user["user_id"])
+    if not project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+    version_row = await get_latest_version_for_project(db, project, user["user_id"])
+    if not version_row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No blog generated for this project yet")
+
+    sections = extract_sections_from_version(version_row)
+    summaries: List[ProjectSectionSummary] = []
+    for section in sections:
+        section_id = str(section.get("section_id"))
+        index = int(section.get("index", 0))
+        title = section.get("title")
+        # For now, derive word_count from summary/title as a cheap approximation.
+        text_for_wc = section.get("summary") or title or ""
+        wc = _word_count(text_for_wc)
+        summaries.append(
+            ProjectSectionSummary(
+                section_id=section_id,
+                index=index,
+                title=title,
+                word_count=wc,
+            )
+        )
+
+    return ProjectSectionListResponse(
+        project_id=project_id,
+        document_id=version_row.get("document_id"),
+        version_id=version_row.get("version_id"),
+        sections=summaries,
+    )
+
+
+@router.get(
+    "/api/v1/projects/{project_id}/blog/versions",
+    response_model=ProjectVersionsResponse,
+    tags=["Projects"],
+)
+async def list_project_blog_versions(
+    project_id: str,
+    user: dict = Depends(get_current_user),
+):
+    db = ensure_db()
+    project = await get_project(db, project_id, user["user_id"])
+    if not project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+    document_id = project.get("document_id")
+    if not document_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project is missing document reference")
+
+    rows = await list_document_versions(db, document_id, user["user_id"], limit=50)
+    versions: List[ProjectVersionSummary] = []
+    for row in rows:
+        created_at = _parse_db_datetime(row.get("created_at"))
+        frontmatter = _json_field(row.get("frontmatter"), {})
+        title = None
+        if isinstance(frontmatter, dict):
+            title = frontmatter.get("title")
+        # Best-effort source hint from assets.generator.source
+        assets = _json_field(row.get("assets"), {})
+        source = None
+        if isinstance(assets, dict):
+            gen = assets.get("generator") or {}
+            if isinstance(gen, dict):
+                source = gen.get("source")
+        versions.append(
+            ProjectVersionSummary(
+                version_id=row.get("version_id"),
+                version=int(row.get("version", 0)),
+                created_at=created_at,
+                source=source,
+                title=title,
+            )
+        )
+
+    return ProjectVersionsResponse(
+        project_id=project_id,
+        document_id=document_id,
+        versions=versions,
+    )
+
+
+@router.get(
+    "/api/v1/projects/{project_id}/blog/versions/{version_id}",
+    response_model=ProjectVersionDetail,
+    tags=["Projects"],
+)
+async def get_project_blog_version(
+    project_id: str,
+    version_id: str,
+    user: dict = Depends(get_current_user),
+):
+    db = ensure_db()
+    project = await get_project(db, project_id, user["user_id"])
+    if not project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+    document_id = project.get("document_id")
+    if not document_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project is missing document reference")
+
+    row = await get_document_version(db, document_id, version_id, user["user_id"])
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Blog version not found")
+
+    frontmatter = _json_field(row.get("frontmatter"), {})
+    outline = _json_field(row.get("outline"), [])
+    sections = _json_field(row.get("sections"), [])
+
+    return ProjectVersionDetail(
+        project_id=project_id,
+        document_id=document_id,
+        version_id=row.get("version_id"),
+        version=int(row.get("version", 0)),
+        created_at=_parse_db_datetime(row.get("created_at")),
+        frontmatter=frontmatter,
+        body_mdx=row.get("body_mdx"),
+        outline=outline,
+        sections=sections,
+    )
+
+
+@router.get(
+    "/api/v1/projects/{project_id}/blog/export",
+    tags=["Projects"],
+)
+async def export_project_blog_mdx(
+    project_id: str,
+    user: dict = Depends(get_current_user),
+):
+    db = ensure_db()
+    project = await get_project(db, project_id, user["user_id"])
+    if not project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+    version_row = await get_latest_version_for_project(db, project, user["user_id"])
+    if not version_row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No blog generated for this project yet")
+
+    body_mdx = version_row.get("body_mdx") or ""
+    return {"project_id": project_id, "document_id": version_row.get("document_id"), "version_id": version_row.get("version_id"), "body_mdx": body_mdx}
 
 
 async def start_generate_blog_job(
