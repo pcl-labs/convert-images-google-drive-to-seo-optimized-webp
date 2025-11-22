@@ -226,60 +226,6 @@ async def blog_from_text(
     return _build_sync_response(blog_row, resolved_mode, resolved_format, document_id)
 
 
-class BlogFromDocumentRequest(BaseModel):
-    document_id: str = Field(..., min_length=5, max_length=100)
-    mode: ContentMode = ContentMode.structured
-    format: Optional[ContentFormat] = None
-    async_request: bool = Field(default=True, alias="async")
-    options: GenerateBlogOptions = Field(default_factory=GenerateBlogOptions)
-    instructions: Optional[str] = Field(default=None, max_length=2000)
-
-    model_config = ConfigDict(populate_by_name=True)
-
-
-@router.post("/blog_from_document", response_model=ContentResponse)
-async def blog_from_document(
-    payload: BlogFromDocumentRequest,
-    user: dict = Depends(get_current_user),
-):
-    db, queue = ensure_services()
-    user_id = user["user_id"]
-    resolved_mode = payload.mode
-    resolved_format = _resolve_format(resolved_mode, payload.format)
-
-    options_model = payload.options.model_copy(deep=True)
-    if payload.instructions and not options_model.instructions:
-        options_model.instructions = payload.instructions
-
-    job_status = await start_generate_blog_job(
-        db,
-        queue,
-        user_id,
-        GenerateBlogRequest(document_id=payload.document_id, options=options_model),
-    )
-
-    # For blog-from-document, only treat the request as async when queues are
-    # enabled. In inline mode we always run synchronously.
-    if payload.async_request and not settings.use_inline_queue:
-        job_payload = _job_response(
-            resolved_mode,
-            resolved_format,
-            job_status,
-            payload.document_id,
-            job_type=job_status.job_type or "generate_blog",
-            detail="Blog generation job queued.",
-        )
-        return JSONResponse(status_code=status.HTTP_202_ACCEPTED, content=job_payload.model_dump())
-
-    job_row = await _wait_for_job_completion(db, user_id, job_status.job_id)
-    if job_row.get("status") != JobStatusEnum.COMPLETED.value:
-        raise HTTPException(
-            status.HTTP_502_BAD_GATEWAY,
-            detail="Blog generation failed; check job status for details.",
-        )
-    return _build_sync_response(job_row, resolved_mode, resolved_format, payload.document_id)
-
-
 class DocumentOverviewResponse(BaseModel):
     document: Dict[str, Any]
     latest_version: Optional[DocumentVersionSummary] = None

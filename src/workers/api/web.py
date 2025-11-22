@@ -48,6 +48,8 @@ from .database import (
     list_pipeline_events,
     latest_job_by_type,
     delete_user_session,
+    get_project,
+    list_project_activity,
 )
 from .auth import create_user_api_key
 from .protected import (
@@ -77,6 +79,7 @@ from .ai_preferences import (
     normalize_ai_preferences,
     set_ai_preferences,
 )
+from core.sections import extract_sections_from_version, get_latest_version_for_project, _word_count
 
 CONTENT_SCHEMA_CHOICES = [
     ("https://schema.org/BlogPosting", "Blog post"),
@@ -503,6 +506,63 @@ def _render_auth_page(request: Request, view_mode: str) -> Response:
         is_secure = is_secure_request(request, settings)
         resp.set_cookie("csrf_token", csrf, httponly=True, samesite="lax", secure=is_secure)
     return resp
+
+
+@router.get("/dashboard/projects/{project_id}", response_class=HTMLResponse)
+async def dashboard_project_detail(
+    request: Request,
+    project_id: str,
+    user: dict = Depends(get_current_user),
+):
+    """Project workspace: Codex-like editor for blog + activity."""
+    db = ensure_db()
+    project = await get_project(db, project_id, user["user_id"])
+    if not project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+    version_row = await get_latest_version_for_project(db, project, user["user_id"])
+    normalized_sections: List[Dict[str, Any]] = []
+    if version_row:
+        raw_sections = extract_sections_from_version(version_row)
+        for section in raw_sections:
+            body = (
+                section.get("body_mdx")
+                or section.get("body")
+                or section.get("summary")
+                or ""
+            )
+            preview = (body or "").strip()
+            # Simple truncation for preview; formatting handled by template
+            if len(preview) > 800:
+                preview = preview[:800] + "…"
+            normalized_sections.append(
+                {
+                    "section_id": section.get("section_id"),
+                    "index": section.get("index", 0),
+                    "title": section.get("title"),
+                    "word_count": _word_count(body),
+                    "body_preview": preview,
+                    "summary": section.get("summary"),
+                }
+            )
+
+    activity_items = await list_project_activity(
+        db,
+        project_id=project_id,
+        user_id=user["user_id"],
+        limit=30,
+    )
+
+    context = {
+        "request": request,
+        "user": user,
+        "project": project,
+        "blog_version": version_row,
+        "sections": normalized_sections,
+        "activity_items": activity_items,
+        "page_title": project.get("youtube_url") or project_id,
+    }
+    return templates.TemplateResponse("projects/detail.html", context)
 
 
 async def _render_account_page(
@@ -1241,6 +1301,19 @@ async def document_detail_page(document_id: str, request: Request, user: dict = 
     doc = await get_document(db, document_id, user_id=user["user_id"])
     if not doc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    # If this document is linked to a project, redirect to the project workspace
+    try:
+        project_row = await db.execute(
+            "SELECT project_id FROM projects WHERE document_id = ? AND user_id = ?",
+            (document_id, user["user_id"]),
+        )
+    except Exception:
+        project_row = None
+    if project_row:
+        project_dict = getattr(project_row, "__dict__", None) or {}
+        project_id = project_dict.get("project_id") or getattr(project_row, "project_id", None)
+        if project_id:
+            return RedirectResponse(url=f"/dashboard/projects/{project_id}", status_code=status.HTTP_302_FOUND)
     doc_view = _document_to_view(doc)
     metadata_items = list((doc_view.get("metadata") or {}).items())
     frontmatter_items = list((doc_view.get("frontmatter") or {}).items())
@@ -1385,65 +1458,6 @@ async def dashboard_generate_blog(
         detail = exc.detail if isinstance(exc.detail, str) else "Failed to queue job"
         return _render_flash(request, detail, "error", exc.status_code)
     return _render_flash(request, "Blog generation job queued", "success")
-
-
-@router.post("/dashboard/documents/{document_id}/sections/{section_index}/regenerate", response_class=HTMLResponse)
-async def dashboard_regenerate_section(
-    document_id: str,
-    section_index: int,
-    request: Request,
-    csrf_token: str = Form(...),
-    user: dict = Depends(get_current_user),
-):
-    cookie_token = request.cookies.get("csrf_token")
-    if not secrets.compare_digest(str(cookie_token or ""), str(csrf_token or "")):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
-    if section_index < 0:
-        return _render_flash(request, "Invalid section index", "error", status.HTTP_400_BAD_REQUEST)
-    db, queue = ensure_services()
-    try:
-        options = GenerateBlogOptions(section_index=section_index)
-    except Exception as exc:
-        return _render_flash(
-            request,
-            f"Invalid options: {exc}",
-            "error",
-            status.HTTP_400_BAD_REQUEST,
-        )
-    req_model = GenerateBlogRequest(document_id=document_id, options=options)
-    logger.info(
-        "web.dashboard_regenerate_section.begin",
-        extra={
-            "document_id": document_id,
-            "user_id": user["user_id"],
-            "section_index": section_index,
-        },
-    )
-    try:
-        status = await start_generate_blog_job(db, queue, user["user_id"], req_model)
-        logger.info(
-            "web.dashboard_regenerate_section.complete",
-            extra={
-                "document_id": document_id,
-                "user_id": user["user_id"],
-                "section_index": section_index,
-                "job_id": getattr(status, "job_id", None),
-                "job_status": getattr(status, "status", None),
-            },
-        )
-    except HTTPException as exc:
-        logger.exception(
-            "web.dashboard_regenerate_section.http_error",
-            extra={
-                "document_id": document_id,
-                "user_id": user["user_id"],
-                "section_index": section_index,
-                "status_code": exc.status_code,
-            },
-        )
-        detail = exc.detail if isinstance(exc.detail, str) else "Failed to queue job"
-        return _render_flash(request, detail, "error", exc.status_code)
-    return _render_flash(request, f"Regeneration queued for section {section_index + 1}", "success")
 
 
 @router.post("/dashboard/documents/{document_id}/drive/sync", response_class=HTMLResponse)

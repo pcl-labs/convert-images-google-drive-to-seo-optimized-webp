@@ -75,6 +75,7 @@ from .database import (
     list_transcript_chunks,
     update_document_latest_version_if_match,
     create_document_version,
+    list_project_activity,
 )
 from .notifications import notify_job
 from .auth import create_user_api_key
@@ -1454,6 +1455,33 @@ async def get_project_blog(project_id: str, user: dict = Depends(get_current_use
         outline=payload["outline"],
         created_at=payload["created_at"],
     )
+
+
+@router.get(
+    "/api/v1/projects/{project_id}/activity",
+    tags=["Projects"],
+)
+async def get_project_activity(
+    project_id: str,
+    limit: int = 30,
+    user: dict = Depends(get_current_user),
+):
+    """Return a mixed activity feed (jobs + pipeline events, etc.) for a project."""
+    db = ensure_db()
+    project = await get_project(db, project_id, user["user_id"])
+    if not project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+    activity_items = await list_project_activity(
+        db,
+        project_id=project_id,
+        user_id=user["user_id"],
+        limit=limit,
+    )
+    return {
+        "project_id": project_id,
+        "items": activity_items,
+    }
 
 
 @router.get(

@@ -1,0 +1,54 @@
+<section class="space-y-4" id="project-sections" data-project-id="{{ project.project_id }}">
+  {% if sections %}
+    {% for s in sections %}
+      <article
+        class="rounded-lg border border-border bg-surface p-4 space-y-2"
+        data-section-id="{{ s.section_id }}"
+      >
+        <header class="flex items-center justify-between gap-2">
+          <div>
+            <p class="text-[11px] text-contentMuted uppercase tracking-wide">
+              Section {{ s.index + 1 }}
+            </p>
+            <h2 class="text-sm font-medium text-content">
+              {{ s.title or "Untitled section" }}
+            </h2>
+          </div>
+          <div class="flex items-center gap-2 text-xs text-contentMuted">
+            <span>
+              {{ s.word_count or 0 }} words
+            </span>
+            <button
+              type="button"
+              class="btn-ghost text-xs px-2 py-1"
+              data-action="edit-section"
+              data-section-id="{{ s.section_id }}"
+            >
+              Edit with AI
+            </button>
+          </div>
+        </header>
+
+        <div class="text-sm text-content max-h-48 overflow-hidden" data-section-preview>
+          {{ s.body_preview or s.summary or "No content yet." }}
+        </div>
+
+        <div class="hidden mt-3 space-y-2" data-section-editor>
+          <textarea
+            class="field w-full resize-y"
+            rows="3"
+            placeholder="Describe how you want this section changed..."
+          ></textarea>
+          <div class="flex justify-end gap-2">
+            <button type="button" class="btn-ghost text-xs" data-action="cancel-edit">Cancel</button>
+            <button type="button" class="btn-primary text-xs" data-action="apply-edit">Apply changes</button>
+          </div>
+        </div>
+      </article>
+    {% endfor %}
+  {% else %}
+    <div class="rounded-md border border-dashed border-border bg-surface/40 p-4 text-sm text-contentMuted">
+      No sections yet. Generate a blog for this project first.
+    </div>
+  {% endif %}
+</section>
