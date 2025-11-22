@@ -213,6 +213,13 @@ async def test_patch_project_blog_section_creates_new_version(monkeypatch):
     async def fake_get_project(db, project_id, user_id):  # type: ignore[unused-argument]
         return project_row
 
+    async def fake_get_document(db, document_id, user_id=None):  # type: ignore[unused-argument]
+        return {
+            "document_id": document_id,
+            "user_id": user_id,
+            "latest_version_id": "v2",
+        }
+
     async def fake_get_latest_version_for_project(db, project, user_id):  # type: ignore[unused-argument]
         return base_version
 
@@ -331,6 +338,13 @@ async def test_diff_and_revert_project_blog_versions(monkeypatch):
     async def fake_get_project(db, project_id, user_id):  # type: ignore[unused-argument]
         return project_row
 
+    async def fake_get_document(db, document_id, user_id=None):  # type: ignore[unused-argument]
+        return {
+            "document_id": document_id,
+            "user_id": user_id,
+            "latest_version_id": "v2",
+        }
+
     async def fake_get_document_version(db, document_id, version_id, user_id):  # type: ignore[unused-argument]
         if version_id == "v1":
             return base_v1
@@ -362,6 +376,7 @@ async def test_diff_and_revert_project_blog_versions(monkeypatch):
 
     monkeypatch.setattr(protected_module, "ensure_db", fake_ensure_db)
     monkeypatch.setattr(protected_module, "get_project", fake_get_project)
+    monkeypatch.setattr(protected_module, "get_document", fake_get_document)
     monkeypatch.setattr(protected_module, "get_document_version", fake_get_document_version)
     monkeypatch.setattr(protected_module, "create_document_version", fake_create_document_version)
     monkeypatch.setattr(protected_module, "update_document_latest_version_if_match", fake_update_latest)

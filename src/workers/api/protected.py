@@ -1954,10 +1954,17 @@ async def revert_project_blog_version(
     )
     new_version_id = new_row.get("version_id")
     if new_version_id:
+        # Use the document's current latest_version_id as the CAS base so we
+        # only move the head if it hasn't changed since this revert began.
+        doc = await get_document(db, document_id, user_id=user["user_id"])
+        if not doc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+        expected_latest = doc.get("latest_version_id")
+
         updated = await update_document_latest_version_if_match(
             db,
             document_id,
-            expected_version_id=source_row.get("version_id"),
+            expected_version_id=expected_latest,
             new_version_id=new_version_id,
         )
         if not updated:
