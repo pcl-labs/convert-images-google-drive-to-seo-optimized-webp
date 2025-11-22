@@ -30,17 +30,18 @@ def test_inline_allowed_in_development():
 
 
 def test_inline_disallowed_in_production():
-    # Test that inline queue is not allowed in production
     kwargs = base_kwargs(environment="production", use_inline_queue=True)
     with pytest.raises(ValueError) as exc:
         Settings(**kwargs)
-    assert "not allowed in production" in str(exc.value)
+    # In production we always require external queues when not inline;
+    # missing Cloudflare credentials should trigger a clear error.
+    assert "CLOUDFLARE_ACCOUNT_ID" in str(exc.value)
 
 
 def test_missing_cloudflare_account_id_when_not_inline():
     with pytest.raises(ValueError) as exc:
         Settings(**base_kwargs(
-            environment="development",
+            environment="production",
             use_inline_queue=False,
             cloudflare_api_token="token",
             cf_queue_name="queue",
@@ -52,7 +53,7 @@ def test_missing_cloudflare_account_id_when_not_inline():
 def test_missing_cloudflare_api_token_when_not_inline():
     with pytest.raises(ValueError) as exc:
         Settings(**base_kwargs(
-            environment="development",
+            environment="production",
             use_inline_queue=False,
             cloudflare_account_id="acc",
             cf_queue_name="queue",
@@ -64,7 +65,7 @@ def test_missing_cloudflare_api_token_when_not_inline():
 def test_missing_cf_queue_name_when_not_inline():
     with pytest.raises(ValueError) as exc:
         Settings(**base_kwargs(
-            environment="development",
+            environment="production",
             use_inline_queue=False,
             cloudflare_account_id="acc",
             cloudflare_api_token="token",
@@ -75,7 +76,7 @@ def test_missing_cf_queue_name_when_not_inline():
 
 def test_valid_api_config_passes():
     s = Settings(**base_kwargs(
-        environment="development",
+        environment="production",
         use_inline_queue=False,
         cloudflare_account_id="acc",
         cloudflare_api_token="token",

@@ -15,6 +15,8 @@ from src.workers.api.database import (
 async def test_pipeline_events_round_trip(tmp_path, monkeypatch):
     db_path = tmp_path / "pipeline.db"
     monkeypatch.setenv("LOCAL_SQLITE_PATH", str(db_path))
+    from src.workers.api.config import settings as api_settings
+    monkeypatch.setattr(api_settings, "enable_notifications", True)
     db = Database()
     await ensure_notifications_schema(db)
     await db.execute(

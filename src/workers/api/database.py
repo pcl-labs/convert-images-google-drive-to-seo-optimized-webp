@@ -1841,6 +1841,35 @@ async def get_document_version(
     return _jsproxy_to_dict(row) if row else None
 
 
+async def update_document_latest_version_if_match(
+    db: Database,
+    document_id: str,
+    expected_version_id: Optional[str],
+    new_version_id: str,
+) -> bool:
+    """Optimistically update documents.latest_version_id when the current value matches expected.
+
+    Returns True if latest_version_id ends up set to new_version_id, False otherwise.
+    Works for both D1 and SQLite via the Database wrapper.
+    """
+    result = await db.execute(
+        """
+        UPDATE documents
+        SET latest_version_id = ?, updated_at = datetime('now')
+        WHERE document_id = ? AND (latest_version_id IS ? OR latest_version_id = ?)
+        RETURNING latest_version_id
+        """,
+        (new_version_id, document_id, expected_version_id, expected_version_id),
+    )
+
+    if not result:
+        # No row matched the expected latest_version_id; treat as conflict.
+        return False
+
+    doc = _jsproxy_to_dict(result)
+    return doc.get("latest_version_id") == new_version_id
+
+
 async def create_document_export(
     db: Database,
     document_id: str,
