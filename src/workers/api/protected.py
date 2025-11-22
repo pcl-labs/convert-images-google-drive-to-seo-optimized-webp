@@ -923,6 +923,8 @@ async def chunk_and_embed_transcript(project_id: str, user: dict = Depends(get_c
             detail="Failed to reset existing transcript chunks",
         ) from exc
 
+    persisted_chunks = []
+    had_chunk_errors = False
     for chunk in chunks:
         try:
             # Validate required numeric fields before casting.
@@ -941,7 +943,14 @@ async def chunk_and_embed_transcript(project_id: str, user: dict = Depends(get_c
                 end_char=end_char,
                 text_preview=(chunk.get("text") or "")[:200],
             )
+            persisted_chunks.append({
+                "chunk_index": chunk_index,
+                "start_char": start_char,
+                "end_char": end_char,
+                "text": chunk.get("text") or "",
+            })
         except (ValueError, TypeError) as exc:
+            had_chunk_errors = True
             logger.warning(
                 "chunk_and_embed.invalid_chunk",
                 extra={
@@ -953,6 +962,7 @@ async def chunk_and_embed_transcript(project_id: str, user: dict = Depends(get_c
             )
             continue
         except Exception as exc:
+            had_chunk_errors = True
             logger.error(
                 "chunk_and_embed.create_transcript_chunk_failed",
                 exc_info=True,
@@ -965,13 +975,55 @@ async def chunk_and_embed_transcript(project_id: str, user: dict = Depends(get_c
             )
             continue
 
-    # Build embeddings payloads
-    texts = [c["text"] for c in chunks]
+    if not persisted_chunks:
+        # No chunks could be safely saved; mark project as failed and abort.
+        try:
+            await update_project_status(db, project_id, user["user_id"], "failed")
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to persist any transcript chunks for project",
+        )
+
+    if had_chunk_errors:
+        # Some chunks failed to save; treat as a hard failure rather than
+        # proceeding with a partial embedding.
+        try:
+            await update_project_status(db, project_id, user["user_id"], "failed")
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="One or more transcript chunks failed to save",
+        )
+
+    # Build embeddings payloads from successfully persisted chunks only
+    texts = [c["text"] for c in persisted_chunks]
     try:
         vectors = await embed_texts(texts)
     except NotImplementedError as exc:
         # Surface a clear error until embeddings are wired
         raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error(
+            "chunk_and_embed.embed_texts_failed",
+            exc_info=True,
+            extra={
+                "project_id": project_id,
+                "document_id": project["document_id"],
+                "chunks": len(persisted_chunks),
+                "error": str(exc),
+            },
+        )
+        try:
+            await update_project_status(db, project_id, user["user_id"], "failed")
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Embeddings service unavailable for transcript chunks",
+        ) from exc
 
     metadatas = [
         {
@@ -981,7 +1033,7 @@ async def chunk_and_embed_transcript(project_id: str, user: dict = Depends(get_c
             "start_char": c["start_char"],
             "end_char": c["end_char"],
         }
-        for c in chunks
+        for c in persisted_chunks
     ]
 
     try:
