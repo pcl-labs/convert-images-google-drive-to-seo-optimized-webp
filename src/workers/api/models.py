@@ -18,6 +18,16 @@ class JobStatusEnum(str, Enum):
     CANCELLED = "cancelled"
 
 
+class ProjectStatusEnum(str, Enum):
+    """Project status enumeration for YouTube-backed projects."""
+
+    PENDING = "pending"
+    TRANSCRIPT_READY = "transcript_ready"
+    EMBEDDED = "embedded"
+    BLOG_GENERATED = "blog_generated"
+    FAILED = "failed"
+
+
 class JobType(str, Enum):
     """Job type classification for pipelines and ingestion."""
     OPTIMIZE_DRIVE = "optimize_drive"
@@ -283,3 +293,92 @@ class IngestDriveRequest(BaseModel):
 
 class DriveChangePollRequest(BaseModel):
     document_ids: Optional[List[str]] = None
+
+
+class Project(BaseModel):
+    project_id: str
+    document_id: str
+    user_id: str
+    youtube_url: Optional[str]
+    status: ProjectStatusEnum
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(use_enum_values=True)
+
+
+class CreateProjectRequest(BaseModel):
+    youtube_url: HttpUrl
+
+    @field_validator("youtube_url")
+    @classmethod
+    def validate_youtube_host(cls, v: HttpUrl) -> HttpUrl:
+        # Reuse the same host restrictions as IngestYouTubeRequest so project
+        # creation and ingest share URL validation.
+        host = (v.host or "").lower()
+        if not (
+            host == "youtube.com" or
+            host.endswith(".youtube.com") or
+            host == "youtu.be"
+        ):
+            raise ValueError("youtube_url must be a YouTube URL (youtube.com or youtu.be)")
+        return v
+
+
+class ProjectResponse(BaseModel):
+    project: Project
+    document: Optional[Document] = None
+
+
+class TranscriptChunk(BaseModel):
+    chunk_id: str
+    chunk_index: int = Field(ge=0)
+    start_char: int = Field(ge=0)
+    end_char: int = Field(ge=0)
+    text_preview: str
+
+    @model_validator(mode="after")
+    def validate_char_range(self):
+        if self.start_char >= self.end_char:
+            raise ValueError("start_char must be strictly less than end_char for a transcript chunk")
+        return self
+
+
+class TranscriptResponse(BaseModel):
+    project_id: str
+    text: str
+    chunks: List[TranscriptChunk]
+    metadata: Optional[Dict[str, Any]] = None
+
+
+class ChunkAndEmbedResponse(BaseModel):
+    project_id: str
+    chunks_created: int
+    embeddings_stored: int
+    status: str
+
+
+class TranscriptSearchRequest(BaseModel):
+    query: str = Field(..., min_length=1, max_length=2000)
+    limit: int = Field(5, ge=1, le=20)
+
+
+class TranscriptSearchMatch(BaseModel):
+    chunk_id: str
+    chunk_index: int = Field(ge=0)
+    start_char: int = Field(ge=0)
+    end_char: int = Field(ge=0)
+    text_preview: str
+    score: Optional[float] = None
+
+    @model_validator(mode="after")
+    def validate_char_range(self):
+        if self.start_char >= self.end_char:
+            raise ValueError("start_char must be strictly less than end_char for a search match")
+        return self
+
+
+class TranscriptSearchResponse(BaseModel):
+    project_id: str
+    query: str
+    matches: List[TranscriptSearchMatch]

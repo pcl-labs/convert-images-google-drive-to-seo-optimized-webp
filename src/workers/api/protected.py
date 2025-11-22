@@ -33,6 +33,12 @@ from .models import (
     DocumentVersionDetail,
     DocumentExportRequest,
     DocumentExportResponse,
+    CreateProjectRequest,
+    ProjectResponse,
+    TranscriptResponse,
+    ChunkAndEmbedResponse,
+    TranscriptSearchRequest,
+    TranscriptSearchResponse,
 )
 from .database import (
     create_job_extended,
@@ -50,6 +56,11 @@ from .database import (
     set_job_output,
     record_pipeline_event,
     get_user_preferences,
+    create_project,
+    get_project,
+    update_project_status,
+    create_transcript_chunk,
+    list_transcript_chunks,
 )
 from .notifications import notify_job
 from .auth import create_user_api_key
@@ -79,6 +90,9 @@ from core.url_utils import parse_youtube_video_id
 from .drive_workspace import ensure_drive_workspace, ensure_document_drive_structure, link_document_drive_workspace
 from .drive_docs import sync_drive_doc_for_document
 from .youtube_ingest import ingest_youtube_document, build_outline_from_chapters
+from core.transcript_chunking import chunk_transcript
+from core.embeddings import embed_texts
+from core.vectorize_client import store_embeddings, query_project_chunks
 from consumer import process_generate_blog_job
 from .database import get_usage_summary, list_usage_events, count_usage_events
 from fastapi import Query
@@ -783,6 +797,415 @@ async def start_ingest_text_job(
         created_at=_parse_db_datetime(job_row.get("created_at")),
         job_type=JobType.INGEST_TEXT.value,
         document_id=document_id,
+    )
+
+
+@router.post("/api/v1/projects", response_model=ProjectResponse, tags=["Projects"])
+async def create_project_for_youtube(req: CreateProjectRequest, user: dict = Depends(get_current_user)):
+    """Create a new project backed by a YouTube document.
+
+    Reuses the existing YouTube ingest flow to create the document and kick
+    off ingestion; then creates a project record linked to that document.
+    """
+    db = ensure_db()
+    # Reuse the existing ingest orchestration to avoid duplicating logic.
+    # Disable autopilot so we don't start blog generation from this path.
+    _, queue = ensure_services()
+    job_status = await start_ingest_youtube_job(
+        db,
+        queue,
+        user["user_id"],
+        req.youtube_url,
+        autopilot_enabled=False,
+    )
+    document_id = job_status.document_id
+    # Create project row and mark transcript_ready if we already have text.
+    try:
+        project_row = await create_project(db, user["user_id"], document_id, str(req.youtube_url))
+        doc = await get_document(db, document_id, user_id=user["user_id"])
+        if doc and (doc.get("raw_text") or "").strip():
+            updated = await update_project_status(
+                db,
+                project_row["project_id"],
+                user["user_id"],
+                "transcript_ready",
+            )
+            if updated:
+                project_row["status"] = "transcript_ready"
+    except DatabaseError as exc:
+        logger.error(
+            "create_project_for_youtube.db_error",
+            exc_info=True,
+            extra={"document_id": document_id, "user_id": user["user_id"], "error": str(exc)},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to create project",
+        ) from exc
+    # Build lightweight embedded document payload
+    document_payload = None
+    if doc:
+        metadata = _json_field(doc.get("metadata"), {})
+        document_payload = {
+            "document_id": doc.get("document_id"),
+            "user_id": doc.get("user_id"),
+            "source_type": doc.get("source_type"),
+            "metadata": metadata,
+            "frontmatter": _json_field(doc.get("frontmatter"), {}),
+            "content_format": doc.get("content_format"),
+        }
+    return ProjectResponse(project=project_row, document=document_payload)
+
+
+@router.get("/api/v1/projects/{project_id}", response_model=ProjectResponse, tags=["Projects"])
+async def get_project_overview(project_id: str, user: dict = Depends(get_current_user)):
+    db = ensure_db()
+    project = await get_project(db, project_id, user["user_id"])
+    if not project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    doc = await get_document(db, project["document_id"], user_id=user["user_id"])
+    document_payload = None
+    if doc:
+        metadata = _json_field(doc.get("metadata"), {})
+        document_payload = {
+            "document_id": doc.get("document_id"),
+            "user_id": doc.get("user_id"),
+            "source_type": doc.get("source_type"),
+            "metadata": metadata,
+            "frontmatter": _json_field(doc.get("frontmatter"), {}),
+            "content_format": doc.get("content_format"),
+        }
+    return ProjectResponse(project=project, document=document_payload)
+
+
+@router.post(
+    "/api/v1/projects/{project_id}/transcript/chunk-and-embed",
+    response_model=ChunkAndEmbedResponse,
+    tags=["Projects"],
+)
+async def chunk_and_embed_transcript(project_id: str, user: dict = Depends(get_current_user)):
+    db = ensure_db()
+    project = await get_project(db, project_id, user["user_id"])
+    if not project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    doc = await get_document(db, project["document_id"], user_id=user["user_id"])
+    if not doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    text = (doc.get("raw_text") or "").strip()
+    if not text:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Project document is missing transcript text")
+
+    chunks = chunk_transcript(text)
+    if not chunks:
+        return ChunkAndEmbedResponse(
+            project_id=project_id,
+            chunks_created=0,
+            embeddings_stored=0,
+            status=project.get("status", "pending"),
+        )
+
+    # Persist chunks in DB. First clear any existing rows so this endpoint
+    # can be safely re-run for the same project without UNIQUE constraint
+    # violations on (project_id, chunk_index).
+    try:
+        await db.execute(
+            "DELETE FROM transcript_chunks WHERE project_id = ?",
+            (project_id,),
+        )
+    except Exception as exc:
+        logger.error(
+            "chunk_and_embed.delete_transcript_chunks_failed",
+            exc_info=True,
+            extra={"project_id": project_id, "error": str(exc)},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to reset existing transcript chunks",
+        ) from exc
+
+    persisted_chunks = []
+    had_chunk_errors = False
+    for chunk in chunks:
+        try:
+            # Validate required numeric fields before casting.
+            if "chunk_index" not in chunk or "start_char" not in chunk or "end_char" not in chunk:
+                raise ValueError("chunk_index, start_char, and end_char are required for each chunk")
+            chunk_index = int(chunk["chunk_index"])
+            start_char = int(chunk["start_char"])
+            end_char = int(chunk["end_char"])
+            await create_transcript_chunk(
+                db,
+                chunk_id=str(uuid.uuid4()),
+                project_id=project_id,
+                document_id=project["document_id"],
+                chunk_index=chunk_index,
+                start_char=start_char,
+                end_char=end_char,
+                text_preview=(chunk.get("text") or "")[:200],
+            )
+            persisted_chunks.append({
+                "chunk_index": chunk_index,
+                "start_char": start_char,
+                "end_char": end_char,
+                "text": chunk.get("text") or "",
+            })
+        except (ValueError, TypeError) as exc:
+            had_chunk_errors = True
+            logger.warning(
+                "chunk_and_embed.invalid_chunk",
+                extra={
+                    "project_id": project_id,
+                    "document_id": project["document_id"],
+                    "chunk": chunk,
+                    "error": str(exc),
+                },
+            )
+            continue
+        except Exception as exc:
+            had_chunk_errors = True
+            logger.error(
+                "chunk_and_embed.create_transcript_chunk_failed",
+                exc_info=True,
+                extra={
+                    "project_id": project_id,
+                    "document_id": project["document_id"],
+                    "chunk": chunk,
+                    "error": str(exc),
+                },
+            )
+            continue
+
+    if not persisted_chunks:
+        # No chunks could be safely saved; mark project as failed and abort.
+        try:
+            await update_project_status(db, project_id, user["user_id"], "failed")
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to persist any transcript chunks for project",
+        )
+
+    if had_chunk_errors:
+        # Some chunks failed to save; treat as a hard failure rather than
+        # proceeding with a partial embedding.
+        try:
+            await update_project_status(db, project_id, user["user_id"], "failed")
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="One or more transcript chunks failed to save",
+        )
+
+    # Build embeddings payloads from successfully persisted chunks only
+    texts = [c["text"] for c in persisted_chunks]
+    try:
+        vectors = await embed_texts(texts)
+    except NotImplementedError as exc:
+        # Surface a clear error until embeddings are wired
+        raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error(
+            "chunk_and_embed.embed_texts_failed",
+            exc_info=True,
+            extra={
+                "project_id": project_id,
+                "document_id": project["document_id"],
+                "chunks": len(persisted_chunks),
+                "error": str(exc),
+            },
+        )
+        try:
+            await update_project_status(db, project_id, user["user_id"], "failed")
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Embeddings service unavailable for transcript chunks",
+        ) from exc
+
+    metadatas = [
+        {
+            "project_id": project_id,
+            "document_id": project["document_id"],
+            "chunk_index": c["chunk_index"],
+            "start_char": c["start_char"],
+            "end_char": c["end_char"],
+        }
+        for c in persisted_chunks
+    ]
+
+    try:
+        embeddings_stored = await store_embeddings(vectors=vectors, metadatas=metadatas)
+    except Exception as exc:
+        logger.error(
+            "chunk_and_embed.store_embeddings_failed",
+            exc_info=True,
+            extra={
+                "project_id": project_id,
+                "document_id": project["document_id"],
+                "chunks": len(chunks),
+                "error": str(exc),
+            },
+        )
+        # Best-effort mark project as failed; ignore errors from status update.
+        try:
+            await update_project_status(db, project_id, user["user_id"], "failed")
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Failed to store embeddings for transcript chunks",
+        ) from exc
+
+    try:
+        updated = await update_project_status(db, project_id, user["user_id"], "embedded")
+    except DatabaseError as exc:
+        logger.error(
+            "chunk_and_embed.update_project_status_failed",
+            exc_info=True,
+            extra={"project_id": project_id, "user_id": user["user_id"], "error": str(exc)},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Embeddings stored, but failed to update project status",
+        ) from exc
+
+    if not updated:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found or not owned by user",
+        )
+
+    return ChunkAndEmbedResponse(
+        project_id=project_id,
+        chunks_created=len(chunks),
+        embeddings_stored=embeddings_stored,
+        status="embedded",
+    )
+
+
+@router.get(
+    "/api/v1/projects/{project_id}/transcript",
+    response_model=TranscriptResponse,
+    tags=["Projects"],
+)
+async def get_project_transcript(project_id: str, user: dict = Depends(get_current_user)):
+    db = ensure_db()
+    project = await get_project(db, project_id, user["user_id"])
+    if not project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    doc = await get_document(db, project["document_id"], user_id=user["user_id"])
+    if not doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    text = (doc.get("raw_text") or "").strip()
+    chunks = await list_transcript_chunks(db, project_id, user["user_id"])
+    return TranscriptResponse(
+        project_id=project_id,
+        text=text,
+        chunks=chunks,
+        metadata={"document_id": project["document_id"]},
+    )
+
+
+@router.post(
+    "/api/v1/projects/{project_id}/transcript/search",
+    response_model=TranscriptSearchResponse,
+    tags=["Projects"],
+)
+async def search_project_transcript(
+    project_id: str,
+    req: TranscriptSearchRequest,
+    user: dict = Depends(get_current_user),
+):
+    db = ensure_db()
+    project = await get_project(db, project_id, user["user_id"])
+    if not project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+    # Embed the query text
+    try:
+        vectors = await embed_texts([req.query])
+    except NotImplementedError as exc:  # pragma: no cover - defensive
+        raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=str(exc)) from exc
+
+    if not vectors or not isinstance(vectors[0], list):
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Embedding failed for query")
+
+    query_vec = vectors[0]
+
+    # Query Vectorize for best-matching chunks. Errors in the vector service
+    # are surfaced as 502/503 rather than generic 500s.
+    try:
+        hits = await query_project_chunks(
+            project_id=project_id,
+            query_vector=query_vec,
+            limit=req.limit,
+        )
+    except Exception as exc:
+        logger.error(
+            "transcript_search.vectorize_query_failed",
+            exc_info=True,
+            extra={
+                "project_id": project_id,
+                "query_length": len(req.query or ""),
+                "error": str(exc),
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Vector search failed for this project",
+        ) from exc
+
+    # Load known chunks for this project so we can enrich results with
+    # preview/start/end even if metadata is incomplete.
+    existing_chunks = await list_transcript_chunks(db, project_id, user["user_id"])
+    by_index = {int(c["chunk_index"]): c for c in existing_chunks}
+
+    matches_payload = []
+    for hit in hits:
+        meta = hit.get("metadata") or {}
+        hit_id = str(hit.get("id") or "")
+
+        # Restrict hits to this project using metadata when present
+        meta_project_id = meta.get("project_id")
+        if meta_project_id is not None and meta_project_id != project_id:
+            continue
+
+        idx = meta.get("chunk_index")
+        if idx is None:
+            # Fallback: id is typically "project_id:document_id:chunk_index"
+            if not hit_id.startswith(f"{project_id}:"):
+                continue
+            try:
+                _, _, idx_str = hit_id.rsplit(":", 2)
+                idx = int(idx_str)
+            except (TypeError, ValueError):
+                continue
+
+        try:
+            idx_int = int(idx)
+        except (TypeError, ValueError):
+            continue
+        chunk_row = by_index.get(idx_int)
+        if not chunk_row:
+            continue
+        matches_payload.append(
+            {
+                "chunk_id": chunk_row.get("chunk_id"),
+                "chunk_index": idx_int,
+                "start_char": chunk_row.get("start_char"),
+                "end_char": chunk_row.get("end_char"),
+                "text_preview": chunk_row.get("text_preview") or "",
+                "score": hit.get("score"),
+            }
+        )
+
+    return TranscriptSearchResponse(
+        project_id=project_id,
+        query=req.query,
+        matches=matches_payload,
     )
 
 

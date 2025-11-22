@@ -2180,6 +2180,57 @@ async def ensure_full_schema(db: Database) -> None:
         ("CREATE INDEX IF NOT EXISTS idx_documents_user ON documents(user_id, created_at DESC)", ()),
         ("CREATE INDEX IF NOT EXISTS idx_documents_source ON documents(source_type, source_ref)", ()),
     ]
+
+    # Projects table built on top of documents
+    projects_tables = [
+        (
+            """
+            CREATE TABLE IF NOT EXISTS projects (
+                project_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                document_id TEXT NOT NULL UNIQUE,
+                youtube_url TEXT,
+                status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN (
+                    'pending',
+                    'transcript_ready',
+                    'embedded',
+                    'blog_generated',
+                    'failed'
+                )),
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+                FOREIGN KEY (document_id) REFERENCES documents(document_id) ON DELETE CASCADE
+            )
+            """,
+            (),
+        ),
+        ("CREATE INDEX IF NOT EXISTS idx_projects_user ON projects(user_id, created_at DESC)", ()),
+        ("CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status)", ()),
+    ]
+
+    # Transcript chunks linked to projects/documents
+    transcript_chunks_tables = [
+        (
+            """
+            CREATE TABLE IF NOT EXISTS transcript_chunks (
+                chunk_id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                document_id TEXT NOT NULL,
+                chunk_index INTEGER NOT NULL,
+                start_char INTEGER NOT NULL,
+                end_char INTEGER NOT NULL,
+                text_preview TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE,
+                FOREIGN KEY (document_id) REFERENCES documents(document_id) ON DELETE CASCADE,
+                UNIQUE(project_id, chunk_index)
+            )
+            """,
+            (),
+        ),
+        ("CREATE INDEX IF NOT EXISTS idx_transcript_chunks_project ON transcript_chunks(project_id, chunk_index)", ()),
+    ]
     
     # Document versions
     document_versions_tables = [
@@ -2456,6 +2507,12 @@ async def ensure_full_schema(db: Database) -> None:
         
         await db.batch(documents_tables)
         logger.info("Applied documents table")
+
+        await db.batch(projects_tables)
+        logger.info("Applied projects table")
+
+        await db.batch(transcript_chunks_tables)
+        logger.info("Applied transcript_chunks table")
         
         await db.batch(document_versions_tables)
         logger.info("Applied document_versions table")
@@ -2924,6 +2981,100 @@ async def record_usage_event(
             json.dumps(metrics or {}),
         ),
     )
+    
+
+async def create_project(db: Database, user_id: str, document_id: str, youtube_url: str) -> Dict[str, Any]:
+    """Insert a new project row and return it as a plain dict.
+
+    Timestamps use SQL's datetime('now') format for consistency with the rest
+    of the schema.
+    """
+    project_id = str(uuid.uuid4())
+    await db.execute(
+        """
+        INSERT INTO projects (project_id, user_id, document_id, youtube_url, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, 'pending', datetime('now'), datetime('now'))
+        """,
+        (project_id, user_id, document_id, youtube_url),
+    )
+    row = await db.execute("SELECT * FROM projects WHERE project_id = ?", (project_id,))
+    return _jsproxy_to_dict(row) if row else {
+        "project_id": project_id,
+        "user_id": user_id,
+        "document_id": document_id,
+        "youtube_url": youtube_url,
+        "status": "pending",
+        "created_at": None,
+        "updated_at": None,
+    }
+
+
+async def get_project(db: Database, project_id: str, user_id: str) -> Optional[Dict[str, Any]]:
+    """Load a project by id, scoping to the given user_id."""
+    row = await db.execute(
+        "SELECT * FROM projects WHERE project_id = ? AND user_id = ?",
+        (project_id, user_id),
+    )
+    return _jsproxy_to_dict(row) if row else None
+
+
+async def update_project_status(db: Database, project_id: str, user_id: str, status: str) -> int:
+    """Update the status and updated_at timestamp for a user's project.
+
+    Returns the number of rows affected so callers can detect missing or
+    unauthorized projects.
+    """
+    await db.execute(
+        "UPDATE projects SET status = ?, updated_at = datetime('now') WHERE project_id = ? AND user_id = ?",
+        (status, project_id, user_id),
+    )
+    # Fetch back the row to confirm existence/ownership.
+    row = await db.execute(
+        "SELECT 1 FROM projects WHERE project_id = ? AND user_id = ?",
+        (project_id, user_id),
+    )
+    return 1 if row else 0
+
+
+async def create_transcript_chunk(
+    db: Database,
+    *,
+    chunk_id: str,
+    project_id: str,
+    document_id: str,
+    chunk_index: int,
+    start_char: int,
+    end_char: int,
+    text_preview: str,
+) -> None:
+    """Insert a single transcript chunk row."""
+    await db.execute(
+        """
+        INSERT INTO transcript_chunks
+            (chunk_id, project_id, document_id, chunk_index, start_char, end_char, text_preview)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (chunk_id, project_id, document_id, chunk_index, start_char, end_char, text_preview),
+    )
+
+
+async def list_transcript_chunks(db: Database, project_id: str, user_id: str) -> List[Dict[str, Any]]:
+    """List transcript chunks for a project owned by the given user.
+
+    Results are ordered by chunk_index and restricted via a join on projects
+    so only the owner can see their project's transcript chunks.
+    """
+    rows = await db.execute_all(
+        """
+        SELECT tc.chunk_id, tc.chunk_index, tc.start_char, tc.end_char, tc.text_preview
+        FROM transcript_chunks AS tc
+        JOIN projects AS p ON p.project_id = tc.project_id
+        WHERE tc.project_id = ? AND p.user_id = ?
+        ORDER BY tc.chunk_index ASC
+        """,
+        (project_id, user_id),
+    )
+    return _rows_to_dicts(rows)
 
 
 def map_job_status_to_notification(job: Dict[str, Any]) -> Dict[str, Any] | None:
