@@ -67,13 +67,26 @@
       const preview = article.querySelector('[data-section-preview]');
 
       if(action === 'edit-section'){
-        if(editor){ editor.classList.remove('hidden'); }
+        if(editor){
+          editor.classList.remove('hidden');
+          editor.setAttribute('aria-hidden', 'false');
+        }
+        if(target){
+          target.setAttribute('aria-expanded', 'true');
+        }
         if(textarea){ textarea.focus(); }
         return;
       }
 
       if(action === 'cancel-edit'){
-        if(editor){ editor.classList.add('hidden'); }
+        if(editor){
+          editor.classList.add('hidden');
+          editor.setAttribute('aria-hidden', 'true');
+        }
+        const toggle = article.querySelector('[data-action="edit-section"]');
+        if(toggle){
+          toggle.setAttribute('aria-expanded', 'false');
+        }
         if(textarea){ textarea.value = ''; }
         return;
       }
@@ -112,7 +125,14 @@
             }
             preview.textContent = trimmed || 'No content yet.';
           }
-          if(editor){ editor.classList.add('hidden'); }
+          if(editor){
+            editor.classList.add('hidden');
+            editor.setAttribute('aria-hidden', 'true');
+          }
+          const toggle = article.querySelector('[data-action="edit-section"]');
+          if(toggle){
+            toggle.setAttribute('aria-expanded', 'false');
+          }
           textarea.value = '';
           dispatchToast('success', 'Section updated.');
         } catch (err) {

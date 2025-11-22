@@ -23,6 +23,8 @@
               class="btn-ghost text-xs px-2 py-1"
               data-action="edit-section"
               data-section-id="{{ s.section_id }}"
+              aria-expanded="false"
+              aria-controls="SECTION_EDITOR_{{ s.section_id }}"
             >
               Edit with AI
             </button>
@@ -33,10 +35,22 @@
           {{ s.body_preview or s.summary or "No content yet." }}
         </div>
 
-        <div class="hidden mt-3 space-y-2" data-section-editor>
+        <div
+          id="SECTION_EDITOR_{{ s.section_id }}"
+          class="hidden mt-3 space-y-2"
+          data-section-editor
+          aria-hidden="true"
+        >
+          <label
+            for="SECTION_EDITOR_INPUT_{{ s.section_id }}"
+            class="sr-only"
+          >
+            Section change description
+          </label>
           <textarea
             class="field w-full resize-y"
             rows="3"
+            id="SECTION_EDITOR_INPUT_{{ s.section_id }}"
             placeholder="Describe how you want this section changed..."
           ></textarea>
           <div class="flex justify-end gap-2">

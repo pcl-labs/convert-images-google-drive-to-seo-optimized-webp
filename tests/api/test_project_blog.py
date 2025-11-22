@@ -254,10 +254,10 @@ async def test_get_project_activity_returns_normalized_items(monkeypatch):
 
     payload = await protected_module.get_project_activity("proj-1", user=user)
 
-    assert payload["project_id"] == "proj-1"
-    assert isinstance(payload["items"], list)
-    assert payload["items"][0]["id"] == "job:job-1"
-    assert payload["items"][0]["label"] == "Generate blog"
+    assert payload.project_id == "proj-1"
+    assert isinstance(payload.items, list)
+    assert payload.items[0]["id"] == "job:job-1"
+    assert payload.items[0]["label"] == "Generate blog"
 
 
 @pytest.mark.asyncio

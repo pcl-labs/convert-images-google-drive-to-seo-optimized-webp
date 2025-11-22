@@ -1459,6 +1459,7 @@ async def get_project_blog(project_id: str, user: dict = Depends(get_current_use
 
 @router.get(
     "/api/v1/projects/{project_id}/activity",
+    response_model=ProjectActivityResponse,
     tags=["Projects"],
 )
 async def get_project_activity(
@@ -1472,16 +1473,23 @@ async def get_project_activity(
     if not project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
 
+    try:
+        limit_int = int(limit)
+    except (TypeError, ValueError):
+        limit_int = 30
+    # Clamp to a reasonable range to avoid pathological queries.
+    if limit_int < 1:
+        limit_int = 1
+    if limit_int > 50:
+        limit_int = 50
+
     activity_items = await list_project_activity(
         db,
         project_id=project_id,
         user_id=user["user_id"],
-        limit=limit,
+        limit=limit_int,
     )
-    return {
-        "project_id": project_id,
-        "items": activity_items,
-    }
+    return ProjectActivityResponse(project_id=project_id, items=activity_items)
 
 
 @router.get(

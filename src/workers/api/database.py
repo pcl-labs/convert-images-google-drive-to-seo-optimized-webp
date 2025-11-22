@@ -1332,6 +1332,33 @@ async def list_jobs_by_document(
     return _rows_to_dicts(rows)
 
 
+async def get_project_id_by_document(db: Database, document_id: str, user_id: str) -> Optional[str]:
+    """Return the project_id for a document and user, or None on error/not found.
+
+    This is used by the web layer to decide whether to redirect a document detail
+    view into the project workspace. Any database errors are logged and surfaced
+    as a simple None so the caller can gracefully fall back to the document view.
+    """
+    try:
+        row = await db.execute(
+            "SELECT project_id FROM projects WHERE document_id = ? AND user_id = ? LIMIT 1",
+            (document_id, user_id),
+        )
+    except Exception:
+        logger.exception(
+            "get_project_id_by_document_failed",
+            extra={"document_id": document_id, "user_id": user_id},
+        )
+        return None
+
+    if not row:
+        return None
+
+    data = _jsproxy_to_dict(row)
+    project_id = data.get("project_id") or getattr(row, "project_id", None)
+    return str(project_id) if project_id is not None else None
+
+
 async def list_project_activity(
     db: Database,
     *,
@@ -1357,6 +1384,10 @@ async def list_project_activity(
     if not document_id:
         return []
 
+    # Use a slightly larger internal window for component queries so that when
+    # we merge jobs + events we still have enough items without over-fetching.
+    internal_limit = max(1, min(limit * 2, 100))
+
     # Jobs for this project's document.
     jobs_rows = await db.execute_all(
         """
@@ -1366,7 +1397,7 @@ async def list_project_activity(
         ORDER BY created_at DESC
         LIMIT ?
         """,
-        (user_id, document_id, limit),
+        (user_id, document_id, internal_limit),
     )
     jobs = _rows_to_dicts(jobs_rows)
 
@@ -1384,7 +1415,7 @@ async def list_project_activity(
             "ORDER BY created_at DESC "
             "LIMIT ?"
         )
-        params: List[Any] = [user_id, *job_ids, limit]
+        params: List[Any] = [user_id, *job_ids, internal_limit]
         event_rows = await db.execute_all(query, tuple(params))
         events = _rows_to_dicts(event_rows)
 
@@ -1442,10 +1473,10 @@ async def list_project_activity(
             }
         )
 
-    # Sort mixed list by created_at descending, falling back to insertion order.
+    # Sort mixed list by created_at descending; items missing a timestamp sort last.
     def _sort_key(item: Dict[str, Any]):
-        ts = item.get("created_at") or ""
-        return ts
+        ts = item.get("created_at")
+        return ts if ts is not None else ""
 
     items.sort(key=_sort_key, reverse=True)
     return items[:limit]

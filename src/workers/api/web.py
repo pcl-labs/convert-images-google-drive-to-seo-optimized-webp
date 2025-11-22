@@ -29,12 +29,6 @@ from .database import (
     update_job_status,
     delete_google_tokens,
     delete_user_account,
-    get_user_preferences,
-    update_user_preferences,
-    create_notification,
-    list_notifications,
-    mark_notification_seen,
-    dismiss_notification,
     get_user_by_id,
     list_documents,
     list_jobs_by_document,
@@ -50,6 +44,7 @@ from .database import (
     delete_user_session,
     get_project,
     list_project_activity,
+    get_project_id_by_document,
 )
 from .auth import create_user_api_key
 from .protected import (
@@ -515,7 +510,17 @@ async def dashboard_project_detail(
     user: dict = Depends(get_current_user),
 ):
     """Project workspace: Codex-like editor for blog + activity."""
-    db = ensure_db()
+    try:
+        db = ensure_db()
+    except HTTPException as exc:
+        if exc.status_code == 500:
+            logger.error("dashboard_project_detail.db_unavailable")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Service temporarily unavailable",
+            ) from exc
+        raise
+
     project = await get_project(db, project_id, user["user_id"])
     if not project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
@@ -546,12 +551,21 @@ async def dashboard_project_detail(
                 }
             )
 
-    activity_items = await list_project_activity(
-        db,
-        project_id=project_id,
-        user_id=user["user_id"],
-        limit=30,
-    )
+    try:
+        activity_items = await list_project_activity(
+            db,
+            project_id=project_id,
+            user_id=user["user_id"],
+            limit=30,
+        )
+    except Exception:
+        logger.exception(
+            "dashboard_project_detail.activity_failed",
+            extra={"project_id": project_id, "user_id": user["user_id"]},
+        )
+        activity_items = []
+
+    csrf = _get_csrf_token(request)
 
     context = {
         "request": request,
@@ -561,8 +575,13 @@ async def dashboard_project_detail(
         "sections": normalized_sections,
         "activity_items": activity_items,
         "page_title": project.get("youtube_url") or project_id,
+        "csrf_token": csrf,
     }
-    return templates.TemplateResponse("projects/detail.html", context)
+    resp = templates.TemplateResponse("projects/detail.html", context)
+    if not request.cookies.get("csrf_token"):
+        is_secure = is_secure_request(request, settings)
+        resp.set_cookie("csrf_token", csrf, httponly=True, samesite="lax", secure=is_secure)
+    return resp
 
 
 async def _render_account_page(
@@ -1301,19 +1320,10 @@ async def document_detail_page(document_id: str, request: Request, user: dict = 
     doc = await get_document(db, document_id, user_id=user["user_id"])
     if not doc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
-    # If this document is linked to a project, redirect to the project workspace
-    try:
-        project_row = await db.execute(
-            "SELECT project_id FROM projects WHERE document_id = ? AND user_id = ?",
-            (document_id, user["user_id"]),
-        )
-    except Exception:
-        project_row = None
-    if project_row:
-        project_dict = getattr(project_row, "__dict__", None) or {}
-        project_id = project_dict.get("project_id") or getattr(project_row, "project_id", None)
-        if project_id:
-            return RedirectResponse(url=f"/dashboard/projects/{project_id}", status_code=status.HTTP_302_FOUND)
+    # If this document is linked to a project, redirect to the project workspace.
+    project_id = await get_project_id_by_document(db, document_id, user["user_id"])
+    if project_id:
+        return RedirectResponse(url=f"/dashboard/projects/{project_id}", status_code=status.HTTP_302_FOUND)
     doc_view = _document_to_view(doc)
     metadata_items = list((doc_view.get("metadata") or {}).items())
     frontmatter_items = list((doc_view.get("frontmatter") or {}).items())
