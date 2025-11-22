@@ -6,8 +6,8 @@ DEFAULT_OVERLAP_CHARS = 400
 
 def chunk_transcript(
     text: str,
-    chunk_chars: int = DEFAULT_CHUNK_CHARS,
-    overlap_chars: int = DEFAULT_OVERLAP_CHARS,
+    chunk_chars: int = 2000,
+    overlap_chars: int = 400,
 ) -> List[Dict[str, Any]]:
     """Naive character-based chunking with configurable overlap.
 
@@ -15,16 +15,22 @@ def chunk_transcript(
     later replace it with a sentence-aware variant without changing
     callers.
     """
-    chunks: List[Dict[str, Any]] = []
-    n = len(text or "")
-    if n == 0 or chunk_chars <= 0:
+    clean = (text or "").strip()
+    if not clean:
         return []
+    if chunk_chars <= 0:
+        raise ValueError("chunk_chars must be a positive integer")
+    if overlap_chars < 0 or overlap_chars >= chunk_chars:
+        raise ValueError("overlap_chars must be in the range 0 <= overlap_chars < chunk_chars")
 
+    chunks: List[Dict[str, Any]] = []
+    n = len(clean)
     start = 0
     idx = 0
 
     while start < n:
         end = min(start + chunk_chars, n)
+        chunk_text = clean[start:end]
         chunk_text = text[start:end]
         chunks.append(
             {

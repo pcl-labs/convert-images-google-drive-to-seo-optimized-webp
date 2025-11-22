@@ -20,7 +20,7 @@ def test_chunk_transcript_empty_text():
 
 def test_chunk_transcript_small_text_single_chunk():
     text = "hello world"
-    chunks = chunk_transcript(text, chunk_chars=50)
+    chunks = chunk_transcript(text, chunk_chars=50, overlap_chars=0)
     assert len(chunks) == 1
     c = chunks[0]
     assert c["chunk_index"] == 0
