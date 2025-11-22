@@ -36,7 +36,7 @@ async def test_generate_project_blog_includes_project_id_in_job_payload(monkeypa
     captured_job_args = {}
     captured_enqueue_payload = {}
 
-    async def fake_get_project(db, project_id, user_id):  # type: ignore[unused-argument]
+    async def fake_get_project(_db, project_id, user_id):
         return {
             "project_id": project_id,
             "document_id": "doc-1",
@@ -47,14 +47,14 @@ async def test_generate_project_blog_includes_project_id_in_job_payload(monkeypa
             "updated_at": "2025-01-01T00:00:00Z",
         }
 
-    async def fake_get_document(db, document_id, user_id=None):  # type: ignore[unused-argument]
+    async def fake_get_document(_db, document_id, user_id=None):
         return {
             "document_id": document_id,
             "user_id": user_id,
             "raw_text": "some transcript text",
         }
 
-    async def fake_get_user_prefs(db, user_id):  # type: ignore[unused-argument]
+    async def fake_get_user_prefs(_db, _user_id):
         return {}
 
     class FakeDB:
@@ -123,7 +123,7 @@ async def test_get_project_blog_loads_latest_version(monkeypatch):
             "latest_version_id": "v1",
         }
 
-    async def fake_get_document_version(db, document_id, version_id, user_id):  # type: ignore[unused-argument]
+    async def fake_get_document_version(_db, document_id, version_id, _user_id):
         return {
             "version_id": version_id,
             "document_id": document_id,
@@ -220,21 +220,24 @@ async def test_patch_project_blog_section_creates_new_version(monkeypatch):
             "latest_version_id": "v2",
         }
 
-    async def fake_get_latest_version_for_project(db, project, user_id):  # type: ignore[unused-argument]
+    async def fake_get_latest_version_for_project(_db, _project, _user_id):
         return base_version
 
-    async def fake_list_transcript_chunks(db, project_id, user_id):  # type: ignore[unused-argument]
+    async def fake_list_transcript_chunks(_db, _project_id, _user_id):
         return []
 
-    async def fake_embed_texts(texts):  # type: ignore[unused-argument]
+    async def fake_embed_texts(_texts):
         return [[0.1, 0.2, 0.3]]
 
-    async def fake_query_project_chunks(**kwargs):  # type: ignore[unused-argument]
+    async def fake_query_project_chunks(**_kwargs):
         return []
 
     created_versions = {}
 
-    async def fake_create_document_version(db, document_id, user_id, content_format, frontmatter, body_mdx, body_html, outline, chapters, sections, assets):  # type: ignore[unused-argument]
+    async def fake_create_document_version(*_args, **kwargs):
+        document_id = kwargs.get("document_id")
+        body_mdx = kwargs.get("body_mdx")
+        sections = kwargs.get("sections")
         created_versions["body_mdx"] = body_mdx
         created_versions["sections"] = sections
         return {
@@ -245,7 +248,7 @@ async def test_patch_project_blog_section_creates_new_version(monkeypatch):
             "body_mdx": body_mdx,
         }
 
-    async def fake_update_latest(db, document_id, expected_version_id, new_version_id):  # type: ignore[unused-argument]
+    async def fake_update_latest(_db, _document_id, expected_version_id, new_version_id):
         created_versions["latest_version_updates"] = {
             "expected": expected_version_id,
             "new": new_version_id,
@@ -271,10 +274,10 @@ async def test_patch_project_blog_section_creates_new_version(monkeypatch):
             }
 
     class FakeClient:
-        def __init__(self, *args, **kwargs):  # type: ignore[unused-argument]
+        def __init__(self, *_args, **_kwargs):
             ...
 
-        async def post(self, *args, **kwargs):  # type: ignore[unused-argument]
+        async def post(self, *_args, **_kwargs):
             return FakeResponse("ok")
 
     def fake_ensure_db():  # type: ignore[return-type]

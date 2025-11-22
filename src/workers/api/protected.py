@@ -1,7 +1,7 @@
 MAX_TEXT_LENGTH = 20000  # configurable upper bound for text ingestion
 from fastapi import APIRouter, Request, Depends, HTTPException, status
 from fastapi.responses import RedirectResponse, PlainTextResponse
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, List
 import uuid
 import secrets
 import json
@@ -1463,7 +1463,7 @@ async def get_project_blog(project_id: str, user: dict = Depends(get_current_use
 )
 async def list_project_blog_sections(
     project_id: str,
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_current_user),  # noqa: B008 - FastAPI dependency injection pattern
 ):
     db = ensure_db()
     project = await get_project(db, project_id, user["user_id"])
@@ -1500,42 +1500,21 @@ async def list_project_blog_sections(
     )
 
 
-@router.post(
-    "/api/v1/projects/{project_id}/blog/sections/patch",
-    response_model=PatchSectionResponse,
-    tags=["Projects"],
-)
-async def patch_project_blog_section(
+async def _gather_transcript_context(
+    *,
     project_id: str,
-    req: PatchSectionRequest,
-    user: dict = Depends(get_current_user),
-):
-    db = ensure_db()
-    project = await get_project(db, project_id, user["user_id"])
-    if not project:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
-
-    version_row = await get_latest_version_for_project(db, project, user["user_id"])
-    if not version_row:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No blog generated for this project yet")
-
-    sections = extract_sections_from_version(version_row)
-    try:
-        _, target_section = find_section_by_id(sections, req.section_id)
-    except KeyError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Section not found")
-
-    # Use section summary/title as the primary editable text for now.
-    current_text = (target_section.get("body_mdx") or target_section.get("summary") or target_section.get("title") or "").strip()
-
-    # Embed current section text to query transcript chunks for context.
+    section_text: str,
+    instructions: str,
+    db,
+    user_id: str,
+) -> list[str]:
     transcript_snippets: list[str] = []
     try:
-        vectors = await embed_texts([current_text or req.instructions])
+        vectors = await embed_texts([section_text or instructions])
         if vectors and isinstance(vectors[0], list):
             query_vec = vectors[0]
             hits = await query_project_chunks(project_id=project_id, query_vector=query_vec, limit=5)
-            existing_chunks = await list_transcript_chunks(db, project_id, user["user_id"])
+            existing_chunks = await list_transcript_chunks(db, project_id, user_id)
             by_index = {int(c["chunk_index"]): c for c in existing_chunks}
             for hit in hits or []:
                 meta = hit.get("metadata") or {}
@@ -1557,15 +1536,22 @@ async def patch_project_blog_section(
                 preview = (chunk_row.get("text_preview") or "").strip()
                 if preview:
                     transcript_snippets.append(preview)
-    except Exception:
-        # Embeddings / vector search are best-effort; log and continue without context.
+    except Exception as exc:  # noqa: BLE001 - best-effort context gathering
         logger.warning(
             "patch_section.transcript_context_failed",
             exc_info=True,
-            extra={"project_id": project_id, "section_id": req.section_id},
+            extra={"project_id": project_id, "error_type": type(exc).__name__},
         )
+    return transcript_snippets
 
-    # Build AI prompt to rewrite this section only.
+
+def _build_section_patch_prompts(
+    *,
+    target_section: dict,
+    current_text: str,
+    instructions: str,
+    transcript_snippets: list[str],
+) -> tuple[str, str]:
     system_prompt = (
         "You are editing ONE section of a blog post generated from a transcript. "
         "Rewrite only this section's MDX body according to the user's instructions. "
@@ -1575,13 +1561,16 @@ async def patch_project_blog_section(
     user_prompt_parts: list[str] = []
     user_prompt_parts.append("Current section title: " + str(target_section.get("title") or "(untitled)"))
     user_prompt_parts.append("\n\nCurrent section text (may be summary/body):\n" + (current_text or ""))
-    user_prompt_parts.append("\n\nInstructions for this section:\n" + req.instructions.strip())
+    user_prompt_parts.append("\n\nInstructions for this section:\n" + instructions.strip())
     if transcript_snippets:
         joined_snippets = "\n\n".join(transcript_snippets[:3])
         user_prompt_parts.append("\n\nRelevant transcript snippets (for context only):\n" + joined_snippets)
     user_prompt_parts.append("\n\nReturn ONLY the rewritten MDX body for this section.")
     user_prompt = "".join(user_prompt_parts)
+    return system_prompt, user_prompt
 
+
+async def _call_ai_gateway_for_section(system_prompt: str, user_prompt: str) -> dict:
     model_name = (settings.openai_blog_model or "gpt-4.1-mini").strip()
     temp_value = settings.openai_blog_temperature
 
@@ -1619,16 +1608,18 @@ async def patch_project_blog_section(
     except RequestError as exc:
         logger.error("patch_section.gateway_request_error", exc_info=True, extra={"error": str(exc)})
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="AI section edit failed") from exc
-    except Exception as exc:
-        logger.error("patch_section.gateway_unexpected_error", exc_info=True)
+    except Exception as exc:  # noqa: BLE001 - unexpected gateway failure
+        logger.error("patch_section.gateway_unexpected_error", exc_info=True, extra={"error_type": type(exc).__name__})
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="AI section edit failed") from exc
 
     try:
-        data = response.json()
-    except Exception as exc:
+        return response.json()
+    except Exception as exc:  # noqa: BLE001 - defensive JSON parsing
         logger.error("patch_section.invalid_json", exc_info=True)
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="AI response malformed") from exc
 
+
+def _extract_new_section_body(data: dict) -> str:
     new_section_body: str = ""
     try:
         choices = data.get("choices") or []
@@ -1645,21 +1636,25 @@ async def patch_project_blog_section(
                         if isinstance(txt, str):
                             parts.append(txt)
                 new_section_body = "".join(parts).strip()
-    except Exception:
+    except (KeyError, TypeError, ValueError):
         new_section_body = ""
+    return new_section_body
 
-    if not new_section_body:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="AI returned empty section body")
 
-    # Build updated sections list with the new body for the target section.
+def _rebuild_body_with_patched_section(
+    *,
+    version_row: dict,
+    sections: list[dict],
+    section_id: str,
+    new_section_body: str,
+) -> tuple[str, list[dict]]:
     updated_sections: list[dict] = []
     for s in sections:
         s_copy = dict(s)
-        if s_copy.get("section_id") == req.section_id:
+        if s_copy.get("section_id") == section_id:
             s_copy["body_mdx"] = new_section_body
         updated_sections.append(s_copy)
 
-    # Rebuild body_mdx as a simple concatenation of headings + section bodies.
     doc_frontmatter = _json_field(version_row.get("frontmatter"), {})
     title = None
     if isinstance(doc_frontmatter, dict):
@@ -1672,6 +1667,63 @@ async def patch_project_blog_section(
         body = s.get("body_mdx") or s.get("summary") or ""
         body_lines.append(f"## {heading}\n\n{body}\n")
     new_body_mdx = "\n".join(body_lines).strip()
+    return new_body_mdx, updated_sections
+
+
+@router.post(
+    "/api/v1/projects/{project_id}/blog/sections/patch",
+    response_model=PatchSectionResponse,
+    tags=["Projects"],
+)
+async def patch_project_blog_section(
+    project_id: str,
+    req: PatchSectionRequest,
+    user: dict = Depends(get_current_user),  # noqa: B008 - FastAPI dependency injection pattern
+):
+    db = ensure_db()
+    project = await get_project(db, project_id, user["user_id"])
+    if not project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+    version_row = await get_latest_version_for_project(db, project, user["user_id"])
+    if not version_row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No blog generated for this project yet")
+
+    sections = extract_sections_from_version(version_row)
+    try:
+        _, target_section = find_section_by_id(sections, req.section_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Section not found") from exc
+
+    current_text = (target_section.get("body_mdx") or target_section.get("summary") or target_section.get("title") or "").strip()
+
+    transcript_snippets = await _gather_transcript_context(
+        project_id=project_id,
+        section_text=current_text,
+        instructions=req.instructions,
+        db=db,
+        user_id=user["user_id"],
+    )
+
+    system_prompt, user_prompt = _build_section_patch_prompts(
+        target_section=target_section,
+        current_text=current_text,
+        instructions=req.instructions,
+        transcript_snippets=transcript_snippets,
+    )
+
+    data = await _call_ai_gateway_for_section(system_prompt, user_prompt)
+    new_section_body = _extract_new_section_body(data)
+
+    if not new_section_body:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="AI returned empty section body")
+
+    new_body_mdx, updated_sections = _rebuild_body_with_patched_section(
+        version_row=version_row,
+        sections=sections,
+        section_id=req.section_id,
+        new_section_body=new_section_body,
+    )
 
     document_id = version_row.get("document_id")
     if not document_id:
@@ -1689,8 +1741,7 @@ async def patch_project_blog_section(
         assets["generator"] = generator_block
     try:
         body_html = markdown_to_html(new_body_mdx)
-    except Exception as exc:
-        # Surface markdown/MDX parsing issues as a clear client error instead of 500.
+    except Exception as exc:  # noqa: BLE001 - defensive around markdown parsing
         logger.error(
             "patch_section.markdown_to_html_failed",
             exc_info=True,
@@ -1706,13 +1757,12 @@ async def patch_project_blog_section(
             detail="Failed to parse markdown content for patched section",
         ) from exc
 
-    # Persist new version and update latest_version_id on the document.
     new_version_row = await create_document_version(
         db,
         document_id=document_id,
         user_id=user["user_id"],
         content_format=content_format,
-        frontmatter=doc_frontmatter or {},
+        frontmatter=_json_field(version_row.get("frontmatter"), {}) or {},
         body_mdx=new_body_mdx,
         body_html=body_html,
         outline=outline or [],
@@ -1756,7 +1806,7 @@ async def patch_project_blog_section(
 )
 async def list_project_blog_versions(
     project_id: str,
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_current_user),  # noqa: B008 - FastAPI dependency injection pattern
 ):
     db = ensure_db()
     project = await get_project(db, project_id, user["user_id"])
@@ -1807,7 +1857,7 @@ async def list_project_blog_versions(
 async def get_project_blog_version(
     project_id: str,
     version_id: str,
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_current_user),  # noqa: B008 - FastAPI dependency injection pattern
 ):
     db = ensure_db()
     project = await get_project(db, project_id, user["user_id"])
