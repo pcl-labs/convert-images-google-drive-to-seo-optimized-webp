@@ -814,17 +814,18 @@ async def create_project_for_youtube(req: CreateProjectRequest, user: dict = Dep
     # Reuse the existing ingest orchestration to avoid duplicating logic.
     # Disable autopilot so we don't start blog generation from this path.
     _, queue = ensure_services()
+    youtube_url_str = str(req.youtube_url)
     job_status = await start_ingest_youtube_job(
         db,
         queue,
         user["user_id"],
-        req.youtube_url,
+        youtube_url_str,
         autopilot_enabled=False,
     )
     document_id = job_status.document_id
     # Create project row and mark transcript_ready if we already have text.
     try:
-        project_row = await create_project(db, user["user_id"], document_id, str(req.youtube_url))
+        project_row = await create_project(db, user["user_id"], document_id, youtube_url_str)
         doc = await get_document(db, document_id, user_id=user["user_id"])
         if doc and (doc.get("raw_text") or "").strip():
             updated = await update_project_status(
@@ -1242,7 +1243,7 @@ async def generate_project_blog(
     resolved_options = resolve_generate_blog_options(options_model, user_prefs)
 
     job_id = str(uuid.uuid4())
-    job_row = await create_job_extended(
+    await create_job_extended(
         db,
         job_id,
         user["user_id"],
@@ -1320,7 +1321,9 @@ async def generate_project_blog(
         final_status = (final_row.get("status") or "").lower()
         if final_status in {JobStatusEnum.COMPLETED.value, "completed"}:
             try:
-                await update_project_status(db, project_id, user["user_id"], "blog_generated")
+                updated = await update_project_status(db, project_id, user["user_id"], "blog_generated")
+                if updated:
+                    project["status"] = "blog_generated"
             except Exception:
                 logger.warning(
                     "generate_project_blog.inline_status_update_failed",
