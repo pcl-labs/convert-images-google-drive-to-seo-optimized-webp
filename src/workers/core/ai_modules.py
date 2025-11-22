@@ -659,9 +659,8 @@ async def compose_blog_from_text(
                     {"role": "user", "content": user_prompt},
                 ],
                 "temperature": temp_value,
-                # Cloudflare compat endpoint expects the standard OpenAI schema:
-                # use max_tokens, not max_completion_tokens.
-                "max_tokens": settings.openai_blog_max_output_tokens,
+                # GPT-4.1/5.1 style models use max_completion_tokens instead of max_tokens.
+                "max_completion_tokens": settings.openai_blog_max_output_tokens,
             },
         )
         response.raise_for_status()
@@ -691,7 +690,8 @@ async def compose_blog_from_text(
         )
         raise
 
-    # Extract markdown text from compat JSON response: choices[0].message.content
+    # Extract markdown text from compat JSON response: choices[0].message.content.
+    # Newer OpenAI/Gateway responses may return content as a list of segments.
     output_text: str = ""
     try:
         choices = data.get("choices") or []
@@ -700,11 +700,23 @@ async def compose_blog_from_text(
             content = message.get("content")
             if isinstance(content, str):
                 output_text = content
+            elif isinstance(content, list):
+                parts: list[str] = []
+                for part in content:
+                    if isinstance(part, dict):
+                        text_val = part.get("text") or part.get("content")
+                        if isinstance(text_val, str):
+                            parts.append(text_val)
+                output_text = "".join(parts)
     except Exception:
         output_text = ""
 
     markdown = (output_text or "").strip()
     if not markdown:
+        logger.error(
+            "gateway_compose_blog_empty_content",
+            extra={"body_preview": _redact_http_body_for_logging(json.dumps(data, ensure_ascii=False))},
+        )
         raise RuntimeError("compose_blog_from_text received empty content from AI Gateway response")
 
     word_count = len(markdown.split())

@@ -56,6 +56,7 @@ from api.database import (
     create_job_extended,
     record_pipeline_event,
     get_user_preferences,
+    update_project_status,
 )
 from api.config import settings
 from api.cloudflare_queue import QueueProducer
@@ -1424,6 +1425,192 @@ async def process_drive_watch_renewal_job(
         raise
 
 
+async def generate_blog_for_document(
+    db: Database,
+    *,
+    document_id: str,
+    user_id: str,
+    options: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    options = options or {}
+    doc = await get_document(db, document_id, user_id=user_id)
+    if not doc:
+        raise ValueError("Document not found")
+    text = (doc.get("raw_text") or "").strip()
+    if not text:
+        raise ValueError("Document missing raw text; ingest text or transcript first")
+    metadata = _parse_document_metadata(doc)
+
+    try:
+        max_sections = max(1, min(12, int(options.get("max_sections", 5))))
+    except Exception:
+        max_sections = 5
+    try:
+        target_chapters = max(1, min(12, int(options.get("target_chapters", max_sections))))
+    except Exception:
+        target_chapters = max_sections
+    tone = str(options.get("tone") or "informative")
+    include_images = bool(options.get("include_images")) if "include_images" in options else True
+    section_index = options.get("section_index")
+    provider = (options.get("provider") or "openai").lower()
+    model_name = (options.get("model") or settings.openai_blog_model or "gpt-5.1").strip()
+    temperature_override = options.get("temperature")
+    content_type = str(options.get("content_type") or "generic_blog").strip() or "generic_blog"
+    instructions = (options.get("instructions") or "").strip() or None
+
+    outline = generate_outline(text, max_sections=max_sections)
+    chapters = organize_chapters(text, target_chapters=target_chapters)
+    seo_meta = generate_seo_metadata(text, outline)
+
+    composed = await compose_blog_from_text(
+        text,
+        tone=tone,
+        model=model_name,
+        temperature=temperature_override,
+        extra_context={
+            "document_id": document_id,
+            "user_id": user_id,
+            "instructions": instructions,
+            "content_type": content_type,
+            "max_sections": max_sections,
+            "target_chapters": target_chapters,
+        },
+    )
+    markdown_body = composed.get("markdown", "")
+    meta = composed.get("meta", {})
+    word_count = meta.get("word_count", len(markdown_body.split()))
+    generator_info = {
+        "engine": meta.get("engine") or ("openai" if provider == "openai" else provider),
+        "model": meta.get("model") or model_name,
+        "tone": tone,
+        "temperature": meta.get("temperature") if meta.get("temperature") is not None else temperature_override,
+        "provider": provider,
+    }
+
+    html_body = markdown_to_html(markdown_body)
+    image_prompts = generate_image_prompts(chapters) if include_images else []
+
+    existing_frontmatter = _json_dict_field(doc.get("frontmatter"), {})
+    ai_title = seo_meta.get("title") or default_title_from_outline(outline)
+    is_youtube_source = (metadata.get("source") == "youtube")
+
+    if is_youtube_source:
+        frontmatter = dict(existing_frontmatter)
+    else:
+        frontmatter = dict(existing_frontmatter)
+        frontmatter["title"] = ai_title
+
+    frontmatter.update(
+        {
+            "description": seo_meta.get("description"),
+            "slug": seo_meta.get("slug") or existing_frontmatter.get("slug") or f"{document_id[:8]}-draft",
+            "tags": seo_meta.get("keywords", []),
+            "hero_image": seo_meta.get("hero_image"),
+        }
+    )
+
+    sections: List[Dict[str, Any]] = []
+    for idx, chapter in enumerate(chapters):
+        safe_chapter = chapter or {}
+        section = {
+            "order": idx,
+            "title": safe_chapter.get("title"),
+            "summary": safe_chapter.get("summary"),
+        }
+        if include_images and idx < len(image_prompts):
+            section["image_prompt"] = image_prompts[idx]
+        sections.append(section)
+
+    assets = {
+        "images": image_prompts,
+        "media": [],
+        "generator": generator_info,
+    }
+
+    generated_at = datetime.now(timezone.utc).isoformat()
+
+    version_row = await create_document_version(
+        db,
+        document_id=document_id,
+        user_id=user_id,
+        content_format="mdx",
+        frontmatter=frontmatter,
+        body_mdx=markdown_body,
+        body_html=html_body,
+        outline=outline,
+        chapters=chapters,
+        sections=sections,
+        assets=assets,
+    )
+    version_id = version_row.get("version_id")
+
+    metadata["latest_generation"] = {
+        "job_id": None,
+        "title": ai_title,
+        "slug": frontmatter["slug"],
+        "generated_at": generated_at,
+        "version_id": version_id,
+        "section_index": section_index,
+        "engine": generator_info.get("engine"),
+        "model": generator_info.get("model"),
+        "temperature": generator_info.get("temperature"),
+        "provider": provider,
+        "tone": tone,
+        "content_type": content_type,
+        "instructions": instructions,
+    }
+    metadata["latest_outline"] = outline
+    metadata["latest_chapters"] = chapters
+    metadata["latest_sections"] = sections
+    metadata["content_plan"] = {
+        "outline": outline,
+        "chapters": chapters,
+        "seo": seo_meta,
+        "generated_at": generated_at,
+    }
+    await update_document(
+        db,
+        document_id,
+        {
+            "metadata": metadata,
+            "frontmatter": frontmatter,
+            "content_format": "mdx",
+            "latest_version_id": version_id,
+        },
+    )
+
+    return {
+        "document_id": document_id,
+        "version_id": version_id,
+        "frontmatter": frontmatter,
+        "body": {
+            "mdx": markdown_body,
+            "html": html_body,
+        },
+        "outline": outline,
+        "chapters": chapters,
+        "sections": sections,
+        "seo": seo_meta,
+        "assets": assets,
+        "options": {
+            "tone": tone,
+            "max_sections": max_sections,
+            "target_chapters": target_chapters,
+            "include_images": include_images,
+            "model": generator_info["model"],
+            "temperature": generator_info.get("temperature"),
+            "provider": provider,
+            "content_type": content_type,
+            "instructions": instructions,
+        },
+        "generated_at": generated_at,
+        "generator": generator_info,
+        "section_index": section_index,
+        "ai_title": ai_title,
+        "word_count": word_count,
+    }
+
+
 async def process_generate_blog_job(
     db: Database,
     job_id: str,
@@ -1473,37 +1660,22 @@ async def process_generate_blog_job(
     try:
         _log("Loading document payload")
         await update_job_status(db, job_id, "processing", progress=_progress("loading_document"))
-        doc = await get_document(db, document_id, user_id=user_id)
-        if not doc:
-            raise ValueError("Document not found")
-        text = (doc.get("raw_text") or "").strip()
-        if not text:
-            raise ValueError("Document missing raw text; ingest text or transcript first")
-        metadata = _parse_document_metadata(doc)
 
-        try:
-            max_sections = max(1, min(12, int(options.get("max_sections", 5))))
-        except Exception:
-            max_sections = 5
-        try:
-            target_chapters = max(1, min(12, int(options.get("target_chapters", max_sections))))
-        except Exception:
-            target_chapters = max_sections
-        tone = str(options.get("tone") or "informative")
-        include_images = bool(options.get("include_images")) if "include_images" in options else True
-        section_index = options.get("section_index")
-        provider = (options.get("provider") or "openai").lower()
-        # Resolve OpenAI model; GPT-5.1 is our current target default.
-        # See https://platform.openai.com/docs/models/gpt-5.1
-        model_name = (options.get("model") or settings.openai_blog_model or "gpt-5.1").strip()
-        temperature_override = options.get("temperature")
-        content_type = str(options.get("content_type") or "generic_blog").strip() or "generic_blog"
-        instructions = (options.get("instructions") or "").strip() or None
+        result = await generate_blog_for_document(
+            db,
+            document_id=document_id,
+            user_id=user_id,
+            options=options,
+        )
 
-        # Heuristic structure + SEO (no separate planner call)
-        outline = generate_outline(text, max_sections=max_sections)
-        chapters = organize_chapters(text, target_chapters=target_chapters)
-        seo_meta = generate_seo_metadata(text, outline)
+        outline = result["outline"]
+        chapters = result["chapters"]
+        sections = result["sections"]
+        seo_meta = result["seo"]
+        assets = result["assets"]
+        frontmatter = result["frontmatter"]
+        pipeline_output = dict(result)
+
         await record_usage_event(db, user_id, job_id, "outline", {"sections": len(outline)})
         await record_usage_event(db, user_id, job_id, "chapters", {"chapters": len(chapters)})
         await update_job_status(db, job_id, "processing", progress=_progress("plan"))
@@ -1511,187 +1683,27 @@ async def process_generate_blog_job(
             "generate_blog.plan",
             "completed",
             "Heuristic content plan ready",
-            data={"document_id": document_id, "sections": len(chapters), "content_type": content_type},
+            data={"document_id": document_id, "sections": len(chapters), "content_type": options.get("content_type") or "generic_blog"},
         )
 
-        _log("Composing markdown body")
-        await _stage_event(
-            "generate_blog.compose",
-            "running",
-            "Composing draft",
-            data={"document_id": document_id},
-        )
-        composed = await compose_blog_from_text(
-            text,
-            tone=tone,
-            model=model_name,
-            temperature=temperature_override,
-            extra_context={
-                "document_id": document_id,
-                "job_id": job_id,
-                "user_id": user_id,
-                "instructions": instructions,
-                "content_type": content_type,
-                "max_sections": max_sections,
-                "target_chapters": target_chapters,
-            },
-        )
-        markdown_body = composed.get("markdown", "")
-        meta = composed.get("meta", {})
-        word_count = meta.get("word_count", len(markdown_body.split()))
-        generator_info = {
-            "engine": meta.get("engine") or ("openai" if provider == "openai" else provider),
-            "model": meta.get("model") or model_name,
-            "tone": tone,
-            "temperature": meta.get("temperature") if meta.get("temperature") is not None else temperature_override,
-            "provider": provider,
-        }
         await record_usage_event(
             db,
             user_id,
             job_id,
             "compose",
-            {"tone": tone, "word_count": word_count, "model": generator_info["model"]},
+            {"tone": pipeline_output["options"]["tone"], "word_count": pipeline_output["word_count"], "model": pipeline_output["options"]["model"]},
         )
         await _stage_event(
             "generate_blog.compose",
             "completed",
             "Draft composed",
-            data={"document_id": document_id, "word_count": word_count},
+            data={"document_id": document_id, "word_count": pipeline_output["word_count"]},
         )
 
-        html_body = markdown_to_html(markdown_body)
-        image_prompts = generate_image_prompts(chapters) if include_images else []
-
-        # Preserve original document/frontmatter title for YouTube docs and
-        # treat the AI SEO title as a separate concept.
-        existing_frontmatter = _json_dict_field(doc.get("frontmatter"), {})
-        ai_title = seo_meta.get("title") or default_title_from_outline(outline)
-        is_youtube_source = (metadata.get("source") == "youtube")
-
-        if is_youtube_source:
-            # Keep the YouTube video title already stored in frontmatter.title.
-            frontmatter = dict(existing_frontmatter)
-        else:
-            # For non-YouTube docs, use the AI title as the canonical title.
-            frontmatter = dict(existing_frontmatter)
-            frontmatter["title"] = ai_title
-
-        # In all cases, refresh description/slug/tags/hero_image from SEO meta.
-        frontmatter.update(
-            {
-                "description": seo_meta.get("description"),
-                "slug": seo_meta.get("slug") or existing_frontmatter.get("slug") or f"{document_id[:8]}-draft",
-                "tags": seo_meta.get("keywords", []),
-                "hero_image": seo_meta.get("hero_image"),
-            }
-        )
-
-        sections: List[Dict[str, Any]] = []
-        for idx, chapter in enumerate(chapters):
-            safe_chapter = chapter or {}
-            section = {
-                "order": idx,
-                "title": safe_chapter.get("title"),
-                "summary": safe_chapter.get("summary"),
-            }
-            if include_images and idx < len(image_prompts):
-                section["image_prompt"] = image_prompts[idx]
-            sections.append(section)
-
-        assets = {
-            "images": image_prompts,
-            "media": [],
-            "generator": generator_info,
-        }
-
-        pipeline_output = {
-            "document_id": document_id,
-            "content_format": "mdx",
-            "frontmatter": frontmatter,
-            "body": {
-                "mdx": markdown_body,
-                "html": html_body,
-            },
-            "outline": outline,
-            "chapters": chapters,
-            "sections": sections,
-            "seo": seo_meta,
-            "assets": assets,
-            "plan": {
-                "outline": outline,
-                "chapters": chapters,
-                "seo": seo_meta,
-            },
-            "options": {
-                "tone": tone,
-                "max_sections": max_sections,
-                "target_chapters": target_chapters,
-                "include_images": include_images,
-                "model": generator_info["model"],
-                "temperature": generator_info.get("temperature"),
-                "provider": provider,
-                "content_type": content_type,
-                "instructions": instructions,
-            },
-            "generated_at": datetime.now(timezone.utc).isoformat(),
-            "generator": generator_info,
-        }
-
-        _log("Persisting pipeline output")
-        version_row = await create_document_version(
-            db,
-            document_id=document_id,
-            user_id=user_id,
-            content_format=pipeline_output["content_format"],
-            frontmatter=frontmatter,
-            body_mdx=markdown_body,
-            body_html=html_body,
-            outline=outline,
-            chapters=chapters,
-            sections=sections,
-            assets=assets,
-        )
-        version_id = version_row.get("version_id")
-        pipeline_output["version_id"] = version_id
+        pipeline_output["body"] = pipeline_output.get("body") or {}
+        version_id = pipeline_output["version_id"]
         await set_job_output(db, job_id, pipeline_output)
 
-        metadata["latest_generation"] = {
-            "job_id": job_id,
-            # Track the AI-composed title here, even if the document/frontmatter
-            # keeps an external source title (e.g. YouTube video title).
-            "title": ai_title,
-            "slug": frontmatter["slug"],
-            "generated_at": pipeline_output["generated_at"],
-            "version_id": version_id,
-            "section_index": section_index,
-            "engine": generator_info.get("engine"),
-            "model": generator_info.get("model"),
-            "temperature": generator_info.get("temperature"),
-            "provider": provider,
-            "tone": tone,
-            "content_type": content_type,
-            "instructions": instructions,
-        }
-        metadata["latest_outline"] = outline
-        metadata["latest_chapters"] = chapters
-        metadata["latest_sections"] = sections
-        metadata["content_plan"] = {
-            "outline": outline,
-            "chapters": chapters,
-            "seo": seo_meta,
-            "generated_at": pipeline_output["generated_at"],
-        }
-        await update_document(
-            db,
-            document_id,
-            {
-                "metadata": metadata,
-                "frontmatter": frontmatter,
-                "content_format": pipeline_output["content_format"],
-                "latest_version_id": version_id,
-            },
-        )
         await record_usage_event(db, user_id, job_id, "persist", {"sections": len(sections)})
         await _stage_event(
             "generate_blog.persist",
@@ -1702,11 +1714,11 @@ async def process_generate_blog_job(
             notify_text="Blog draft generated",
             notify_context={"document_id": document_id},
         )
+
         drive_stage_meta = {"drive_stage": "ai_draft", "drive_last_synced_job_id": job_id}
-        drive_text_payload = _markdown_to_drive_text(markdown_body)
+        drive_text_payload = _markdown_to_drive_text(pipeline_output["body"]["mdx"])
         if drive_text_payload:
             try:
-                # Merge drive_stage_meta into existing document metadata and persist before Drive sync
                 doc_row = await get_document(db, document_id, user_id=user_id)
                 existing_meta = _parse_document_metadata(doc_row or {}) if doc_row else {}
                 merged_meta = {**existing_meta, **drive_stage_meta}
@@ -1887,6 +1899,21 @@ async def handle_queue_message(message: Dict[str, Any], db: Database, queue_prod
                 message.get("options") or payload_data.get("options") or {},
                 pipeline_job_id=message.get("pipeline_job_id") or payload_data.get("pipeline_job_id"),
             )
+
+            project_id = payload_data.get("project_id") if isinstance(payload_data, dict) else None
+            if project_id:
+                try:
+                    updated = await update_project_status(db, project_id, user_id, "blog_generated")
+                    if not updated:
+                        app_logger.warning(
+                            "update_project_status_noop",
+                            extra={"project_id": project_id, "user_id": user_id, "job_id": job_id},
+                        )
+                except Exception:
+                    app_logger.exception(
+                        "update_project_status_failed",
+                        extra={"project_id": project_id, "user_id": user_id, "job_id": job_id},
+                    )
         elif job_type == "drive_change_poll":
             doc_ids = message.get("document_ids") or payload_data.get("document_ids")
             await process_drive_change_poll_job(db, job_id, user_id, doc_ids, queue_producer)
