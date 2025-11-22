@@ -125,7 +125,7 @@ import difflib
 logger = get_logger(__name__)
 
 router = APIRouter(
-    dependencies=[Depends(get_current_user)],
+    dependencies=[Depends(get_current_user)],  # noqa: B008 - FastAPI dependency injection pattern
 )
 
 
@@ -883,7 +883,7 @@ async def create_project_for_youtube(req: CreateProjectRequest, user: dict = Dep
 
 
 @router.get("/api/v1/projects/{project_id}", response_model=ProjectResponse, tags=["Projects"])
-async def get_project_overview(project_id: str, user: dict = Depends(get_current_user)):
+async def get_project_overview(project_id: str, user: dict = Depends(get_current_user)):  # noqa: B008 - FastAPI dependency injection pattern
     db = ensure_db()
     project = await get_project(db, project_id, user["user_id"])
     if not project:
@@ -908,7 +908,7 @@ async def get_project_overview(project_id: str, user: dict = Depends(get_current
     response_model=ChunkAndEmbedResponse,
     tags=["Projects"],
 )
-async def chunk_and_embed_transcript(project_id: str, user: dict = Depends(get_current_user)):
+async def chunk_and_embed_transcript(project_id: str, user: dict = Depends(get_current_user)):  # noqa: B008 - FastAPI dependency injection pattern
     db = ensure_db()
     project = await get_project(db, project_id, user["user_id"])
     if not project:
@@ -1116,7 +1116,7 @@ async def chunk_and_embed_transcript(project_id: str, user: dict = Depends(get_c
     response_model=TranscriptResponse,
     tags=["Projects"],
 )
-async def get_project_transcript(project_id: str, user: dict = Depends(get_current_user)):
+async def get_project_transcript(project_id: str, user: dict = Depends(get_current_user)):  # noqa: B008 - FastAPI dependency injection pattern
     db = ensure_db()
     project = await get_project(db, project_id, user["user_id"])
     if not project:
@@ -1142,7 +1142,7 @@ async def get_project_transcript(project_id: str, user: dict = Depends(get_curre
 async def search_project_transcript(
     project_id: str,
     req: TranscriptSearchRequest,
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_current_user),  # noqa: B008 - FastAPI dependency injection pattern
 ):
     db = ensure_db()
     project = await get_project(db, project_id, user["user_id"])
@@ -1242,7 +1242,7 @@ async def search_project_transcript(
 async def generate_project_blog(
     project_id: str,
     req: ProjectGenerateBlogRequest,
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_current_user),  # noqa: B008 - FastAPI dependency injection pattern
 ):
     db, queue = ensure_services()
     project = await get_project(db, project_id, user["user_id"])
@@ -1428,7 +1428,7 @@ async def generate_project_blog(
     response_model=ProjectBlog,
     tags=["Projects"],
 )
-async def get_project_blog(project_id: str, user: dict = Depends(get_current_user)):
+async def get_project_blog(project_id: str, user: dict = Depends(get_current_user)):  # noqa: B008 - FastAPI dependency injection pattern
     db = ensure_db()
     project = await get_project(db, project_id, user["user_id"])
     if not project:
@@ -1466,7 +1466,7 @@ async def get_project_blog(project_id: str, user: dict = Depends(get_current_use
 async def get_project_activity(
     project_id: str,
     limit: int = 30,
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_current_user),  # noqa: B008 - FastAPI dependency injection pattern
 ):
     """Return a mixed activity feed (jobs + pipeline events, etc.) for a project."""
     db = ensure_db()
