@@ -125,7 +125,7 @@ import difflib
 logger = get_logger(__name__)
 
 router = APIRouter(
-    dependencies=[Depends(get_current_user)],  # noqa: B008 - FastAPI dependency injection pattern
+    dependencies=[Depends(get_current_user)],
 )
 
 
