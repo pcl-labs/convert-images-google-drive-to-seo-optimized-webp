@@ -2983,21 +2983,19 @@ async def record_usage_event(
     )
     
 
-def _now_iso() -> str:
-    """Return a UTC ISO-8601 timestamp with Z suffix."""
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-
-
 async def create_project(db: Database, user_id: str, document_id: str, youtube_url: str) -> Dict[str, Any]:
-    """Insert a new project row and return it as a plain dict."""
+    """Insert a new project row and return it as a plain dict.
+
+    Timestamps use SQL's datetime('now') format for consistency with the rest
+    of the schema.
+    """
     project_id = str(uuid.uuid4())
-    ts = _now_iso()
     await db.execute(
         """
         INSERT INTO projects (project_id, user_id, document_id, youtube_url, status, created_at, updated_at)
-        VALUES (?, ?, ?, ?, 'pending', ?, ?)
+        VALUES (?, ?, ?, ?, 'pending', datetime('now'), datetime('now'))
         """,
-        (project_id, user_id, document_id, youtube_url, ts, ts),
+        (project_id, user_id, document_id, youtube_url),
     )
     row = await db.execute("SELECT * FROM projects WHERE project_id = ?", (project_id,))
     return _jsproxy_to_dict(row) if row else {
@@ -3006,8 +3004,8 @@ async def create_project(db: Database, user_id: str, document_id: str, youtube_u
         "document_id": document_id,
         "youtube_url": youtube_url,
         "status": "pending",
-        "created_at": ts,
-        "updated_at": ts,
+        "created_at": None,
+        "updated_at": None,
     }
 
 
@@ -3020,13 +3018,22 @@ async def get_project(db: Database, project_id: str, user_id: str) -> Optional[D
     return _jsproxy_to_dict(row) if row else None
 
 
-async def update_project_status(db: Database, project_id: str, status: str) -> None:
-    """Update the status and updated_at timestamp for a project."""
-    ts = _now_iso()
+async def update_project_status(db: Database, project_id: str, user_id: str, status: str) -> int:
+    """Update the status and updated_at timestamp for a user's project.
+
+    Returns the number of rows affected so callers can detect missing or
+    unauthorized projects.
+    """
     await db.execute(
-        "UPDATE projects SET status = ?, updated_at = ? WHERE project_id = ?",
-        (status, ts, project_id),
+        "UPDATE projects SET status = ?, updated_at = datetime('now') WHERE project_id = ? AND user_id = ?",
+        (status, project_id, user_id),
     )
+    # Fetch back the row to confirm existence/ownership.
+    row = await db.execute(
+        "SELECT 1 FROM projects WHERE project_id = ? AND user_id = ?",
+        (project_id, user_id),
+    )
+    return 1 if row else 0
 
 
 async def create_transcript_chunk(
@@ -3051,16 +3058,21 @@ async def create_transcript_chunk(
     )
 
 
-async def list_transcript_chunks(db: Database, project_id: str) -> List[Dict[str, Any]]:
-    """List transcript chunks for a project ordered by chunk_index."""
+async def list_transcript_chunks(db: Database, project_id: str, user_id: str) -> List[Dict[str, Any]]:
+    """List transcript chunks for a project owned by the given user.
+
+    Results are ordered by chunk_index and restricted via a join on projects
+    so only the owner can see their project's transcript chunks.
+    """
     rows = await db.execute_all(
         """
-        SELECT chunk_id, chunk_index, start_char, end_char, text_preview
-        FROM transcript_chunks
-        WHERE project_id = ?
-        ORDER BY chunk_index ASC
+        SELECT tc.chunk_id, tc.chunk_index, tc.start_char, tc.end_char, tc.text_preview
+        FROM transcript_chunks AS tc
+        JOIN projects AS p ON p.project_id = tc.project_id
+        WHERE tc.project_id = ? AND p.user_id = ?
+        ORDER BY tc.chunk_index ASC
         """,
-        (project_id,),
+        (project_id, user_id),
     )
     return _rows_to_dicts(rows)
 

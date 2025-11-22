@@ -31,7 +31,6 @@ def chunk_transcript(
     while start < n:
         end = min(start + chunk_chars, n)
         chunk_text = clean[start:end]
-        chunk_text = text[start:end]
         chunks.append(
             {
                 "chunk_index": idx,

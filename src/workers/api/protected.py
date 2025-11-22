@@ -819,13 +819,29 @@ async def create_project_for_youtube(req: CreateProjectRequest, user: dict = Dep
         autopilot_enabled=False,
     )
     document_id = job_status.document_id
-    # Create project row
-    project_row = await create_project(db, user["user_id"], document_id, req.youtube_url)
-    # If transcript is already present, mark project as transcript_ready
-    doc = await get_document(db, document_id, user_id=user["user_id"])
-    if doc and (doc.get("raw_text") or "").strip():
-        await update_project_status(db, project_row["project_id"], "transcript_ready")
-        project_row["status"] = "transcript_ready"
+    # Create project row and mark transcript_ready if we already have text.
+    try:
+        project_row = await create_project(db, user["user_id"], document_id, str(req.youtube_url))
+        doc = await get_document(db, document_id, user_id=user["user_id"])
+        if doc and (doc.get("raw_text") or "").strip():
+            updated = await update_project_status(
+                db,
+                project_row["project_id"],
+                user["user_id"],
+                "transcript_ready",
+            )
+            if updated:
+                project_row["status"] = "transcript_ready"
+    except DatabaseError as exc:
+        logger.error(
+            "create_project_for_youtube.db_error",
+            exc_info=True,
+            extra={"document_id": document_id, "user_id": user["user_id"], "error": str(exc)},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to create project",
+        ) from exc
     # Build lightweight embedded document payload
     document_payload = None
     if doc:
@@ -889,22 +905,63 @@ async def chunk_and_embed_transcript(project_id: str, user: dict = Depends(get_c
     # Persist chunks in DB. First clear any existing rows so this endpoint
     # can be safely re-run for the same project without UNIQUE constraint
     # violations on (project_id, chunk_index).
-    await db.execute(
-        "DELETE FROM transcript_chunks WHERE project_id = ?",
-        (project_id,),
-    )
+    try:
+        await db.execute(
+            "DELETE FROM transcript_chunks WHERE project_id = ?",
+            (project_id,),
+        )
+    except Exception as exc:
+        logger.error(
+            "chunk_and_embed.delete_transcript_chunks_failed",
+            exc_info=True,
+            extra={"project_id": project_id, "error": str(exc)},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to reset existing transcript chunks",
+        ) from exc
 
     for chunk in chunks:
-        await create_transcript_chunk(
-            db,
-            chunk_id=str(uuid.uuid4()),
-            project_id=project_id,
-            document_id=project["document_id"],
-            chunk_index=int(chunk["chunk_index"]),
-            start_char=int(chunk["start_char"]),
-            end_char=int(chunk["end_char"]),
-            text_preview=(chunk.get("text") or "")[:200],
-        )
+        try:
+            # Validate required numeric fields before casting.
+            if "chunk_index" not in chunk or "start_char" not in chunk or "end_char" not in chunk:
+                raise ValueError("chunk_index, start_char, and end_char are required for each chunk")
+            chunk_index = int(chunk["chunk_index"])
+            start_char = int(chunk["start_char"])
+            end_char = int(chunk["end_char"])
+            await create_transcript_chunk(
+                db,
+                chunk_id=str(uuid.uuid4()),
+                project_id=project_id,
+                document_id=project["document_id"],
+                chunk_index=chunk_index,
+                start_char=start_char,
+                end_char=end_char,
+                text_preview=(chunk.get("text") or "")[:200],
+            )
+        except (ValueError, TypeError) as exc:
+            logger.warning(
+                "chunk_and_embed.invalid_chunk",
+                extra={
+                    "project_id": project_id,
+                    "document_id": project["document_id"],
+                    "chunk": chunk,
+                    "error": str(exc),
+                },
+            )
+            continue
+        except Exception as exc:
+            logger.error(
+                "chunk_and_embed.create_transcript_chunk_failed",
+                exc_info=True,
+                extra={
+                    "project_id": project_id,
+                    "document_id": project["document_id"],
+                    "chunk": chunk,
+                    "error": str(exc),
+                },
+            )
+            continue
 
     # Build embeddings payloads
     texts = [c["text"] for c in chunks]
@@ -925,8 +982,47 @@ async def chunk_and_embed_transcript(project_id: str, user: dict = Depends(get_c
         for c in chunks
     ]
 
-    embeddings_stored = await store_embeddings(vectors=vectors, metadatas=metadatas)
-    await update_project_status(db, project_id, "embedded")
+    try:
+        embeddings_stored = await store_embeddings(vectors=vectors, metadatas=metadatas)
+    except Exception as exc:
+        logger.error(
+            "chunk_and_embed.store_embeddings_failed",
+            exc_info=True,
+            extra={
+                "project_id": project_id,
+                "document_id": project["document_id"],
+                "chunks": len(chunks),
+                "error": str(exc),
+            },
+        )
+        # Best-effort mark project as failed; ignore errors from status update.
+        try:
+            await update_project_status(db, project_id, user["user_id"], "failed")
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Failed to store embeddings for transcript chunks",
+        ) from exc
+
+    try:
+        updated = await update_project_status(db, project_id, user["user_id"], "embedded")
+    except DatabaseError as exc:
+        logger.error(
+            "chunk_and_embed.update_project_status_failed",
+            exc_info=True,
+            extra={"project_id": project_id, "user_id": user["user_id"], "error": str(exc)},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Embeddings stored, but failed to update project status",
+        ) from exc
+
+    if not updated:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found or not owned by user",
+        )
 
     return ChunkAndEmbedResponse(
         project_id=project_id,
@@ -950,7 +1046,7 @@ async def get_project_transcript(project_id: str, user: dict = Depends(get_curre
     if not doc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
     text = (doc.get("raw_text") or "").strip()
-    chunks = await list_transcript_chunks(db, project_id)
+    chunks = await list_transcript_chunks(db, project_id, user["user_id"])
     return TranscriptResponse(
         project_id=project_id,
         text=text,
@@ -985,16 +1081,32 @@ async def search_project_transcript(
 
     query_vec = vectors[0]
 
-    # Query Vectorize restricted to this project
-    hits = await query_project_chunks(
-        project_id=project_id,
-        query_vector=query_vec,
-        limit=req.limit,
-    )
+    # Query Vectorize for best-matching chunks. Errors in the vector service
+    # are surfaced as 502/503 rather than generic 500s.
+    try:
+        hits = await query_project_chunks(
+            project_id=project_id,
+            query_vector=query_vec,
+            limit=req.limit,
+        )
+    except Exception as exc:
+        logger.error(
+            "transcript_search.vectorize_query_failed",
+            exc_info=True,
+            extra={
+                "project_id": project_id,
+                "query_length": len(req.query or ""),
+                "error": str(exc),
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Vector search failed for this project",
+        ) from exc
 
     # Load known chunks for this project so we can enrich results with
     # preview/start/end even if metadata is incomplete.
-    existing_chunks = await list_transcript_chunks(db, project_id)
+    existing_chunks = await list_transcript_chunks(db, project_id, user["user_id"])
     by_index = {int(c["chunk_index"]): c for c in existing_chunks}
 
     matches_payload = []

@@ -22,12 +22,12 @@ async def embed_texts(texts: List[str]) -> List[List[float]]:
     if not clean_inputs:
         return []
 
-    if not settings.cloudflare_account_id or not getattr(settings, "cf_ai_gateway_token", None):
+    if not settings.cloudflare_account_id or not settings.cf_ai_gateway_token:
         logger.error(
             "embeddings_ai_gateway_missing_config",
             extra={
                 "has_account_id": bool(settings.cloudflare_account_id),
-                "has_token": bool(getattr(settings, "cf_ai_gateway_token", None)),
+                "has_token": bool(settings.cf_ai_gateway_token),
             },
         )
         raise RuntimeError("Cloudflare AI Gateway configuration is missing for embeddings")
@@ -43,7 +43,7 @@ async def embed_texts(texts: List[str]) -> List[List[float]]:
             "model": model_name,
             "num_texts": len(clean_inputs),
             "openai_api_base": getattr(settings, "openai_api_base", None),
-            "ai_gateway_token_set": bool(getattr(settings, "cf_ai_gateway_token", None)),
+            "ai_gateway_token_set": bool(settings.cf_ai_gateway_token),
         },
     )
 
@@ -88,18 +88,20 @@ async def embed_texts(texts: List[str]) -> List[List[float]]:
     # Each item is expected to have an "embedding" field (OpenAI compat schema).
     vectors: List[List[float]] = []
     for idx, item in enumerate(items):
-        emb = item.get("embedding") if isinstance(item, dict) else None
+        if not isinstance(item, dict) or "embedding" not in item:
+            raise ValueError(
+                f"Embeddings response missing 'embedding' for item {idx} (input={clean_inputs[idx]!r})"
+            )
+        emb = item["embedding"]
         if not isinstance(emb, list):
-            logger.warning("embed_texts_item_missing_embedding", extra={"index": idx})
-            continue
+            raise ValueError(
+                f"Embeddings response has invalid 'embedding' type for item {idx}: {type(emb).__name__}"
+            )
         vectors.append(emb)
 
-    # Preserve input cardinality where possible; if fewer vectors are returned
-    # than inputs, callers should treat this as an error.
     if len(vectors) != len(clean_inputs):
-        logger.warning(
-            "embed_texts_length_mismatch",
-            extra={"inputs": len(clean_inputs), "embeddings": len(vectors)},
+        raise ValueError(
+            f"Embeddings response length mismatch: inputs={len(clean_inputs)} embeddings={len(vectors)}"
         )
 
     return vectors

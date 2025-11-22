@@ -54,11 +54,23 @@ async def store_embeddings(
         document_id = meta.get("document_id")
         chunk_index = meta.get("chunk_index")
 
-        base_id = meta.get("id") or f"{project_id}:{document_id}:{chunk_index}"
+        if project_id is None or document_id is None or chunk_index is None:
+            raise ValueError(
+                f"Missing required metadata for vector ID: project_id={project_id!r} "
+                f"document_id={document_id!r} chunk_index={chunk_index!r}"
+            )
+
+        raw_id = meta.get("id")
+        if raw_id is not None:
+            base_id = str(raw_id)
+        else:
+            base_id = f"{project_id}:{document_id}:{chunk_index}"
+
         # Vectorize requires IDs to be at most 64 bytes. If our concatenated
         # identifier is longer, hash it down to a deterministic SHA-1 hex.
-        if isinstance(base_id, str) and len(base_id.encode("utf-8")) > 64:
-            vec_id = hashlib.sha1(base_id.encode("utf-8")).hexdigest()
+        encoded = base_id.encode("utf-8")
+        if len(encoded) > 64:
+            vec_id = hashlib.sha1(encoded).hexdigest()
         else:
             vec_id = base_id
         payload_vectors.append(

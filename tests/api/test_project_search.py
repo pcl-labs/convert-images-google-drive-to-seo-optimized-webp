@@ -22,7 +22,7 @@ async def test_search_project_transcript_uses_embeddings_and_vectorize(client, m
     async def fake_get_project(db, project_id, user_id):  # type: ignore[unused-argument]
         return {"project_id": project_id, "document_id": "doc-1", "user_id": user_id}
 
-    async def fake_list_transcript_chunks(db, project_id):  # type: ignore[unused-argument]
+    async def fake_list_transcript_chunks(db, project_id, user_id):  # type: ignore[unused-argument]
         return [
             {
                 "chunk_id": "chunk-0",
