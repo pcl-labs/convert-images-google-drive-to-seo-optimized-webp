@@ -73,7 +73,7 @@ from .database import (
     update_project_status,
     create_transcript_chunk,
     list_transcript_chunks,
-    update_document,
+    update_document_latest_version_if_match,
     create_document_version,
 )
 from .notifications import notify_job
@@ -1301,6 +1301,22 @@ async def generate_project_blog(
                 },
             )
             raise
+        except RuntimeError as exc:
+            # Common case: AI model returned empty content despite a successful HTTP call.
+            logger.exception(
+                "generate_project_blog.inline_ai_failed",
+                extra={
+                    "job_id": job_id,
+                    "project_id": project_id,
+                    "document_id": project["document_id"],
+                    "user_id": user["user_id"],
+                    "error": str(exc),
+                },
+            )
+            raise HTTPException(
+                status.HTTP_502_BAD_GATEWAY,
+                detail="AI model failed to return blog content. Please try again or adjust the model settings.",
+            ) from exc
         except Exception as exc:
             logger.exception(
                 "generate_project_blog.inline_failed",
@@ -1671,7 +1687,24 @@ async def patch_project_blog_section(
             generator_block = {}
         generator_block.setdefault("source", "patch_section")
         assets["generator"] = generator_block
-    body_html = markdown_to_html(new_body_mdx)
+    try:
+        body_html = markdown_to_html(new_body_mdx)
+    except Exception as exc:
+        # Surface markdown/MDX parsing issues as a clear client error instead of 500.
+        logger.error(
+            "patch_section.markdown_to_html_failed",
+            exc_info=True,
+            extra={
+                "project_id": project_id,
+                "document_id": document_id,
+                "section_id": req.section_id,
+                "mdx_preview": (new_body_mdx[:200] if isinstance(new_body_mdx, str) else None),
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Failed to parse markdown content for patched section",
+        ) from exc
 
     # Persist new version and update latest_version_id on the document.
     new_version_row = await create_document_version(
@@ -1689,7 +1722,17 @@ async def patch_project_blog_section(
     )
     new_version_id = new_version_row.get("version_id")
     if new_version_id:
-        await update_document(db, document_id, {"latest_version_id": new_version_id})
+        updated = await update_document_latest_version_if_match(
+            db,
+            document_id,
+            expected_version_id=version_row.get("version_id"),
+            new_version_id=new_version_id,
+        )
+        if not updated:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Blog has been updated since this version was loaded; please reload and retry",
+            )
 
     detail = ProjectSectionDetail(
         section_id=req.section_id,
@@ -1911,7 +1954,17 @@ async def revert_project_blog_version(
     )
     new_version_id = new_row.get("version_id")
     if new_version_id:
-        await update_document(db, document_id, {"latest_version_id": new_version_id})
+        updated = await update_document_latest_version_if_match(
+            db,
+            document_id,
+            expected_version_id=source_row.get("version_id"),
+            new_version_id=new_version_id,
+        )
+        if not updated:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Blog has been updated since this version was loaded; please reload and retry",
+            )
 
     return ProjectVersionDetail(
         project_id=project_id,

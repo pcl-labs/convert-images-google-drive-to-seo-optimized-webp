@@ -57,10 +57,10 @@ async def test_generate_project_blog_includes_project_id_in_job_payload(monkeypa
     async def fake_get_user_prefs(db, user_id):  # type: ignore[unused-argument]
         return {}
 
-    def fake_ensure_services():  # type: ignore[return-type]
-        class FakeDB:
-            ...
+    class FakeDB:
+        ...
 
+    def fake_ensure_services():  # type: ignore[return-type]
         class FakeQueue:
             ...
 
@@ -238,8 +238,12 @@ async def test_patch_project_blog_section_creates_new_version(monkeypatch):
             "body_mdx": body_mdx,
         }
 
-    async def fake_update_document(db, document_id, updates):  # type: ignore[unused-argument]
-        created_versions["latest_version_updates"] = updates
+    async def fake_update_latest(db, document_id, expected_version_id, new_version_id):  # type: ignore[unused-argument]
+        created_versions["latest_version_updates"] = {
+            "expected": expected_version_id,
+            "new": new_version_id,
+        }
+        return True
 
     class FakeResponse:
         def __init__(self, text: str) -> None:
@@ -276,7 +280,7 @@ async def test_patch_project_blog_section_creates_new_version(monkeypatch):
     monkeypatch.setattr(protected_module, "embed_texts", fake_embed_texts)
     monkeypatch.setattr(protected_module, "query_project_chunks", fake_query_project_chunks)
     monkeypatch.setattr(protected_module, "create_document_version", fake_create_document_version)
-    monkeypatch.setattr(protected_module, "update_document", fake_update_document)
+    monkeypatch.setattr(protected_module, "update_document_latest_version_if_match", fake_update_latest)
     monkeypatch.setattr(protected_module, "AsyncSimpleClient", FakeClient)
 
     user = {"user_id": "user-1"}
@@ -287,7 +291,7 @@ async def test_patch_project_blog_section_creates_new_version(monkeypatch):
     assert resp.version_id == "v2"
     assert resp.section.section_id == "sec-0"
     assert resp.section.body_mdx == "New section body from AI"
-    assert created_versions["latest_version_updates"]["latest_version_id"] == "v2"
+    assert created_versions["latest_version_updates"]["new"] == "v2"
 
 
 @pytest.mark.asyncio
@@ -346,8 +350,12 @@ async def test_diff_and_revert_project_blog_versions(monkeypatch):
             "body_mdx": body_mdx,
         }
 
-    async def fake_update_document(db, document_id, updates):  # type: ignore[unused-argument]
-        created_revert["latest_version_updates"] = updates
+    async def fake_update_latest(db, document_id, expected_version_id, new_version_id):  # type: ignore[unused-argument]
+        created_revert["latest_version_updates"] = {
+            "expected": expected_version_id,
+            "new": new_version_id,
+        }
+        return True
 
     def fake_ensure_db():  # type: ignore[return-type]
         return FakeDB()
@@ -356,7 +364,7 @@ async def test_diff_and_revert_project_blog_versions(monkeypatch):
     monkeypatch.setattr(protected_module, "get_project", fake_get_project)
     monkeypatch.setattr(protected_module, "get_document_version", fake_get_document_version)
     monkeypatch.setattr(protected_module, "create_document_version", fake_create_document_version)
-    monkeypatch.setattr(protected_module, "update_document", fake_update_document)
+    monkeypatch.setattr(protected_module, "update_document_latest_version_if_match", fake_update_latest)
 
     user = {"user_id": "user-1"}
 
@@ -368,4 +376,4 @@ async def test_diff_and_revert_project_blog_versions(monkeypatch):
 
     reverted = await protected_module.revert_project_blog_version("proj-1", "v1", user=user)
     assert reverted.version_id == "v3"
-    assert created_revert["latest_version_updates"]["latest_version_id"] == "v3"
+    assert created_revert["latest_version_updates"]["new"] == "v3"

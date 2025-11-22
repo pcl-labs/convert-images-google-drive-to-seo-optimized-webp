@@ -717,6 +717,31 @@ async def compose_blog_from_text(
             "gateway_compose_blog_empty_content",
             extra={"body_preview": _redact_http_body_for_logging(json.dumps(data, ensure_ascii=False))},
         )
+
+        # Best-effort fallback: if a custom model returned empty content, retry once
+        # with the configured default blog model before failing. This guards against
+        # occasional provider/model quirks while keeping behavior deterministic.
+        default_model = (settings.openai_blog_model or "gpt-5.1").strip()
+        if model_name != default_model:
+            logger.info(
+                "compose_blog_from_text_retry_with_default_model",
+                extra={
+                    "requested_model": model_name,
+                    "fallback_model": default_model,
+                },
+            )
+            # Recurse with the default model; this path will not retry again because
+            # model_name will equal default_model on the second call.
+            return await compose_blog_from_text(
+                text,
+                tone=tone,
+                length_hint=length_hint,
+                title_hint=title_hint,
+                extra_context=extra_context,
+                model=default_model,
+                temperature=temperature,
+            )
+
         raise RuntimeError("compose_blog_from_text received empty content from AI Gateway response")
 
     word_count = len(markdown.split())
