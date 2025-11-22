@@ -848,6 +848,7 @@ async def create_project_for_youtube(req: CreateProjectRequest, user: dict = Dep
         metadata = _json_field(doc.get("metadata"), {})
         document_payload = {
             "document_id": doc.get("document_id"),
+            "user_id": doc.get("user_id"),
             "source_type": doc.get("source_type"),
             "metadata": metadata,
             "frontmatter": _json_field(doc.get("frontmatter"), {}),
@@ -868,6 +869,7 @@ async def get_project_overview(project_id: str, user: dict = Depends(get_current
         metadata = _json_field(doc.get("metadata"), {})
         document_payload = {
             "document_id": doc.get("document_id"),
+            "user_id": doc.get("user_id"),
             "source_type": doc.get("source_type"),
             "metadata": metadata,
             "frontmatter": _json_field(doc.get("frontmatter"), {}),
@@ -1112,18 +1114,27 @@ async def search_project_transcript(
     matches_payload = []
     for hit in hits:
         meta = hit.get("metadata") or {}
+        hit_id = str(hit.get("id") or "")
+
+        # Restrict hits to this project using metadata when present
+        meta_project_id = meta.get("project_id")
+        if meta_project_id is not None and meta_project_id != project_id:
+            continue
+
         idx = meta.get("chunk_index")
         if idx is None:
-            # Fall back to id parsing if needed: id may be project:document:chunk_index
-            hit_id = hit.get("id") or ""
+            # Fallback: id is typically "project_id:document_id:chunk_index"
+            if not hit_id.startswith(f"{project_id}:"):
+                continue
             try:
                 _, _, idx_str = hit_id.rsplit(":", 2)
                 idx = int(idx_str)
-            except Exception:
+            except (TypeError, ValueError):
                 continue
+
         try:
             idx_int = int(idx)
-        except Exception:
+        except (TypeError, ValueError):
             continue
         chunk_row = by_index.get(idx_int)
         if not chunk_row:

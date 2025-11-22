@@ -24,6 +24,7 @@ class ProjectStatusEnum(str, Enum):
     PENDING = "pending"
     TRANSCRIPT_READY = "transcript_ready"
     EMBEDDED = "embedded"
+    BLOG_GENERATED = "blog_generated"
     FAILED = "failed"
 
 
