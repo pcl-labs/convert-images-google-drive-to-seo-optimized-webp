@@ -398,6 +398,8 @@ class ProjectBlog(BaseModel):
     outline: Optional[Any] = None
     created_at: datetime
 
+    model_config = ConfigDict(use_enum_values=True)
+
 
 class GenerateProjectBlogResponse(BaseModel):
     job_id: Optional[str] = None

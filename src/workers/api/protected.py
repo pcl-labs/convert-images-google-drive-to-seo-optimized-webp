@@ -1315,14 +1315,27 @@ async def generate_project_blog(
         )
 
         # In inline mode we also advance the project status so dev flows
-        # behave like background-consumer flows.
-        try:
-            await update_project_status(db, project_id, user["user_id"], "blog_generated")
-        except Exception:
+        # behave like background-consumer flows, but only when the job
+        # actually completed successfully.
+        final_status = (final_row.get("status") or "").lower()
+        if final_status in {JobStatusEnum.COMPLETED.value, "completed"}:
+            try:
+                await update_project_status(db, project_id, user["user_id"], "blog_generated")
+            except Exception:
+                logger.warning(
+                    "generate_project_blog.inline_status_update_failed",
+                    exc_info=True,
+                    extra={"project_id": project_id, "user_id": user["user_id"], "job_id": job_id},
+                )
+        else:
             logger.warning(
-                "generate_project_blog.inline_status_update_failed",
-                exc_info=True,
-                extra={"project_id": project_id, "user_id": user["user_id"], "job_id": job_id},
+                "generate_project_blog.inline_status_not_completed",
+                extra={
+                    "project_id": project_id,
+                    "user_id": user["user_id"],
+                    "job_id": job_id,
+                    "final_status": final_row.get("status"),
+                },
             )
 
         return GenerateProjectBlogResponse(
