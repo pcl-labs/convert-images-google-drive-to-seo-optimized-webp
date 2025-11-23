@@ -381,6 +381,7 @@ CREATE TABLE IF NOT EXISTS projects (
     user_id TEXT NOT NULL,
     document_id TEXT NOT NULL UNIQUE,
     youtube_url TEXT,
+    title TEXT,
     status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN (
         'pending',
         'transcript_ready',

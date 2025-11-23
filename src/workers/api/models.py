@@ -300,6 +300,7 @@ class Project(BaseModel):
     document_id: str
     user_id: str
     youtube_url: Optional[str]
+    title: Optional[str] = None
     status: ProjectStatusEnum
     created_at: datetime
     updated_at: datetime

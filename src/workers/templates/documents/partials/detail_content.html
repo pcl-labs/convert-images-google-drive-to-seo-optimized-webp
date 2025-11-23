@@ -6,7 +6,12 @@
 {% from 'components/elements/alert.html' import alert %}
 
 {{ page_header('Document ' ~ document.id, 'Source: ' ~ document.source_label ~ ' • Created ' ~ (document.created_at or 'unknown')) }}
-<p class="text-sm text-primary"><a href="/dashboard/documents" class="hover:text-primary/80">&larr; Back to Documents</a></p>
+<p class="text-sm text-primary"><a href="/dashboard" class="hover:text-primary/80">&larr; Back to Dashboard</a></p>
+{% if project %}
+  <p class="text-xs text-contentMuted">
+    Project {{ project.project_id }} • Status {{ project.status|replace('_', ' ')|title }}
+  </p>
+{% endif %}
 
 {% set folder = drive_meta.get('folder') if drive_meta else {} %}
 {% set media_folder = drive_meta.get('media') if drive_meta else {} %}
