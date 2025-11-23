@@ -2772,8 +2772,20 @@ async def ensure_full_schema(db: Database) -> None:
         # Ensure newer columns exist on legacy databases
         try:
             await db.execute("ALTER TABLE pipeline_events ADD COLUMN session_id TEXT", ())
-        except Exception:
-            pass
+        except Exception as e:
+            message = str(e).lower()
+            known_markers = [
+                "duplicate column name",
+                "already exists",
+                "column \"session_id\" specified more than once",
+            ]
+            if not any(marker in message for marker in known_markers):
+                logger.error(
+                    "pipeline_events.session_id_migration_failed",
+                    exc_info=True,
+                    extra={"error": str(e)},
+                )
+                raise
         await db.execute(
             "CREATE INDEX IF NOT EXISTS idx_pipeline_events_session ON pipeline_events(session_id, sequence DESC)",
             (),
