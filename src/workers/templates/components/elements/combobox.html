@@ -1,4 +1,4 @@
-{% macro combobox(name, label=None, options=None, placeholder="Search...", value=None, model=None) %}
+{% macro combobox(name, label=None, options=None, placeholder="Search...", value=None, model=None, aria_label=None) %}
   {% set opts = options or [] %}
   {% set default_value = value or (opts[0][0] if opts else '') %}
   {% set ns = namespace(data=[]) %}
@@ -11,15 +11,14 @@
       value: {{ default_value|tojson|safe }},
       options: {{ ns.data|tojson|safe }},
       selectedLabel: "",
+      activeIndex: -1,
+      ariaLabel: {{ (aria_label or label or (placeholder ~ " dropdown"))|tojson|safe }},
       init(){
         this.setSelectedFromValue();
       },
       setSelectedFromValue(){
         const current = this.options.find((opt) => opt.value === this.value);
         this.selectedLabel = current ? current.label : "";
-      },
-      displayValue(){
-        return this.query || this.selectedLabel;
       },
       filtered(){
         const q = this.query.trim().toLowerCase();
@@ -35,8 +34,34 @@
       select(option){
         this.value = option.value;
         this.selectedLabel = option.label;
-        this.query = "";
+        this.query = option.label || "";
         this.open = false;
+        this.activeIndex = -1;
+      },
+      moveNext(){
+        const items = this.filtered();
+        if(!items.length){
+          this.activeIndex = -1;
+          return;
+        }
+        this.open = true;
+        this.activeIndex = (this.activeIndex + 1) % items.length;
+      },
+      movePrev(){
+        const items = this.filtered();
+        if(!items.length){
+          this.activeIndex = -1;
+          return;
+        }
+        this.open = true;
+        this.activeIndex = (this.activeIndex - 1 + items.length) % items.length;
+      },
+      selectActive(){
+        const items = this.filtered();
+        if(this.activeIndex < 0 || this.activeIndex >= items.length){
+          return;
+        }
+        this.select(items[this.activeIndex]);
       },
       toggle(){
         this.open = !this.open;
@@ -53,8 +78,8 @@
         <label class="text-xs font-medium text-contentMuted">{{ label }}</label>
       {% endif %}
       <div class="relative">
-        <input x-ref="input" type="text" x-model="query" @focus="open=true" placeholder="{{ placeholder }}" :value="displayValue()" @input="open=true" class="w-full rounded-2xl bg-bg px-4 py-3 text-sm text-content placeholder:text-contentMuted focus:outline-none focus:ring-2 focus:ring-primary/30" autocomplete="off">
-        <button type="button" class="absolute inset-y-0 right-3 flex items-center text-contentMuted" @click="toggle()" aria-label="Toggle content type dropdown">
+        <input x-ref="input" type="text" x-model="query" @focus="open=true" placeholder="{{ placeholder }}" @input="open=true" @keydown.arrow-down.prevent="moveNext()" @keydown.arrow-up.prevent="movePrev()" @keydown.enter.prevent="selectActive()" class="w-full rounded-2xl bg-bg px-4 py-3 text-sm text-content placeholder:text-contentMuted focus:outline-none focus:ring-2 focus:ring-primary/30" autocomplete="off">
+        <button type="button" class="absolute inset-y-0 right-3 flex items-center text-contentMuted" @click="toggle()" :aria-label="ariaLabel">
           <svg class="w-5 h-5" viewBox="0 0 20 20" fill="none" aria-hidden="true">
             <path d="M6 8l4 4 4-4" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"/>
           </svg>
@@ -63,9 +88,9 @@
     </div>
     <div x-cloak x-show="open" @click.away="open=false" class="absolute z-20 mt-2 w-full rounded-2xl bg-surface shadow-xl ring-1 ring-border">
       <ul class="max-h-60 overflow-auto py-2">
-        <template x-for="option in filtered()" :key="option.value">
+        <template x-for="(option, index) in filtered()" :key="option.value">
           <li>
-            <button type="button" class="flex w-full items-start gap-2 px-4 py-2 text-left text-sm text-content hover:bg-surfaceMuted/60" @click="select(option)">
+            <button type="button" class="flex w-full items-start gap-2 px-4 py-2 text-left text-sm text-content hover:bg-surfaceMuted/60" @click="select(option)" :class="{ 'bg-surfaceMuted/60': index === activeIndex }">
               <span class="flex-1">
                 <span class="block font-medium" x-text="option.label"></span>
                 <span class="block text-xs text-contentMuted" x-text="option.value"></span>

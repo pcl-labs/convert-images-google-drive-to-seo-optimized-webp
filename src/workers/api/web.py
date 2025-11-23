@@ -827,7 +827,12 @@ async def _load_project_views(
         if document_id:
             try:
                 versions = await list_document_versions(db, document_id, user_id, limit=2)
-            except Exception:
+            except Exception as exc:
+                logger.warning(
+                    "Failed to load versions for project document",
+                    exc_info=True,
+                    extra={"project_id": row.get("project_id"), "document_id": document_id},
+                )
                 versions = []
         frontmatter = _json_field(row.get("document_frontmatter"), {})
         metadata = _json_field(row.get("document_metadata"), {})

@@ -29,9 +29,21 @@
             <span>YouTube</span>
           </button>
         </div>
-        <div class="flex items-center gap-2 text-xs font-medium">
+        <div class="flex items-center gap-3 text-xs font-medium">
           <span class="inline-flex h-2 w-2 rounded-full" :class="youtubeConnected ? 'bg-accent' : 'bg-destructive'"></span>
-          <span x-text="youtubeConnected ? 'YouTube connected' : 'Connect YouTube to ingest videos'"></span>
+          <template x-if="youtubeConnected">
+            <span>YouTube connected</span>
+          </template>
+          <template x-if="!youtubeConnected">
+            <div class="flex items-center gap-2">
+              <span>Connect YouTube to ingest videos</span>
+              <a href="/dashboard/integrations/youtube"
+                 class="inline-flex items-center rounded-full border border-border px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-content hover:border-primary hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-bg"
+                 aria-label="Open YouTube integration settings to connect your account">
+                Connect
+              </a>
+            </div>
+          </template>
         </div>
       </div>
       <div class="grid gap-4 md:grid-cols-2">

@@ -21,7 +21,7 @@
       </button>
     </div>
     <div class="py-4">
-      <div x-show="currentTab === 'projects'">
+      <div x-cloak x-show="currentTab === 'projects'">
         {% if projects_active %}
           <div class="space-y-2">
             {% for project in projects_active %}

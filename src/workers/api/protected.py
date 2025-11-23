@@ -919,9 +919,35 @@ async def create_project_for_youtube(req: CreateProjectRequest, user: dict = Dep
         autopilot_enabled=False,
     )
     document_id = job_status.document_id
+    # Determine a human-friendly project title from document/youtube metadata.
+    doc = await get_document(db, document_id, user_id=user["user_id"])
+    frontmatter = {}
+    youtube_meta = {}
+    if doc:
+        raw_frontmatter = doc.get("frontmatter")
+        if isinstance(raw_frontmatter, str):
+            try:
+                frontmatter = json.loads(raw_frontmatter) or {}
+            except Exception:
+                frontmatter = {}
+        elif isinstance(raw_frontmatter, dict):
+            frontmatter = raw_frontmatter
+        metadata = doc.get("metadata") or {}
+        if isinstance(metadata, str):
+            try:
+                metadata = json.loads(metadata) or {}
+            except Exception:
+                metadata = {}
+        if isinstance(metadata, dict):
+            youtube_meta = metadata.get("youtube") or {}
+    title_hint = (
+        (frontmatter.get("title") if isinstance(frontmatter, dict) else None)
+        or (youtube_meta.get("title") if isinstance(youtube_meta, dict) else None)
+        or youtube_url_str
+    )
     # Create project row and mark transcript_ready if we already have text.
     try:
-        project_row = await create_project(db, user["user_id"], document_id, youtube_url_str, youtube_url_str)
+        project_row = await create_project(db, user["user_id"], document_id, youtube_url_str, title_hint)
         doc = await get_document(db, document_id, user_id=user["user_id"])
         if doc and (doc.get("raw_text") or "").strip():
             updated = await update_project_status(
