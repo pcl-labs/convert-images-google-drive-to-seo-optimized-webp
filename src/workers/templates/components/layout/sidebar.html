@@ -4,7 +4,7 @@
     {% set path_parts = path.split('/') %}
     {% set section = path_parts[2] if path_parts|length > 2 and path.startswith('/dashboard') else '' %}
     <a href="/dashboard" class="flex items-center gap-2 px-3 py-2 rounded-md {{ 'bg-surfaceMuted text-content' if path == '/dashboard' else 'text-content hover:bg-surfaceMuted' }}">Dashboard</a>
-    <a href="/dashboard/documents" class="flex items-center gap-2 px-3 py-2 rounded-md {{ 'bg-surfaceMuted text-content' if section == 'documents' else 'text-content hover:bg-surfaceMuted' }}">Documents</a>
+    <a href="/dashboard/documents" class="flex items-center gap-2 px-3 py-2 rounded-md {{ 'bg-surfaceMuted text-content' if section == 'documents' else 'text-content hover:bg-surfaceMuted' }}">Projects</a>
     <a href="/dashboard/integrations" class="flex items-center gap-2 px-3 py-2 rounded-md {{ 'bg-surfaceMuted text-content' if section == 'integrations' else 'text-content hover:bg-surfaceMuted' }}">Integrations</a>
     <a href="/dashboard/account" class="flex items-center gap-2 px-3 py-2 rounded-md {{ 'bg-surfaceMuted text-content' if section == 'account' else 'text-content hover:bg-surfaceMuted' }}">Account</a>
     <a href="/dashboard/settings" class="flex items-center gap-2 px-3 py-2 rounded-md {{ 'bg-surfaceMuted text-content' if section == 'settings' else 'text-content hover:bg-surfaceMuted' }}">Settings</a>

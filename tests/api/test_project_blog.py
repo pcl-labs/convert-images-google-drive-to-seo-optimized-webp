@@ -187,6 +187,79 @@ def test_project_blog_new_routes_registered_require_auth(client):
     assert resp.status_code in {401, 403}
 
 
+def test_get_project_activity_requires_auth(client):
+    """Ensure project activity API is registered and protected by auth."""
+    resp = client.get("/api/v1/projects/proj-1/activity")
+    assert resp.status_code in {401, 403}
+
+
+@pytest.mark.asyncio
+async def test_get_project_activity_404_for_missing_project(monkeypatch):
+    """get_project_activity should return 404 when project is not found for user."""
+    from src.workers.api import protected as protected_module
+
+    class FakeDB:
+        ...
+
+    async def fake_get_project(_db, _project_id, _user_id):  # type: ignore[unused-argument]
+        return None
+
+    def fake_ensure_db():  # type: ignore[return-type]
+        return FakeDB()
+
+    monkeypatch.setattr(protected_module, "ensure_db", fake_ensure_db)
+    monkeypatch.setattr(protected_module, "get_project", fake_get_project)
+
+    user = {"user_id": "user-1"}
+
+    with pytest.raises(protected_module.HTTPException) as excinfo:
+        await protected_module.get_project_activity("proj-missing", user=user)
+
+    assert excinfo.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_get_project_activity_returns_normalized_items(monkeypatch):
+    """get_project_activity should return normalized activity items from list_project_activity."""
+    from src.workers.api import protected as protected_module
+
+    class FakeDB:
+        ...
+
+    async def fake_get_project(_db, project_id, user_id):  # type: ignore[unused-argument]
+        return {"project_id": project_id, "user_id": user_id, "document_id": "doc-1"}
+
+    async def fake_list_project_activity(_db, project_id, user_id, limit=30):  # type: ignore[unused-argument]
+        return [
+            {
+                "id": "job:job-1",
+                "kind": "job",
+                "created_at": "2025-01-01T00:00:00Z",
+                "status": "completed",
+                "label": "Generate blog",
+                "description": "Job completed",
+                "job_id": "job-1",
+                "event_type": None,
+            }
+        ]
+
+    def fake_ensure_db():  # type: ignore[return-type]
+        return FakeDB()
+
+    monkeypatch.setattr(protected_module, "ensure_db", fake_ensure_db)
+    monkeypatch.setattr(protected_module, "get_project", fake_get_project)
+    monkeypatch.setattr(protected_module, "list_project_activity", fake_list_project_activity)
+
+    user = {"user_id": "user-1"}
+
+    payload = await protected_module.get_project_activity("proj-1", user=user)
+
+    assert payload.project_id == "proj-1"
+    assert isinstance(payload.items, list)
+    assert payload.items[0]["id"] == "job:job-1"
+    assert payload.items[0]["label"] == "Generate blog"
+
+
 @pytest.mark.asyncio
 async def test_patch_project_blog_section_creates_new_version(monkeypatch):
     from src.workers.api import protected as protected_module
