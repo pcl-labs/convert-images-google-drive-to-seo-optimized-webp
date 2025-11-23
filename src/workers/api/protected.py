@@ -26,6 +26,7 @@ from .models import (
     DriveDocumentRequest,
     DriveDocumentStatus,
     DrivePublishRequest,
+    DriveWorkspaceLinkRequest,
     OptimizeDocumentRequest,
     GenerateBlogRequest,
     GenerateBlogOptions,
@@ -3344,9 +3345,83 @@ async def publish_drive_document_endpoint(
     document_id: str,
     req: Optional[DrivePublishRequest] = Body(default=None),
     user: dict = Depends(get_saas_user),
+    agent_session_id: Optional[str] = Depends(get_agent_session_id),
 ):
     db = ensure_db()
     return await publish_drive_document_for_user(db, user["user_id"], document_id, req)
+
+
+@router.post(
+    "/api/v1/documents/{document_id}/drive/link",
+    response_model=DriveDocumentStatus,
+    tags=["Documents"],
+)
+async def link_drive_document_endpoint(
+    document_id: str,
+    req: Optional[DriveWorkspaceLinkRequest] = Body(default=None),
+    user: dict = Depends(get_saas_user),
+    agent_session_id: Optional[str] = Depends(get_agent_session_id),
+):
+    db = ensure_db()
+    document = await _load_document_for_user(db, document_id, user["user_id"])
+    preferred_name = (req.document_name if req else None) or _drive_document_name(document)
+    metadata_override = req.metadata if req and req.metadata is not None else document.get("metadata")
+    try:
+        await record_pipeline_event(
+            db,
+            user["user_id"],
+            job_id=None,
+            event_type="drive_workspace",
+            stage="drive.workspace.link",
+            status="running",
+            message="Linking document to Drive workspace",
+            data={"document_id": document_id},
+            session_id=agent_session_id,
+        )
+    except Exception:
+        pass
+    try:
+        await link_document_drive_workspace(
+            db,
+            user_id=user["user_id"],
+            document_id=document_id,
+            document_name=preferred_name,
+            metadata=metadata_override,
+            job_id=None,
+            event_type="drive_workspace",
+        )
+    except Exception as exc:
+        try:
+            await record_pipeline_event(
+                db,
+                user["user_id"],
+                job_id=None,
+                event_type="drive_workspace",
+                stage="drive.workspace.link",
+                status="error",
+                message=f"Drive workspace link failed: {exc}",
+                data={"document_id": document_id},
+                session_id=agent_session_id,
+            )
+        except Exception:
+            pass
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail="Failed to link Drive workspace") from exc
+    refreshed = await _load_document_for_user(db, document_id, user["user_id"])
+    try:
+        await record_pipeline_event(
+            db,
+            user["user_id"],
+            job_id=None,
+            event_type="drive_workspace",
+            stage="drive.workspace.link",
+            status="completed",
+            message="Drive workspace linked",
+            data={"document_id": document_id},
+            session_id=agent_session_id,
+        )
+    except Exception:
+        pass
+    return _drive_status_model(refreshed)
 
 
 @router.get("/api/v1/documents/{document_id}/versions", response_model=DocumentVersionList, tags=["Documents"])

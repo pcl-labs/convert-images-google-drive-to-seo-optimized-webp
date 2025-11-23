@@ -4,6 +4,7 @@ export interface Env {
 }
 
 type Role = "user" | "assistant" | "system";
+const PASS_THROUGH_HEADERS = ["authorization", "x-api-key", "cookie"];
 
 export interface SessionMessage {
   messageId: string;
@@ -25,6 +26,12 @@ export interface SessionRecord {
 interface SessionEvent {
   type: "snapshot" | "message" | "metadata";
   payload: unknown;
+}
+
+interface SessionEventsPayload {
+  session_id: string;
+  events?: Array<Record<string, unknown>>;
+  jobs?: Array<Record<string, unknown>>;
 }
 
 const encoder = new TextEncoder();
@@ -108,6 +115,38 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
   {
+    name: "drive_link_workspace",
+    description: "Ensure a document has a Drive workspace (folders + Doc) linked.",
+    method: "POST",
+    path: "/api/v1/documents/{document_id}/drive/link",
+    input: {
+      document_name: "Optional display name for Drive artifacts",
+      metadata: {},
+    },
+  },
+  {
+    name: "drive_status",
+    description: "Fetch Drive linkage metadata for a document.",
+    method: "GET",
+    path: "/api/v1/documents/{document_id}/drive",
+  },
+  {
+    name: "document_versions",
+    description: "List the stored versions for a document.",
+    method: "GET",
+    path: "/api/v1/documents/{document_id}/versions",
+  },
+  {
+    name: "document_export",
+    description: "Create a document export (e.g., Google Docs, Zapier, WordPress).",
+    method: "POST",
+    path: "/api/v1/documents/{document_id}/exports",
+    input: {
+      target: "google_docs",
+      version_id: "latest",
+    },
+  },
+  {
     name: "session_events",
     description: "Fetch recent pipeline events and job statuses for the current agent session.",
     method: "GET",
@@ -125,16 +164,35 @@ function ensureApiBase(env: Env): string {
   return base.replace(/\/$/, "");
 }
 
-function buildToolTarget(tool: ToolDefinition, env: Env, requestUrl: URL): string {
+function buildToolTarget(
+  tool: ToolDefinition,
+  env: Env,
+  requestUrl: URL,
+): URL {
   const base = ensureApiBase(env);
-  if (tool.name === "drive_publish") {
-    const documentId = requestUrl.searchParams.get("document_id");
-    if (!documentId) {
-      throw new Error("drive_publish requires ?document_id= parameter");
+  let resolvedPath = tool.path;
+  const usedParams = new Set<string>();
+  const placeholderRegex = /{([^}]+)}/g;
+  let match: RegExpExecArray | null;
+  while ((match = placeholderRegex.exec(tool.path)) !== null) {
+    const key = match[1];
+    const value = requestUrl.searchParams.get(key);
+    if (!value) {
+      throw new Error(`${tool.name} requires ?${key}= parameter`);
     }
-    return `${base}/api/v1/documents/${documentId}/drive/publish`;
+    usedParams.add(key);
+    resolvedPath = resolvedPath.replace(
+      new RegExp(`{${key}}`, "g"),
+      encodeURIComponent(value),
+    );
   }
-  return `${base}${tool.path}`;
+  const targetUrl = new URL(`${base}${resolvedPath}`);
+  requestUrl.searchParams.forEach((value, key) => {
+    if (!usedParams.has(key)) {
+      targetUrl.searchParams.set(key, value);
+    }
+  });
+  return targetUrl;
 }
 
 function listTools(): Response {
@@ -159,14 +217,14 @@ async function invokeTool(request: Request, env: Env): Promise<Response> {
   if (!tool) {
     return notFound("Unknown tool");
   }
-  let target: string;
+  let targetUrl: URL;
   try {
-    target = buildToolTarget(tool, env, url);
+    targetUrl = buildToolTarget(tool, env, url);
   } catch (error) {
     return badRequest(error instanceof Error ? error.message : String(error));
   }
   const headers = new Headers();
-  for (const header of ["authorization", "x-api-key", "cookie"]) {
+  for (const header of PASS_THROUGH_HEADERS) {
     const value = request.headers.get(header);
     if (value) {
       headers.set(header, value);
@@ -176,6 +234,9 @@ async function invokeTool(request: Request, env: Env): Promise<Response> {
     request.headers.get("x-agent-session-id") ?? url.searchParams.get("session_id");
   if (sessionId) {
     headers.set("x-agent-session-id", sessionId);
+    if (!targetUrl.searchParams.has("session_id")) {
+      targetUrl.searchParams.set("session_id", sessionId);
+    }
   }
   const accept = request.headers.get("accept");
   if (accept) {
@@ -193,7 +254,7 @@ async function invokeTool(request: Request, env: Env): Promise<Response> {
     body = await request.clone().text();
   }
   try {
-    const apiResponse = await fetch(target, {
+    const apiResponse = await fetch(targetUrl.toString(), {
       method: tool.method,
       headers,
       body,
@@ -209,7 +270,7 @@ async function invokeTool(request: Request, env: Env): Promise<Response> {
   } catch (error) {
     console.error("tool_invoke_failed", {
       tool: toolName,
-      target,
+      target: targetUrl.toString(),
       error: error instanceof Error ? error.message : String(error),
     });
     return jsonResponse(
@@ -309,6 +370,7 @@ type Listener = {
   id: string;
   controller: ReadableStreamDefaultController<Uint8Array>;
   keepAlive?: number;
+  pollAbort?: AbortController;
 };
 
 export class ChatSessionDurable {
@@ -317,6 +379,22 @@ export class ChatSessionDurable {
 
   constructor(state: DurableObjectState, private env: Env) {
     this.state = state;
+  }
+
+  private buildForwardHeaders(requestHeaders: Headers): Headers {
+    const headers = new Headers();
+    for (const header of PASS_THROUGH_HEADERS) {
+      const value = requestHeaders.get(header);
+      if (value) {
+        headers.set(header, value);
+      }
+    }
+    headers.set("accept", "application/json");
+    return headers;
+  }
+
+  private async sleep(ms: number): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -340,7 +418,7 @@ export class ChatSessionDurable {
       }
     }
     if (url.pathname === "/events" && request.method === "GET") {
-      return this.handleEventStream();
+      return this.handleEventStream(request);
     }
     if (request.method === "DELETE" && url.pathname === "/") {
       await this.state.storage.delete("session");
@@ -411,7 +489,7 @@ export class ChatSessionDurable {
     return jsonResponse(message, { status: 201 });
   }
 
-  private handleEventStream(): Response {
+  private handleEventStream(request: Request): Response {
     let activeListener: Listener | null = null;
     const stream = new ReadableStream<Uint8Array>({
       start: async (controller) => {
@@ -425,6 +503,10 @@ export class ChatSessionDurable {
         activeListener = listener;
         this.listeners.add(listener);
         controller.enqueue(encoder.encode(`: connected ${Date.now()}\n\n`));
+        const forwardHeaders = this.buildForwardHeaders(request.headers);
+        this.startSessionEventPump(forwardHeaders, controller, listener).catch((error) => {
+          console.error("session_event_pump_failed", error);
+        });
         const snapshot = await this.loadSession();
         if (snapshot) {
           controller.enqueue(
@@ -453,6 +535,77 @@ export class ChatSessionDurable {
     });
   }
 
+  private async startSessionEventPump(
+    headers: Headers,
+    controller: ReadableStreamDefaultController<Uint8Array>,
+    listener: Listener,
+  ): Promise<void> {
+    const base = this.env.API_BASE_URL;
+    if (!base) {
+      return;
+    }
+    const sessionId = this.state.id.toString();
+    headers.set("X-Agent-Session-Id", sessionId);
+    const trimmedBase = base.replace(/\/$/, "");
+    const abort = new AbortController();
+    listener.pollAbort = abort;
+    let lastSequence: number | undefined;
+    while (!abort.signal.aborted) {
+      try {
+        const target = new URL(`${trimmedBase}/api/v1/sessions/events`);
+        target.searchParams.set("session_id", sessionId);
+        if (lastSequence !== undefined) {
+          target.searchParams.set("after_sequence", String(lastSequence));
+        }
+        const response = await fetch(target.toString(), {
+          headers,
+          signal: abort.signal,
+        });
+        if (!response.ok) {
+          throw new Error(`session events fetch failed (${response.status})`);
+        }
+        const payload = (await response.json()) as SessionEventsPayload;
+        const events = payload.events ?? [];
+        for (const event of events) {
+          const seq = (event as Record<string, unknown>).sequence;
+          if (typeof seq === "number") {
+            lastSequence = seq;
+          }
+          controller.enqueue(
+            encoder.encode(
+              `data: ${JSON.stringify({
+                type: "pipeline.event",
+                payload: event,
+              })}\n\n`,
+            ),
+          );
+        }
+        if ((payload.jobs ?? []).length) {
+          controller.enqueue(
+            encoder.encode(
+              `data: ${JSON.stringify({
+                type: "jobs.snapshot",
+                payload: payload.jobs,
+              })}\n\n`,
+            ),
+          );
+        }
+      } catch (error) {
+        if (abort.signal.aborted) {
+          break;
+        }
+        controller.enqueue(
+          encoder.encode(
+            `: session-events-error ${(error as Error).message}\n\n`,
+          ),
+        );
+        await this.sleep(5000);
+        continue;
+      }
+      await this.sleep(3000);
+    }
+  }
+
   private broadcast(event: SessionEvent) {
     const payload = encoder.encode(`data: ${JSON.stringify(event)}\n\n`);
     for (const listener of [...this.listeners]) {
@@ -469,6 +622,9 @@ export class ChatSessionDurable {
     if (listener.keepAlive) {
       clearInterval(listener.keepAlive);
     }
+     if (listener.pollAbort) {
+       listener.pollAbort.abort();
+     }
     this.listeners.delete(listener);
   }
 }

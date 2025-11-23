@@ -3130,10 +3130,83 @@ async def dismiss_notification(db: Database, user_id: str, notification_id: str)
     )
 
 
+def _dict_from_json_field(value: Any) -> Dict[str, Any]:
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            return {}
+    if isinstance(value, dict):
+        return dict(value)
+    return {}
+
+
+def _extract_drive_web_link(drive_block: Dict[str, Any]) -> Optional[str]:
+    if not isinstance(drive_block, dict):
+        return None
+    nested = drive_block.get("file")
+    if isinstance(nested, dict) and nested.get("webViewLink"):
+        return nested.get("webViewLink")
+    return drive_block.get("web_view_link")
+
+
+async def _enrich_pipeline_event_payload(
+    db: Database,
+    user_id: str,
+    job_row: Optional[Dict[str, Any]],
+    data: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    enriched: Dict[str, Any] = dict(data or {})
+    document_id = enriched.get("document_id")
+    if not document_id and job_row:
+        doc_candidate = job_row.get("document_id")
+        if doc_candidate:
+            document_id = doc_candidate
+            enriched["document_id"] = doc_candidate
+    if job_row and job_row.get("job_type"):
+        enriched.setdefault("job_type", job_row.get("job_type"))
+    if job_row and job_row.get("session_id"):
+        enriched.setdefault("session_id", job_row.get("session_id"))
+    if not document_id:
+        return enriched
+    try:
+        document = await get_document(db, document_id, user_id=user_id)
+    except Exception:
+        document = None
+    if not document:
+        return enriched
+    metadata = _dict_from_json_field(document.get("metadata"))
+    frontmatter = _dict_from_json_field(document.get("frontmatter"))
+    title = (
+        frontmatter.get("title")
+        or metadata.get("title")
+        or metadata.get("name")
+        or document_id
+    )
+    if title:
+        enriched.setdefault("document_title", title)
+    slug = frontmatter.get("slug") or metadata.get("slug")
+    if slug:
+        enriched.setdefault("document_slug", slug)
+    drive_block = metadata.get("drive") if isinstance(metadata.get("drive"), dict) else {}
+    drive_file_id = document.get("drive_file_id") or drive_block.get("file_id")
+    if drive_file_id:
+        enriched.setdefault("drive_file_id", drive_file_id)
+    folder_id = document.get("drive_folder_id") or drive_block.get("folder_id")
+    if folder_id:
+        enriched.setdefault("drive_folder_id", folder_id)
+    web_link = _extract_drive_web_link(drive_block)
+    if web_link:
+        enriched.setdefault("drive_web_view_link", web_link)
+    return enriched
+
+
 async def record_pipeline_event(
     db: Database,
     user_id: str,
-    job_id: str,
+    job_id: Optional[str],
     event_type: str,
     stage: Optional[str] = None,
     status: Optional[str] = None,
@@ -3146,15 +3219,17 @@ async def record_pipeline_event(
     session_id: Optional[str] = None,
 ) -> None:
     event_id = str(uuid.uuid4())
-    payload = json.dumps(data or {})
-    session_value = session_id
-    if session_value is None and job_id:
+    job_row = None
+    if job_id:
         try:
-            job_row = await get_job(db, job_id)
-            if job_row:
-                session_value = job_row.get("session_id")
+            job_row = await get_job(db, job_id, user_id=user_id)
         except Exception:
-            session_value = None
+            job_row = None
+    payload_dict = await _enrich_pipeline_event_payload(db, user_id, job_row, data)
+    payload = json.dumps(payload_dict)
+    session_value = session_id
+    if session_value is None and job_row:
+        session_value = job_row.get("session_id")
     await db.execute(
         "INSERT INTO pipeline_events (event_id, user_id, job_id, session_id, event_type, stage, status, message, data, created_at) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))",
