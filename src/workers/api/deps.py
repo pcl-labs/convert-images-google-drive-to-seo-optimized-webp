@@ -99,7 +99,7 @@ async def get_saas_user(request: Request) -> dict:
             detail="Invalid authorization token",
         )
     try:
-        payload = verify_jwt_token(token)
+        payload = await verify_jwt_token(token)
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

@@ -286,7 +286,7 @@ class AuthCookieMiddleware(BaseHTTPMiddleware):
                 logger.debug("AuthCookieMiddleware: Found token in Authorization header")
         if token:
             try:
-                payload = verify_jwt_token(token)
+                payload = await verify_jwt_token(token)
                 user_id = payload.get("user_id")
                 email = payload.get("email")
                 github_id = payload.get("github_id")

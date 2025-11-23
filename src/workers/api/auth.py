@@ -10,6 +10,7 @@ from typing import Optional, Dict, Any, Tuple
 from urllib.parse import urlencode
 import logging
 import time
+import threading
 
 try:
     from jose import jwt as jose_jwt, jwk, JWTError
@@ -43,6 +44,8 @@ logger = logging.getLogger(__name__)
 _jwks_cache: Optional[Dict[str, Any]] = None
 _jwks_cache_time: float = 0.0
 _JWKS_TTL_SECONDS = 3600
+_JWKS_REFRESH_GRACE_SECONDS = 60
+_jwks_cache_lock = threading.Lock()
 
 # PBKDF2 configuration
 # Use a secure default and allow tuning via configuration
@@ -146,7 +149,7 @@ def generate_jwt_token(
     return encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
 
-def verify_jwt_token(token: str) -> Dict[str, Any]:
+async def verify_jwt_token(token: str) -> Dict[str, Any]:
     """Verify and decode a JWT token.
 
     When Better Auth JWKS configuration is present, verify EdDSA tokens using JWKS.
@@ -161,27 +164,40 @@ def verify_jwt_token(token: str) -> Dict[str, Any]:
                 raise AuthenticationError("Token missing 'kid' header")
 
             now = time.time()
-            if not _jwks_cache or (now - _jwks_cache_time) >= _JWKS_TTL_SECONDS:
-                import requests
+            with _jwks_cache_lock:
+                cache = _jwks_cache
+                cache_time = _jwks_cache_time
 
-                resp = requests.get(settings.auth_jwks_url)
-                resp.raise_for_status()
-                _jwks_cache = resp.json()
-                _jwks_cache_time = now
+            should_refresh = not cache or (now - cache_time) >= _JWKS_TTL_SECONDS
 
-            keys = (_jwks_cache or {}).get("keys", [])
+            if should_refresh:
+                async with AsyncSimpleClient(timeout=10.0) as client:
+                    resp = await client.get(settings.auth_jwks_url)
+                    resp.raise_for_status()
+                    data = resp.json()
+                with _jwks_cache_lock:
+                    _jwks_cache = data
+                    _jwks_cache_time = time.time()
+                    cache = _jwks_cache
+
+            keys = (cache or {}).get("keys", [])
             key_dict = next((k for k in keys if k.get("kid") == kid), None)
-            if not key_dict:
-                _jwks_cache = None
-                _jwks_cache_time = 0.0
-                import requests
 
-                resp = requests.get(settings.auth_jwks_url)
-                resp.raise_for_status()
-                _jwks_cache = resp.json()
-                _jwks_cache_time = time.time()
-                keys = (_jwks_cache or {}).get("keys", [])
-                key_dict = next((k for k in keys if k.get("kid") == kid), None)
+            if not key_dict:
+                with _jwks_cache_lock:
+                    cache_time = _jwks_cache_time
+                if time.time() - cache_time > _JWKS_REFRESH_GRACE_SECONDS:
+                    async with AsyncSimpleClient(timeout=10.0) as client:
+                        resp = await client.get(settings.auth_jwks_url)
+                        resp.raise_for_status()
+                        data = resp.json()
+                    with _jwks_cache_lock:
+                        _jwks_cache = data
+                        _jwks_cache_time = time.time()
+                        cache = _jwks_cache
+                    keys = (cache or {}).get("keys", [])
+                    key_dict = next((k for k in keys if k.get("kid") == kid), None)
+
                 if not key_dict:
                     raise AuthenticationError(f"Key with kid '{kid}' not found in JWKS")
 
