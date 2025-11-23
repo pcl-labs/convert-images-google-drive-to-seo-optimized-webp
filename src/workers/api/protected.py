@@ -102,7 +102,7 @@ from .simple_http import AsyncSimpleClient, HTTPStatusError, RequestError
 from .deps import (
     ensure_db,
     ensure_services,
-    get_current_user,
+    get_saas_user,
     parse_job_progress,
 )
 from core.url_utils import parse_youtube_video_id
@@ -129,7 +129,7 @@ import difflib
 logger = get_logger(__name__)
 
 router = APIRouter(
-    dependencies=[Depends(get_current_user)],
+    dependencies=[Depends(get_saas_user)],
 )
 
 
@@ -618,7 +618,7 @@ async def start_ingest_drive_job(db, queue, user_id: str, document_id: str) -> J
 
 
 @router.post("/api/v1/drive/watch/renew", response_model=JobStatus)
-async def start_drive_watch_renewal_job(user: dict = Depends(get_current_user)):
+async def start_drive_watch_renewal_job(user: dict = Depends(get_saas_user)):
     db, queue = ensure_services()
     job_id = str(uuid.uuid4())
     job_row = await create_job_extended(
@@ -1022,7 +1022,7 @@ def _derive_project_title_from_text(text: str, explicit_title: Optional[str] = N
 
 
 @router.post("/api/v1/projects/text", response_model=ProjectResponse, tags=["Projects"])
-async def create_project_for_text(req: IngestTextRequest, user: dict = Depends(get_current_user)):
+async def create_project_for_text(req: IngestTextRequest, user: dict = Depends(get_saas_user)):
     """Create a new project backed by manually pasted text.
 
     Reuses the existing text ingest flow to create the document and kick off
@@ -1081,7 +1081,7 @@ async def create_project_for_text(req: IngestTextRequest, user: dict = Depends(g
 
 
 @router.post("/api/v1/projects", response_model=ProjectResponse, tags=["Projects"])
-async def create_project_for_youtube(req: CreateProjectRequest, user: dict = Depends(get_current_user)):
+async def create_project_for_youtube(req: CreateProjectRequest, user: dict = Depends(get_saas_user)):
     """Create a new project backed by a YouTube document.
 
     Reuses the existing YouTube ingest flow to create the document and kick
@@ -1165,7 +1165,7 @@ async def create_project_for_youtube(req: CreateProjectRequest, user: dict = Dep
 
 
 @router.get("/api/v1/projects/{project_id}", response_model=ProjectResponse, tags=["Projects"])
-async def get_project_overview(project_id: str, user: dict = Depends(get_current_user)):  # noqa: B008 - FastAPI dependency injection pattern
+async def get_project_overview(project_id: str, user: dict = Depends(get_saas_user)):  # noqa: B008 - FastAPI dependency injection pattern
     db = ensure_db()
     project = await get_project(db, project_id, user["user_id"])
     if not project:
@@ -1190,7 +1190,7 @@ async def get_project_overview(project_id: str, user: dict = Depends(get_current
     response_model=ChunkAndEmbedResponse,
     tags=["Projects"],
 )
-async def chunk_and_embed_transcript(project_id: str, user: dict = Depends(get_current_user)):  # noqa: B008 - FastAPI dependency injection pattern
+async def chunk_and_embed_transcript(project_id: str, user: dict = Depends(get_saas_user)):  # noqa: B008 - FastAPI dependency injection pattern
     db = ensure_db()
     project = await get_project(db, project_id, user["user_id"])
     if not project:
@@ -1398,7 +1398,7 @@ async def chunk_and_embed_transcript(project_id: str, user: dict = Depends(get_c
     response_model=TranscriptResponse,
     tags=["Projects"],
 )
-async def get_project_transcript(project_id: str, user: dict = Depends(get_current_user)):  # noqa: B008 - FastAPI dependency injection pattern
+async def get_project_transcript(project_id: str, user: dict = Depends(get_saas_user)):  # noqa: B008 - FastAPI dependency injection pattern
     db = ensure_db()
     project = await get_project(db, project_id, user["user_id"])
     if not project:
@@ -1424,7 +1424,7 @@ async def get_project_transcript(project_id: str, user: dict = Depends(get_curre
 async def search_project_transcript(
     project_id: str,
     req: TranscriptSearchRequest,
-    user: dict = Depends(get_current_user),  # noqa: B008 - FastAPI dependency injection pattern
+    user: dict = Depends(get_saas_user),  # noqa: B008 - FastAPI dependency injection pattern
 ):
     db = ensure_db()
     project = await get_project(db, project_id, user["user_id"])
@@ -1524,7 +1524,7 @@ async def search_project_transcript(
 async def generate_project_blog(
     project_id: str,
     req: ProjectGenerateBlogRequest,
-    user: dict = Depends(get_current_user),  # noqa: B008 - FastAPI dependency injection pattern
+    user: dict = Depends(get_saas_user),  # noqa: B008 - FastAPI dependency injection pattern
 ):
     db, queue = ensure_services()
     project = await get_project(db, project_id, user["user_id"])
@@ -1710,7 +1710,7 @@ async def generate_project_blog(
     response_model=ProjectBlog,
     tags=["Projects"],
 )
-async def get_project_blog(project_id: str, user: dict = Depends(get_current_user)):  # noqa: B008 - FastAPI dependency injection pattern
+async def get_project_blog(project_id: str, user: dict = Depends(get_saas_user)):  # noqa: B008 - FastAPI dependency injection pattern
     db = ensure_db()
     project = await get_project(db, project_id, user["user_id"])
     if not project:
@@ -1747,7 +1747,7 @@ async def get_project_blog(project_id: str, user: dict = Depends(get_current_use
 async def get_project_activity(
     project_id: str,
     limit: int = 30,
-    user: dict = Depends(get_current_user),  # noqa: B008 - FastAPI dependency injection pattern
+    user: dict = Depends(get_saas_user),  # noqa: B008 - FastAPI dependency injection pattern
 ):
     """Return a mixed activity feed (jobs + pipeline events, etc.) for a project."""
     db = ensure_db()
@@ -1781,7 +1781,7 @@ async def get_project_activity(
 )
 async def list_project_blog_sections(
     project_id: str,
-    user: dict = Depends(get_current_user),  # noqa: B008 - FastAPI dependency injection pattern
+    user: dict = Depends(get_saas_user),  # noqa: B008 - FastAPI dependency injection pattern
 ):
     db = ensure_db()
     project = await get_project(db, project_id, user["user_id"])
@@ -1996,7 +1996,7 @@ def _rebuild_body_with_patched_section(
 async def patch_project_blog_section(
     project_id: str,
     req: PatchSectionRequest,
-    user: dict = Depends(get_current_user),  # noqa: B008 - FastAPI dependency injection pattern
+    user: dict = Depends(get_saas_user),  # noqa: B008 - FastAPI dependency injection pattern
 ):
     db = ensure_db()
     project = await get_project(db, project_id, user["user_id"])
@@ -2171,7 +2171,7 @@ async def list_project_blog_versions(
 async def get_project_blog_version(
     project_id: str,
     version_id: str,
-    user: dict = Depends(get_current_user),  # noqa: B008 - FastAPI dependency injection pattern
+    user: dict = Depends(get_saas_user),  # noqa: B008 - FastAPI dependency injection pattern
 ):
     db = ensure_db()
     project = await get_project(db, project_id, user["user_id"])
@@ -2210,7 +2210,7 @@ async def diff_project_blog_versions(
     project_id: str,
     from_version_id: str,
     to_version_id: str,
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_saas_user),
 ):
     db = ensure_db()
     project = await get_project(db, project_id, user["user_id"])
@@ -2269,7 +2269,7 @@ async def diff_project_blog_versions(
 async def revert_project_blog_version(
     project_id: str,
     version_id: str,
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_saas_user),
 ):
     db = ensure_db()
     project = await get_project(db, project_id, user["user_id"])
@@ -2349,7 +2349,7 @@ async def revert_project_blog_version(
 )
 async def export_project_blog_mdx(
     project_id: str,
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_saas_user),
 ):
     db = ensure_db()
     project = await get_project(db, project_id, user["user_id"])
@@ -2372,7 +2372,7 @@ async def export_project_blog_mdx(
 async def analyze_project_seo(
     project_id: str,
     req: ProjectSEOAnalyzeRequest = Body(default_factory=ProjectSEOAnalyzeRequest),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_saas_user),
 ):
     db = ensure_db()
     req = req or ProjectSEOAnalyzeRequest()
@@ -2399,7 +2399,7 @@ async def analyze_project_version_seo(
     project_id: str,
     version_id: str,
     req: ProjectSEOAnalyzeRequest = Body(default_factory=ProjectSEOAnalyzeRequest),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_saas_user),
 ):
     db = ensure_db()
     req = req or ProjectSEOAnalyzeRequest()
@@ -2580,7 +2580,7 @@ async def start_generate_blog_job(
 async def debug_google_integrations(
     request: Request,
     video_id: str = Query("p12N2v2WHDA", description="YouTube video ID to test"),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_saas_user),
 ):
     """Debug endpoint to exercise YouTube and Drive integrations from Workers.
 
@@ -2695,7 +2695,7 @@ async def debug_env():
 
 
 @router.get("/auth/github/status", tags=["Authentication"])
-async def github_link_status(user: dict = Depends(get_current_user)):
+async def github_link_status(user: dict = Depends(get_saas_user)):
     db = ensure_db()
     linked = bool(user.get("github_id"))
     github_id = user.get("github_id")
@@ -2718,7 +2718,7 @@ async def google_auth_start(
     request: Request,
     integration: str = Query("drive", description="Google integration to connect (drive, youtube, gmail)"),
     redirect: Optional[str] = Query(None, description="Optional path to redirect after linking"),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_saas_user),
 ):
     """Start Google OAuth flow for linking an integration.
     
@@ -2892,7 +2892,7 @@ async def google_auth_start(
 
 
 @router.get("/auth/google/callback", tags=["Authentication"])
-async def google_auth_callback(code: str, state: str, request: Request, user: dict = Depends(get_current_user)):
+async def google_auth_callback(code: str, state: str, request: Request, user: dict = Depends(get_saas_user)):
     """Handle Google OAuth callback for integration linking.
     
     Retrieves OAuth state from user's session (preferred) or cookies (fallback).
@@ -3035,7 +3035,7 @@ async def google_auth_callback(code: str, state: str, request: Request, user: di
 
 
 @router.get("/auth/google/status", tags=["Authentication"])
-async def google_link_status(user: dict = Depends(get_current_user)):
+async def google_link_status(user: dict = Depends(get_saas_user)):
     db = ensure_db()
     rows = await list_google_tokens(db, user["user_id"])  # type: ignore
     summary = _summarize_google_tokens(rows)
@@ -3046,7 +3046,7 @@ async def google_link_status(user: dict = Depends(get_current_user)):
 
 
 @router.get("/auth/providers/status", tags=["Authentication"])
-async def providers_status(user: dict = Depends(get_current_user)):
+async def providers_status(user: dict = Depends(get_saas_user)):
     db = ensure_db()
     # Determine GitHub linkage from user or DB
     github_linked = bool(user.get("github_id"))
@@ -3112,7 +3112,7 @@ async def get_current_user_info(request: Request):
 
 
 @router.post("/auth/keys", response_model=APIKeyResponse, tags=["Authentication"])
-async def create_api_key_endpoint(user: dict = Depends(get_current_user)):
+async def create_api_key_endpoint(user: dict = Depends(get_saas_user)):
     db = ensure_db()
     try:
         api_key = await create_user_api_key(db, user["user_id"])

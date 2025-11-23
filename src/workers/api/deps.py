@@ -78,6 +78,23 @@ async def get_current_user(request: Request) -> dict:
     return user
 
 
+async def get_saas_user(request: Request) -> dict:
+    auth_header = request.headers.get("Authorization") or ""
+    prefix = "Bearer "
+    if not auth_header.startswith(prefix):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authorization header missing",
+        )
+    token = auth_header[len(prefix) :].strip()
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authorization token",
+        )
+    return {"user_id": token}
+
+
 def parse_job_progress(progress_str: Optional[str]) -> Any:
     try:
         data = json.loads(progress_str or "{}")
