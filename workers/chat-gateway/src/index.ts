@@ -4,7 +4,8 @@ export interface Env {
 }
 
 type Role = "user" | "assistant" | "system";
-const PASS_THROUGH_HEADERS = ["authorization", "x-api-key", "cookie"];
+const PASS_THROUGH_HEADERS = ["authorization", "x-api-key"];
+const FORWARDED_COOKIE_NAMES = ["session_id", "CF_Authorization"];
 
 export interface SessionMessage {
   messageId: string;
@@ -230,6 +231,7 @@ async function invokeTool(request: Request, env: Env): Promise<Response> {
       headers.set(header, value);
     }
   }
+  appendAllowedCookies(request.headers, headers);
   const sessionId =
     request.headers.get("x-agent-session-id") ?? url.searchParams.get("session_id");
   if (sessionId) {
@@ -390,6 +392,7 @@ export class ChatSessionDurable {
       }
     }
     headers.set("accept", "application/json");
+    appendAllowedCookies(requestHeaders, headers);
     return headers;
   }
 
@@ -622,9 +625,29 @@ export class ChatSessionDurable {
     if (listener.keepAlive) {
       clearInterval(listener.keepAlive);
     }
-     if (listener.pollAbort) {
-       listener.pollAbort.abort();
-     }
+    if (listener.pollAbort) {
+      listener.pollAbort.abort();
+    }
     this.listeners.delete(listener);
+  }
+}
+function appendAllowedCookies(source: Headers, target: Headers): void {
+  const cookieHeader = source.get("cookie");
+  if (!cookieHeader) {
+    return;
+  }
+  const allowed: string[] = [];
+  cookieHeader.split(";").forEach((entry) => {
+    const [rawName, ...rest] = entry.split("=");
+    if (!rawName) {
+      return;
+    }
+    const name = rawName.trim();
+    if (FORWARDED_COOKIE_NAMES.includes(name)) {
+      allowed.push(`${name}=${rest.join("=").trim()}`);
+    }
+  });
+  if (allowed.length) {
+    target.set("cookie", allowed.join("; "));
   }
 }

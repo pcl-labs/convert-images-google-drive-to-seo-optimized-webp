@@ -751,6 +751,7 @@ async def publish_drive_document_for_user(
     user_id: str,
     document_id: str,
     payload: Optional[DrivePublishRequest],
+    session_id: Optional[str] = None,
 ) -> DriveDocumentStatus:
     payload = payload or DrivePublishRequest()
     if payload.body and len(payload.body) > MAX_TEXT_LENGTH:
@@ -769,8 +770,36 @@ async def publish_drive_document_for_user(
     if meta_updates:
         updates["metadata"] = meta_updates
     try:
+        await record_pipeline_event(
+            db,
+            user_id,
+            job_id=None,
+            event_type="drive_workspace",
+            stage="drive.publish.sync",
+            status="running",
+            message="Syncing document to Drive",
+            data={"document_id": document_id},
+            session_id=session_id,
+        )
+    except Exception:
+        pass
+    try:
         await sync_drive_doc_for_document(db, user_id, document_id, updates or {})
-    except HTTPException:
+    except HTTPException as exc:
+        try:
+            await record_pipeline_event(
+                db,
+                user_id,
+                job_id=None,
+                event_type="drive_workspace",
+                stage="drive.publish.sync",
+                status="error",
+                message=f"Drive publish failed: {exc}",
+                data={"document_id": document_id},
+                session_id=session_id,
+            )
+        except Exception:
+            pass
         raise
     except Exception as exc:
         logger.error(
@@ -778,11 +807,39 @@ async def publish_drive_document_for_user(
             exc_info=True,
             extra={"document_id": document_id, "user_id": user_id, "error": str(exc)},
         )
+        try:
+            await record_pipeline_event(
+                db,
+                user_id,
+                job_id=None,
+                event_type="drive_workspace",
+                stage="drive.publish.sync",
+                status="error",
+                message=f"Drive publish failed: {exc}",
+                data={"document_id": document_id},
+                session_id=session_id,
+            )
+        except Exception:
+            pass
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Failed to publish document to Drive",
         ) from exc
     refreshed = await _load_document_for_user(db, document_id, user_id)
+    try:
+        await record_pipeline_event(
+            db,
+            user_id,
+            job_id=None,
+            event_type="drive_workspace",
+            stage="drive.publish.sync",
+            status="completed",
+            message="Document synced to Drive",
+            data={"document_id": document_id},
+            session_id=session_id,
+        )
+    except Exception:
+        pass
     return _drive_status_model(refreshed)
 
 
@@ -3348,7 +3405,7 @@ async def publish_drive_document_endpoint(
     agent_session_id: Optional[str] = Depends(get_agent_session_id),
 ):
     db = ensure_db()
-    return await publish_drive_document_for_user(db, user["user_id"], document_id, req)
+    return await publish_drive_document_for_user(db, user["user_id"], document_id, req, session_id=agent_session_id)
 
 
 @router.post(
@@ -3365,7 +3422,15 @@ async def link_drive_document_endpoint(
     db = ensure_db()
     document = await _load_document_for_user(db, document_id, user["user_id"])
     preferred_name = (req.document_name if req else None) or _drive_document_name(document)
-    metadata_override = req.metadata if req and req.metadata is not None else document.get("metadata")
+    raw_metadata = document.get("metadata")
+    if isinstance(raw_metadata, str):
+        try:
+            raw_metadata = json.loads(raw_metadata)
+        except Exception:
+            raw_metadata = {}
+    elif not isinstance(raw_metadata, dict):
+        raw_metadata = {}
+    metadata_override = req.metadata if req and req.metadata is not None else raw_metadata
     try:
         await record_pipeline_event(
             db,
