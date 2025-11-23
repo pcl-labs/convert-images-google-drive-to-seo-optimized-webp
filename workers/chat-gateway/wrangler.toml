@@ -1,0 +1,15 @@
+name = "chat-gateway"
+main = "src/index.ts"
+compatibility_date = "2024-02-20"
+
+[vars]
+# API_BASE_URL is the FastAPI base origin the worker proxies tools to
+API_BASE_URL = "https://quill-api.paulchrisluke.workers.dev"
+
+[[durable_objects.bindings]]
+name = "CHAT_SESSIONS"
+class_name = "ChatSessionDurable"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["ChatSessionDurable"]
