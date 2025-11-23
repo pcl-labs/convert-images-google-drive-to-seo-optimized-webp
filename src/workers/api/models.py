@@ -209,6 +209,12 @@ class GenerateBlogOptions(BaseModel):
         min_length=1,
         max_length=2000,
     )
+    schema_type: Optional[str] = Field(
+        default=None,
+        description="Optional schema.org content type identifier (e.g. https://schema.org/FAQPage).",
+        min_length=5,
+        max_length=200,
+    )
 
     @model_validator(mode="after")
     def validate_section_index_bounds(self):
@@ -235,8 +241,6 @@ class DocumentVersionSummary(BaseModel):
 class DocumentVersionDetail(DocumentVersionSummary):
     body_mdx: Optional[str] = None
     body_html: Optional[str] = None
-    outline: Optional[List[Dict[str, Any]]] = None
-    chapters: Optional[List[Dict[str, Any]]] = None
     sections: Optional[List[Dict[str, Any]]] = None
     assets: Optional[Dict[str, Any]] = None
 
@@ -396,7 +400,6 @@ class ProjectBlog(BaseModel):
     status: ProjectStatusEnum
     frontmatter: Optional[Dict[str, Any]] = None
     body_mdx: Optional[str] = None
-    outline: Optional[Any] = None
     created_at: datetime
 
     model_config = ConfigDict(use_enum_values=True)
@@ -463,7 +466,6 @@ class ProjectVersionDetail(BaseModel):
     created_at: datetime
     frontmatter: Optional[Dict[str, Any]] = None
     body_mdx: Optional[str] = None
-    outline: Optional[Any] = None
     sections: Optional[Any] = None
 
 
@@ -481,3 +483,121 @@ class ProjectActivityResponse(BaseModel):
 
     project_id: str
     items: List[Dict[str, Any]]
+
+
+class SEOLevel(str, Enum):
+    GOOD = "good"
+    AVERAGE = "average"
+    POOR = "poor"
+
+
+class SEOScore(BaseModel):
+    name: str
+    label: str
+    score: float = Field(ge=0.0, le=100.0)
+    level: SEOLevel = Field(description="Simple qualitative bucket: good, average, poor")
+    details: Optional[str] = None
+
+    model_config = ConfigDict(use_enum_values=True)
+
+
+class Severity(str, Enum):
+    INFO = "info"
+    WARNING = "warning"
+    ERROR = "error"
+
+
+class SEOSuggestion(BaseModel):
+    id: str
+    title: str
+    summary: str
+    severity: Severity = Field(default=Severity.INFO, description="info, warning, or error")
+    metric: Optional[str] = Field(default=None, description="Score that surfaced the suggestion")
+
+    model_config = ConfigDict(use_enum_values=True)
+
+
+class IssueLevel(str, Enum):
+    WARNING = "warning"
+    ERROR = "error"
+
+
+class SchemaIssue(BaseModel):
+    code: str
+    level: IssueLevel = Field(description="warning or error")
+    message: str
+    path: Optional[str] = None
+    property: Optional[str] = None
+
+    model_config = ConfigDict(use_enum_values=True)
+
+
+class ValidationSeverity(str, Enum):
+    OK = "ok"
+    WARNING = "warning"
+    ERROR = "error"
+
+
+class ValidationSource(str, Enum):
+    LOCAL = "local"
+    SCHEMA_ORG = "schema.org"
+    GOOGLE = "google"
+    MIXED = "mixed"
+
+
+class SchemaValidationResult(BaseModel):
+    is_valid: bool
+    severity: ValidationSeverity = Field(description="ok, warning, or error")
+    issues: List[SchemaIssue] = Field(default_factory=list)
+    schema_type: Optional[str] = None
+    hint: Optional[str] = None
+    source: Optional[ValidationSource] = Field(
+        default=ValidationSource.LOCAL,
+        description="local, schema.org, google, or mixed",
+    )
+
+    model_config = ConfigDict(use_enum_values=True)
+
+
+class ProjectSEOAnalyzeRequest(BaseModel):
+    target_keywords: Optional[List[str]] = Field(
+        default=None,
+        description="Optional keywords to prioritize during analysis.",
+        max_length=20,
+    )
+    focus_keyword: Optional[str] = Field(
+        default=None,
+        description="Optional single focus keyword that should appear early in the article.",
+        max_length=120,
+    )
+    content_type: Optional[str] = Field(
+        default=None,
+        description="Override content type hint for the analysis phase.",
+        max_length=200,
+    )
+    schema_type: Optional[str] = Field(
+        default=None,
+        description="Override schema type for the analysis phase.",
+        max_length=200,
+    )
+
+
+class ProjectSEOAnalysis(BaseModel):
+    project_id: str
+    document_id: str
+    version_id: str
+    content_type: Optional[str] = None
+    content_type_hint: Optional[str] = None
+    schema_type: Optional[str] = None
+    seo: Dict[str, Any]
+    scores: List[SEOScore]
+    suggestions: List[SEOSuggestion]
+    structured_content: Optional[Dict[str, Any]] = None
+    word_count: int = Field(ge=0)
+    reading_time_seconds: Optional[int] = Field(default=None, ge=0)
+    generated_at: Optional[datetime] = None
+    analyzed_at: Optional[datetime] = None
+    is_cached: bool = Field(default=False)
+    schema_validation: Optional[SchemaValidationResult] = None
+
+    model_config = ConfigDict(use_enum_values=True)

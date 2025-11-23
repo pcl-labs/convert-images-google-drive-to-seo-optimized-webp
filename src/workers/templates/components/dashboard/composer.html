@@ -1,4 +1,5 @@
 {% from 'components/elements/combobox.html' import combobox %}
+{% from 'components/elements/button.html' import button as ui_button %}
 {% macro project_composer(csrf_token, content_schema_choices, youtube_connected) %}
   {% set composer_config = {
     'csrfToken': csrf_token or '',
@@ -56,12 +57,13 @@
         </div>
       </div>
       <div class="flex flex-wrap items-center gap-4">
-        <button type="button" class="inline-flex items-center gap-3 rounded-full bg-primary px-6 py-2 text-sm font-semibold text-primary-contrast shadow hover:brightness-110 disabled:opacity-60 disabled:cursor-not-allowed" @click="submit()" :disabled="busy">
-          <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M5 12h14M12 5l7 7-7 7"/>
-          </svg>
-          <span x-text="mode === 'text' ? 'Create from text' : 'Ingest from YouTube'"></span>
-        </button>
+        {{ ui_button(
+          '',
+          'primary',
+          attrs='type="button" @click="submit()" :disabled="busy"',
+          extra_classes='inline-flex items-center gap-3 rounded-full px-6 py-2 text-sm font-semibold shadow hover:brightness-110 disabled:opacity-60 disabled:cursor-not-allowed',
+          inner='<svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M5 12h14M12 5l7 7-7 7"/></svg><span x-text="mode === \'text\' ? \'Create from text\' : \'Ingest from YouTube\'"></span>'
+        ) }}
         <p class="text-xs font-medium text-contentMuted tracking-wide" x-text="mode === 'text' ? '/api/v1/projects/text' : '/api/v1/projects'"></p>
       </div>
       <template x-if="error">

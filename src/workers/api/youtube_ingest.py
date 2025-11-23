@@ -103,51 +103,6 @@ _COMMON_KEYWORDS = {
 }
 
 
-def _chapter_keywords(text: str, limit: int = 4) -> List[str]:
-    words: List[str] = []
-    for word in _KEYWORD_RE.findall(str(text or "").lower()):
-        if len(word) < 4 or word in _COMMON_KEYWORDS or word in words:
-            continue
-        words.append(word)
-        if len(words) >= limit:
-            break
-    return words
-
-
-def build_outline_from_chapters(chapters: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    outline: List[Dict[str, Any]] = []
-    if not chapters:
-        return outline
-    total = len(chapters)
-    for idx, chapter in enumerate(chapters):
-        if not isinstance(chapter, dict):
-            continue
-        title = (chapter.get("title") or f"Chapter {idx + 1}").strip() or f"Chapter {idx + 1}"
-        summary_hint = chapter.get("summary") or chapter.get("description") or ""
-        if not summary_hint:
-            ts = chapter.get("timestamp")
-            summary_hint = f"Insights beginning at {ts}" if ts else "Key discussion point"
-        summary = textwrap.shorten(str(summary_hint).strip(), width=320, placeholder="…")
-        slot = "body"
-        if idx == 0:
-            slot = "intro"
-        elif idx == total - 1:
-            slot = "cta"
-        outline.append(
-            {
-                "title": title[:160],
-                "summary": summary,
-                "slot": slot,
-                "keywords": _chapter_keywords(title),
-                "source": "youtube_chapter",
-                "timestamp": chapter.get("timestamp"),
-                "start_seconds": chapter.get("start_seconds"),
-                "chapter_index": idx,
-            }
-        )
-    return outline
-
-
 async def ingest_youtube_document(
     db,
     job_id: str,
@@ -264,10 +219,6 @@ async def ingest_youtube_document(
         chapter_dicts = [chap for chap in raw_chapters if isinstance(chap, dict)]
         if chapter_dicts:
             metadata["youtube"]["chapters"] = chapter_dicts
-            chapter_outline = build_outline_from_chapters(chapter_dicts)
-            if chapter_outline:
-                metadata["latest_outline"] = chapter_outline
-                metadata.setdefault("outline_source", "youtube_chapters")
 
     await _safe_record_pipeline_event(
         db,

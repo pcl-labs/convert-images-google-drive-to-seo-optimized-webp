@@ -278,8 +278,6 @@ class Database:
                     frontmatter TEXT,
                     body_mdx TEXT,
                     body_html TEXT,
-                    outline TEXT,
-                    chapters TEXT,
                     sections TEXT,
                     assets TEXT,
                     created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -364,7 +362,7 @@ class Database:
                 CREATE TABLE IF NOT EXISTS step_invocations (
                     idempotency_key TEXT NOT NULL,
                     user_id TEXT NOT NULL,
-                    step_type TEXT NOT NULL CHECK (step_type IN ('transcript.fetch','outline.generate','chapters.organize','blog.compose','document.persist')),
+                    step_type TEXT NOT NULL CHECK (step_type IN ('transcript.fetch','blog.compose','document.persist')),
                     request_hash TEXT NOT NULL,
                     response_body TEXT NOT NULL,
                     status_code INTEGER NOT NULL,
@@ -1912,8 +1910,6 @@ async def create_document_version(
     frontmatter: Dict[str, Any],
     body_mdx: str,
     body_html: str,
-    outline: List[Dict[str, Any]],
-    chapters: List[Dict[str, Any]],
     sections: List[Dict[str, Any]],
     assets: Dict[str, Any],
 ) -> Dict[str, Any]:
@@ -1932,11 +1928,11 @@ async def create_document_version(
                 """
                 INSERT INTO document_versions (
                     version_id, document_id, user_id, version, content_format, frontmatter,
-                    body_mdx, body_html, outline, chapters, sections, assets
+                    body_mdx, body_html, sections, assets
                 ) VALUES (
                     ?, ?, ?,
                     COALESCE((SELECT MAX(version) FROM document_versions WHERE document_id = ?), 0) + 1,
-                    ?, ?, ?, ?, ?, ?, ?, ?
+                    ?, ?, ?, ?, ?, ?
                 )
                 RETURNING *
                 """,
@@ -1949,8 +1945,6 @@ async def create_document_version(
                     json.dumps(frontmatter or {}),
                     body_mdx,
                     body_html,
-                    json.dumps(outline or []),
-                    json.dumps(chapters or []),
                     json.dumps(sections or []),
                     json.dumps(assets or {}),
                 ),
@@ -2223,8 +2217,22 @@ async def ensure_sessions_schema(db: Database) -> None:
     await db.batch(stmts)
 
 
+async def _table_has_column(db: Database, table_name: str, column_name: str) -> bool:
+    """Return True when the given table already has the requested column."""
+    # PRAGMA table_info cannot parameterize table names, so ensure we quote safely.
+    safe_table = table_name.replace('"', '""')
+    rows = await db.execute_all(f'PRAGMA table_info("{safe_table}")', ())
+    for row in rows or []:
+        row_dict = _jsproxy_to_dict(row)
+        if (row_dict.get("name") or "").lower() == column_name.lower():
+            return True
+    return False
+
+
 async def _ensure_project_title_column(db: Database) -> None:
     """Ensure the projects table has a nullable title column."""
+    if await _table_has_column(db, "projects", "title"):
+        return
     try:
         await db.execute("ALTER TABLE projects ADD COLUMN title TEXT", ())
         logger.info("Added title column to projects table")
@@ -2472,8 +2480,6 @@ async def ensure_full_schema(db: Database) -> None:
                 frontmatter TEXT,
                 body_mdx TEXT,
                 body_html TEXT,
-                outline TEXT,
-                chapters TEXT,
                 sections TEXT,
                 assets TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -2587,8 +2593,6 @@ async def ensure_full_schema(db: Database) -> None:
                 'optimize_drive',
                 'ingest_drive',
                 'generate_blog',
-                'outline.generate',
-                'chapters.organize',
                 'blog.compose'
             )
             BEGIN
@@ -2608,8 +2612,6 @@ async def ensure_full_schema(db: Database) -> None:
                 'optimize_drive',
                 'ingest_drive',
                 'generate_blog',
-                'outline.generate',
-                'chapters.organize',
                 'blog.compose'
             )
             BEGIN
@@ -2690,7 +2692,7 @@ async def ensure_full_schema(db: Database) -> None:
                 id TEXT PRIMARY KEY,
                 user_id TEXT NOT NULL,
                 job_id TEXT NOT NULL,
-                event_type TEXT NOT NULL CHECK (event_type IN ('download','transcribe','persist','outline','chapters','compose')),
+                event_type TEXT NOT NULL CHECK (event_type IN ('download','transcribe','persist','compose')),
                 metrics TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,

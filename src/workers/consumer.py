@@ -65,14 +65,13 @@ from api.drive_workspace import DriveWorkspaceSyncService, link_document_drive_w
 from api.drive_docs import sync_drive_doc_for_document
 from api.drive_watch import ensure_drive_watch, watches_due_for_renewal
 from core.ai_modules import (
-    default_title_from_outline,
     generate_image_prompts,
     markdown_to_html,
     compose_blog_from_text,
-    generate_outline,
-    organize_chapters,
     generate_seo_metadata,
 )
+from core.sections import extract_sections_from_mdx
+from core.seo import resolve_schema_type, build_structured_content, build_schema_json_ld
 from api.notifications import notify_job
 from api.app_logging import setup_logging, get_logger
 from core.filename_utils import FILENAME_ID_SEPARATOR, sanitize_folder_name, parse_download_name, make_output_dir_name
@@ -1213,8 +1212,6 @@ async def process_ingest_drive_job(
             frontmatter=frontmatter,
             body_mdx=text,
             body_html=html_body,
-            outline=[],
-            chapters=[],
             sections=[],
             assets={},
         )
@@ -1445,22 +1442,23 @@ async def generate_blog_for_document(
         max_sections = max(1, min(12, int(options.get("max_sections", 5))))
     except Exception:
         max_sections = 5
-    try:
-        target_chapters = max(1, min(12, int(options.get("target_chapters", max_sections))))
-    except Exception:
-        target_chapters = max_sections
     tone = str(options.get("tone") or "informative")
     include_images = bool(options.get("include_images")) if "include_images" in options else True
     section_index = options.get("section_index")
     provider = (options.get("provider") or "openai").lower()
     model_name = (options.get("model") or settings.openai_blog_model or "gpt-5.1").strip()
     temperature_override = options.get("temperature")
-    content_type = str(options.get("content_type") or "generic_blog").strip() or "generic_blog"
+    raw_content_type = str(options.get("content_type") or "generic_blog").strip() or "generic_blog"
+    schema_override = (options.get("schema_type") or "").strip() or None
+    content_type_value, schema_type_value, content_hint = resolve_schema_type(raw_content_type, schema_override)
     instructions = (options.get("instructions") or "").strip() or None
 
-    outline = generate_outline(text, max_sections=max_sections)
-    chapters = organize_chapters(text, target_chapters=target_chapters)
-    seo_meta = generate_seo_metadata(text, outline)
+    # Generate SEO metadata from text
+    seo_meta = generate_seo_metadata(
+        text,
+        content_type=content_type_value,
+        schema_type=schema_type_value,
+    )
 
     composed = await compose_blog_from_text(
         text,
@@ -1471,12 +1469,12 @@ async def generate_blog_for_document(
             "document_id": document_id,
             "user_id": user_id,
             "instructions": instructions,
-            "content_type": content_type,
+            "content_type": content_type_value,
+            "schema_type": schema_type_value,
             "max_sections": max_sections,
-            "target_chapters": target_chapters,
         },
     )
-    markdown_body = composed.get("markdown", "")
+    markdown_body = composed.get("markdown", "") or ""
     meta = composed.get("meta", {})
     word_count = meta.get("word_count", len(markdown_body.split()))
     generator_info = {
@@ -1488,10 +1486,27 @@ async def generate_blog_for_document(
     }
 
     html_body = markdown_to_html(markdown_body)
-    image_prompts = generate_image_prompts(chapters) if include_images else []
+    
+    # Extract sections from the actual generated blog content
+    try:
+        sections = extract_sections_from_mdx(markdown_body) if markdown_body else []
+    except KeyError as e:
+        app_logger.warning(
+            "extract_sections_failed",
+            exc_info=True,
+            extra={
+                "document_id": document_id,
+                "error": str(e),
+                "error_type": type(e).__name__,
+            },
+        )
+        sections = []
+    
+    # Generate image prompts from sections (not chapters)
+    image_prompts = generate_image_prompts(sections) if include_images and sections else []
 
     existing_frontmatter = _json_dict_field(doc.get("frontmatter"), {})
-    ai_title = seo_meta.get("title") or default_title_from_outline(outline)
+    ai_title = seo_meta.get("title") or "Untitled Draft"
     is_youtube_source = (metadata.get("source") == "youtube")
 
     if is_youtube_source:
@@ -1506,26 +1521,33 @@ async def generate_blog_for_document(
             "slug": seo_meta.get("slug") or existing_frontmatter.get("slug") or f"{document_id[:8]}-draft",
             "tags": seo_meta.get("keywords", []),
             "hero_image": seo_meta.get("hero_image"),
+            "content_type": content_type_value,
+            "schema_type": schema_type_value,
         }
     )
 
-    sections: List[Dict[str, Any]] = []
-    for idx, chapter in enumerate(chapters):
-        safe_chapter = chapter or {}
-        section = {
-            "order": idx,
-            "title": safe_chapter.get("title"),
-            "summary": safe_chapter.get("summary"),
-        }
+    # Add image prompts to sections if available
+    for idx, section in enumerate(sections):
         if include_images and idx < len(image_prompts):
             section["image_prompt"] = image_prompts[idx]
-        sections.append(section)
+
+    structured_content = build_structured_content(content_hint, sections)
 
     assets = {
         "images": image_prompts,
         "media": [],
         "generator": generator_info,
     }
+    if structured_content:
+        assets["structured_content"] = structured_content
+
+    schema_json_ld = build_schema_json_ld(schema_type_value, frontmatter, structured_content, sections)
+    if schema_json_ld:
+        assets["schema"] = {
+            "type": schema_type_value,
+            "json_ld": schema_json_ld,
+        }
+        seo_meta["json_ld"] = schema_json_ld
 
     generated_at = datetime.now(timezone.utc).isoformat()
 
@@ -1537,8 +1559,6 @@ async def generate_blog_for_document(
         frontmatter=frontmatter,
         body_mdx=markdown_body,
         body_html=html_body,
-        outline=outline,
-        chapters=chapters,
         sections=sections,
         assets=assets,
     )
@@ -1556,16 +1576,18 @@ async def generate_blog_for_document(
         "temperature": generator_info.get("temperature"),
         "provider": provider,
         "tone": tone,
-        "content_type": content_type,
+        "content_type": content_type_value,
+        "schema_type": schema_type_value,
+        "content_hint": content_hint,
         "instructions": instructions,
     }
-    metadata["latest_outline"] = outline
-    metadata["latest_chapters"] = chapters
     metadata["latest_sections"] = sections
+    metadata.pop("latest_seo_analysis", None)
     metadata["content_plan"] = {
-        "outline": outline,
-        "chapters": chapters,
         "seo": seo_meta,
+        "content_type": content_type_value,
+        "schema_type": schema_type_value,
+        "structured_content": structured_content,
         "generated_at": generated_at,
     }
     await update_document(
@@ -1587,20 +1609,20 @@ async def generate_blog_for_document(
             "mdx": markdown_body,
             "html": html_body,
         },
-        "outline": outline,
-        "chapters": chapters,
         "sections": sections,
         "seo": seo_meta,
         "assets": assets,
+        "structured_content": structured_content,
         "options": {
             "tone": tone,
             "max_sections": max_sections,
-            "target_chapters": target_chapters,
             "include_images": include_images,
             "model": generator_info["model"],
             "temperature": generator_info.get("temperature"),
             "provider": provider,
-            "content_type": content_type,
+            "content_type": content_type_value,
+            "schema_type": schema_type_value,
+            "content_hint": content_hint,
             "instructions": instructions,
         },
         "generated_at": generated_at,
@@ -1619,7 +1641,7 @@ async def process_generate_blog_job(
     options: Optional[Dict[str, Any]] = None,
     pipeline_job_id: Optional[str] = None,
 ):
-    """Orchestrate outline -> chapters -> SEO -> compose pipeline."""
+    """Orchestrate blog generation pipeline."""
     options = options or {}
     recent_logs: list[str] = []
     MAX_LOGS = 40
@@ -1668,23 +1690,13 @@ async def process_generate_blog_job(
             options=options,
         )
 
-        outline = result["outline"]
-        chapters = result["chapters"]
         sections = result["sections"]
         seo_meta = result["seo"]
         assets = result["assets"]
         frontmatter = result["frontmatter"]
         pipeline_output = dict(result)
 
-        await record_usage_event(db, user_id, job_id, "outline", {"sections": len(outline)})
-        await record_usage_event(db, user_id, job_id, "chapters", {"chapters": len(chapters)})
-        await update_job_status(db, job_id, "processing", progress=_progress("plan"))
-        await _stage_event(
-            "generate_blog.plan",
-            "completed",
-            "Heuristic content plan ready",
-            data={"document_id": document_id, "sections": len(chapters), "content_type": options.get("content_type") or "generic_blog"},
-        )
+        await update_job_status(db, job_id, "processing", progress=_progress("compose"))
 
         await record_usage_event(
             db,

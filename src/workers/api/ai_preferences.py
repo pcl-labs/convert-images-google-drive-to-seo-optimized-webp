@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional
 
 from .config import settings
 from .models import GenerateBlogOptions
+from core.seo import resolve_schema_type
 
 DEFAULT_MODEL_CHOICES: List[Dict[str, str]] = [
     {"value": "gpt-4o-mini", "label": "GPT-4o mini"},
@@ -61,6 +62,7 @@ def default_ai_preferences() -> Dict[str, Any]:
         "target_chapters": 4,
         "include_images": True,
         "content_type": "generic_blog",
+        "schema_type": "https://schema.org/BlogPosting",
     }
 
 
@@ -88,6 +90,8 @@ def normalize_ai_preferences(raw: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         merged["content_type"] = str(raw["content_type"]).strip() or defaults.get("content_type")
     if raw.get("instructions"):
         merged["instructions"] = str(raw["instructions"]).strip()
+    if raw.get("schema_type"):
+        merged["schema_type"] = str(raw["schema_type"]).strip()
     return merged
 
 
@@ -123,6 +127,11 @@ def resolve_generate_blog_options(options: Optional[GenerateBlogOptions], prefer
         _clamp_temperature(options.temperature) if options.temperature is not None else prefs["temperature"]
     )
     resolved["provider"] = prefs.get("provider", "openai")
-    resolved["content_type"] = (options.content_type or prefs.get("content_type") or "generic_blog").strip()
+    content_type_value = (options.content_type or prefs.get("content_type") or "generic_blog").strip()
+    schema_override = (options.schema_type or prefs.get("schema_type") or "").strip() or None
+    stored_content_type, resolved_schema_type, content_type_hint = resolve_schema_type(content_type_value, schema_override)
+    resolved["content_type"] = stored_content_type
+    resolved["schema_type"] = resolved_schema_type
+    resolved["content_type_hint"] = content_type_hint
     resolved["instructions"] = (options.instructions or prefs.get("instructions") or "").strip() or None
     return resolved

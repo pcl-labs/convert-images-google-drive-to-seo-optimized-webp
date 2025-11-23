@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Tuple, Optional
 import json
+import re
 
 from api.database import get_document, get_document_version
 
@@ -105,6 +106,120 @@ def _word_count(text: str) -> int:
     if not text:
         return 0
     return len(str(text).split())
+
+
+def _extract_summary(body_text: str, max_length: int = 200) -> str:
+    """Return a short summary from the first paragraph of body_text.
+
+    - Falsy body_text -> empty string.
+    - Uses the first paragraph, split on double newlines ("\n\n").
+    - Trims and truncates to ``max_length`` characters.
+    - Appends "..." only if the original paragraph exceeds ``max_length``.
+    """
+    if not body_text:
+        return ""
+
+    if "\n\n" in body_text:
+        first_para = body_text.split("\n\n", 1)[0]
+    else:
+        first_para = body_text
+
+    trimmed = first_para.strip()
+    if len(trimmed) <= max_length:
+        return trimmed
+
+    return trimmed[:max_length].strip() + "..."
+
+
+def extract_sections_from_mdx(body_mdx: str) -> List[Dict[str, Any]]:
+    """Extract sections from MDX content by parsing H2 and H3 headings.
+    
+    Returns a list of section dicts with:
+    - section_id: stable identifier (sec-0, sec-1, etc.)
+    - index: 0-based index
+    - title: heading text
+    - summary: first paragraph or excerpt after heading (up to 200 chars)
+    - body_mdx: content between this heading and next (or end)
+    """
+    if not body_mdx:
+        return []
+    
+    sections: List[Dict[str, Any]] = []
+    lines = body_mdx.splitlines()
+    current_section: Optional[Dict[str, Any]] = None
+    current_content: List[str] = []
+    
+    for line in lines:
+        stripped = line.strip()
+        
+        # Check for H2 or H3 heading
+        h2_match = re.match(r"^##\s+(.+)$", stripped)
+        h3_match = re.match(r"^###\s+(.+)$", stripped)
+        
+        if h2_match or h3_match:
+            # Save intro content before first heading as an Introduction section.
+            if current_section is None and current_content:
+                body_text = "\n".join(current_content).strip()
+                summary = _extract_summary(body_text)
+                sections.append(
+                    {
+                        "section_id": "sec-0",
+                        "index": 0,
+                        "title": "Introduction",
+                        "summary": summary,
+                        "body_mdx": body_text,
+                    }
+                )
+                current_content = []
+
+            # Save previous section if exists
+            elif current_section is not None:
+                body_text = "\n".join(current_content).strip()
+                summary = _extract_summary(body_text)
+                current_section["summary"] = summary
+                current_section["body_mdx"] = body_text
+                sections.append(current_section)
+            
+            # Start new section
+            title = (h2_match or h3_match).group(1).strip()
+            idx = len(sections)
+            current_section = {
+                "section_id": f"sec-{idx}",
+                "index": idx,
+                "title": title,
+                "summary": "",
+                "body_mdx": "",
+            }
+            current_content = []
+        else:
+            # Add to current section content
+            if current_section is not None:
+                current_content.append(line)
+            elif not sections:
+                # Content before first heading - create intro section
+                if stripped:
+                    current_content.append(line)
+    
+    # Save last section
+    if current_section is not None:
+        body_text = "\n".join(current_content).strip()
+        summary = _extract_summary(body_text)
+        current_section["summary"] = summary
+        current_section["body_mdx"] = body_text
+        sections.append(current_section)
+    elif current_content:
+        # No headings found, create single section from all content
+        body_text = "\n".join(current_content).strip()
+        summary = _extract_summary(body_text)
+        sections.append({
+            "section_id": "sec-0",
+            "index": 0,
+            "title": "Content",
+            "summary": summary,
+            "body_mdx": body_text,
+        })
+    
+    return normalize_sections(sections)
 
 
 async def get_latest_version_for_project(

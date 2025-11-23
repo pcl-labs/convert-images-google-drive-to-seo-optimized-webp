@@ -535,6 +535,27 @@ async def dashboard_project_detail(
     if not project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
 
+    document_row: Optional[Dict[str, Any]] = None
+    initial_seo_analysis: Optional[Dict[str, Any]] = None
+    if project.get("document_id"):
+        try:
+            document_row = await get_document(db, project["document_id"], user["user_id"])
+        except Exception:
+            document_row = None
+        if document_row:
+            metadata = document_row.get("metadata")
+            if isinstance(metadata, str):
+                try:
+                    metadata = json.loads(metadata)
+                except Exception:
+                    metadata = {}
+            if isinstance(metadata, dict):
+                cached_analysis = metadata.get("latest_seo_analysis")
+                if isinstance(cached_analysis, dict):
+                    analysis_block = cached_analysis.get("analysis")
+                    if isinstance(analysis_block, dict):
+                        initial_seo_analysis = analysis_block
+
     version_row = await get_latest_version_for_project(db, project, user["user_id"])
     normalized_sections: List[Dict[str, Any]] = []
     if version_row:
@@ -586,6 +607,7 @@ async def dashboard_project_detail(
         "activity_items": activity_items,
         "page_title": project.get("youtube_url") or project_id,
         "csrf_token": csrf,
+        "initial_seo_analysis": initial_seo_analysis,
     }
     resp = templates.TemplateResponse("projects/detail.html", context)
     if not request.cookies.get("csrf_token"):
@@ -682,7 +704,6 @@ def _document_to_view(doc: dict) -> dict:
         metadata["drive"] = drive_meta
     frontmatter = _json_field(doc.get("frontmatter"), {})
     latest_generation = metadata.get("latest_generation") if isinstance(metadata, dict) else {}
-    latest_outline = metadata.get("latest_outline") if isinstance(metadata, dict) else []
     content_plan = metadata.get("content_plan") if isinstance(metadata, dict) else None
     source_type = (doc.get("source_type") or "unknown").lower()
     source_label = {
@@ -711,7 +732,6 @@ def _document_to_view(doc: dict) -> dict:
         "drive_revision_id": doc.get("drive_revision_id"),
         "latest_title": frontmatter.get("title") if isinstance(frontmatter, dict) else None,
         "latest_generation": latest_generation,
-        "latest_outline": latest_outline,
         "content_plan": content_plan,
         "created_at": doc.get("created_at"),
         "raw_text": doc.get("raw_text"),
@@ -1128,8 +1148,6 @@ def _version_detail_row(row: dict) -> dict:
         {
             "body_mdx": row.get("body_mdx"),
             "body_html": row.get("body_html"),
-            "outline": _json_field(row.get("outline"), []),
-            "chapters": _json_field(row.get("chapters"), []),
             "sections": _json_field(row.get("sections"), []),
             "assets": _json_field(row.get("assets"), {}),
         }
