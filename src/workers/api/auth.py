@@ -9,6 +9,14 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, Tuple
 from urllib.parse import urlencode
 import logging
+import time
+
+try:
+    from jose import jwt as jose_jwt, jwk, JWTError
+except ImportError:  # jose may not be available in minimal environments (e.g. Wrangler metadata server)
+    jose_jwt = None  # type: ignore[assignment]
+    jwk = None  # type: ignore[assignment]
+    JWTError = Exception  # type: ignore[assignment]
 
 from .jwt import encode, decode, ExpiredSignatureError, InvalidTokenError
 
@@ -31,6 +39,10 @@ from .database import (
 from .exceptions import AuthenticationError
 
 logger = logging.getLogger(__name__)
+
+_jwks_cache: Optional[Dict[str, Any]] = None
+_jwks_cache_time: float = 0.0
+_JWKS_TTL_SECONDS = 3600
 
 # PBKDF2 configuration
 # Use a secure default and allow tuning via configuration
@@ -135,7 +147,65 @@ def generate_jwt_token(
 
 
 def verify_jwt_token(token: str) -> Dict[str, Any]:
-    """Verify and decode a JWT token."""
+    """Verify and decode a JWT token.
+
+    When Better Auth JWKS configuration is present, verify EdDSA tokens using JWKS.
+    Otherwise, fall back to the existing shared-secret verification.
+    """
+    if jose_jwt is not None and jwk is not None and settings.auth_jwks_url and settings.auth_issuer and settings.auth_audience:
+        global _jwks_cache, _jwks_cache_time
+        try:
+            headers = jose_jwt.get_unverified_header(token)
+            kid = headers.get("kid")
+            if not kid:
+                raise AuthenticationError("Token missing 'kid' header")
+
+            now = time.time()
+            if not _jwks_cache or (now - _jwks_cache_time) >= _JWKS_TTL_SECONDS:
+                import requests
+
+                resp = requests.get(settings.auth_jwks_url)
+                resp.raise_for_status()
+                _jwks_cache = resp.json()
+                _jwks_cache_time = now
+
+            keys = (_jwks_cache or {}).get("keys", [])
+            key_dict = next((k for k in keys if k.get("kid") == kid), None)
+            if not key_dict:
+                _jwks_cache = None
+                _jwks_cache_time = 0.0
+                import requests
+
+                resp = requests.get(settings.auth_jwks_url)
+                resp.raise_for_status()
+                _jwks_cache = resp.json()
+                _jwks_cache_time = time.time()
+                keys = (_jwks_cache or {}).get("keys", [])
+                key_dict = next((k for k in keys if k.get("kid") == kid), None)
+                if not key_dict:
+                    raise AuthenticationError(f"Key with kid '{kid}' not found in JWKS")
+
+            public_key = jwk.construct(key_dict)
+
+            payload = jose_jwt.decode(
+                token,
+                public_key,
+                algorithms=["EdDSA"],
+                issuer=settings.auth_issuer,
+                audience=settings.auth_audience,
+                options={
+                    "verify_signature": True,
+                    "verify_exp": True,
+                    "verify_iss": True,
+                    "verify_aud": True,
+                },
+            )
+            return payload
+        except JWTError as exc:
+            raise AuthenticationError(str(exc))
+        except Exception as exc:
+            raise AuthenticationError(f"Token verification failed: {exc}")
+
     try:
         payload = decode(
             token,

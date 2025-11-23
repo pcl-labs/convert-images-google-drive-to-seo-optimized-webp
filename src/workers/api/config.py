@@ -101,6 +101,10 @@ class Settings:
     jwt_expiration_hours: int = 24
     jwt_use_cookies: bool = True
 
+    auth_jwks_url: Optional[str] = None
+    auth_issuer: Optional[str] = None
+    auth_audience: Optional[str] = None
+
     api_key_length: int = 32
     pbkdf2_iterations: int = 600_000
 

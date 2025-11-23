@@ -1,4 +1,4 @@
-"""
+""" 
 Tests for authentication routes to ensure they handle DB failures gracefully.
 These tests verify the fixes for OAuth callbacks, middleware, and protected routes.
 """

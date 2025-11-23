@@ -1,4 +1,4 @@
-"""
+""" 
 Tests for logout and delete account functionality.
 
 These tests verify that logout and delete account work correctly in both

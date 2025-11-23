@@ -206,6 +206,8 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
         description="Production-ready API for optimizing images from Google Drive to WebP format",
         version=active_settings.app_version,
         lifespan=lifespan,
+        docs_url="/",
+        redoc_url=None,
     )
 
     def register_background_task(coro: Awaitable) -> asyncio.Task:
