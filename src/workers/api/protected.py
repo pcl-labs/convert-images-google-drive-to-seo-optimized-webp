@@ -624,13 +624,24 @@ async def _ensure_drive_linked_document(db, user_id: str, document_id: str, docu
     if drive_file_id:
         return document
     name_hint = _drive_document_name(document)
+    raw_metadata = document.get("metadata")
+    if isinstance(raw_metadata, dict):
+        metadata = raw_metadata
+    elif isinstance(raw_metadata, str):
+        try:
+            parsed = json.loads(raw_metadata)
+            metadata = parsed if isinstance(parsed, dict) else None
+        except Exception:
+            metadata = None
+    else:
+        metadata = None
     try:
         await link_document_drive_workspace(
             db,
             user_id=user_id,
             document_id=document_id,
             document_name=name_hint,
-            metadata=document.get("metadata"),
+            metadata=metadata,
         )
     except HTTPException:
         raise
