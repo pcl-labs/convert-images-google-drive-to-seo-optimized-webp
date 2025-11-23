@@ -10,7 +10,6 @@ from typing import Optional, Dict, Any, Tuple
 from urllib.parse import urlencode
 import logging
 import time
-import threading
 import asyncio
 
 try:
@@ -46,7 +45,7 @@ _jwks_cache: Optional[Dict[str, Any]] = None
 _jwks_cache_time: float = 0.0
 _JWKS_TTL_SECONDS = 3600
 _JWKS_MIN_AGE_FOR_REFRESH_SECONDS = 60
-_jwks_cache_lock = threading.Lock()
+_jwks_cache_lock = asyncio.Lock()
 _jwks_fetch_lock = asyncio.Lock()
 
 # PBKDF2 configuration
