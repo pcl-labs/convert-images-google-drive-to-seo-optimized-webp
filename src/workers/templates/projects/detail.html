@@ -1,0 +1,318 @@
+{% extends "base.html" %}
+{% from 'components/layout/page.html' import page_container %}
+
+{% block content %}
+<div class="flex flex-col lg:flex-row min-h-[calc(100vh-3.5rem)]">
+  <main class="flex-1 min-w-0 px-4 py-6 lg:px-8 space-y-4">
+    {% call page_container() %}
+      <header class="flex items-center justify-between gap-4 mb-4">
+        <div class="space-y-1">
+          <p class="text-[11px] font-medium uppercase tracking-wide text-contentMuted">Project</p>
+          <h1 class="text-2xl font-semibold text-content break-words">
+            {{ project.youtube_url or project.project_id }}
+          </h1>
+          <p class="text-xs text-contentMuted flex items-center gap-2">
+            <span>Status:</span>
+            <span class="inline-flex items-center px-2 py-0.5 rounded-full border border-border bg-surface text-[11px] font-medium">
+              {{ project.status or 'pending' }}
+            </span>
+          </p>
+        </div>
+        <div class="flex items-center gap-2">
+          <a
+            href="/api/v1/projects/{{ project.project_id }}/blog/export"
+            class="btn-secondary text-xs"
+          >
+            Export MDX
+          </a>
+        </div>
+      </header>
+
+      {% include "projects/_sections.html" %}
+    {% endcall %}
+  </main>
+
+  <aside class="w-full lg:w-80 xl:w-96 border-t lg:border-t-0 lg:border-l border-border bg-surface px-4 py-4">
+    {% include "projects/_activity_panel.html" %}
+  </aside>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function(){
+  function dispatchToast(type, text){
+    try {
+      window.dispatchEvent(new CustomEvent('toast', { detail: { type: type, text: text } }));
+    } catch (_) {}
+  }
+
+  function setupSectionEditing(){
+    const root = document.getElementById('project-sections');
+    if(!root) return;
+    const projectId = root.dataset.projectId;
+    if(!projectId) return;
+    const tabs = root.querySelectorAll('[data-sections-tab]');
+    const panels = root.querySelectorAll('[data-sections-panel]');
+    const detailIndex = root.querySelector('#section-detail-index');
+    const detailTitle = root.querySelector('#section-detail-title');
+    const detailMeta = root.querySelector('#section-detail-meta');
+    const detailBody = root.querySelector('#section-detail-body');
+    const askModal = document.getElementById('section-ask-changes-modal');
+    const askTextarea = document.getElementById('ask-changes-textarea');
+    const askSectionLabel = document.getElementById('ask-changes-section-label');
+    let currentSectionId = null;
+
+    function switchTab(name){
+      tabs.forEach((tab) => {
+        const key = tab.getAttribute('data-sections-tab');
+        const isActive = key === name;
+        tab.classList.toggle('text-primary', isActive);
+        tab.classList.toggle('border-primary', isActive);
+        tab.classList.toggle('text-contentMuted', !isActive);
+        tab.classList.toggle('border-transparent', !isActive);
+        tab.setAttribute('aria-selected', isActive ? 'true' : 'false');
+      });
+      panels.forEach((panel) => {
+        const key = panel.getAttribute('data-sections-panel');
+        panel.classList.toggle('hidden', key !== name);
+      });
+    }
+
+    function updateDetailFromRow(row){
+      if(!row || !detailIndex || !detailTitle || !detailMeta || !detailBody){
+        return;
+      }
+      const sectionId = row.getAttribute('data-section-id');
+      const index = Number(row.getAttribute('data-section-index') || '0');
+      const title = row.getAttribute('data-section-title') || 'Untitled section';
+      const words = row.getAttribute('data-section-words') || '0';
+      const preview = row.getAttribute('data-section-preview') || 'No content yet.';
+      currentSectionId = sectionId;
+      detailIndex.textContent = `Section ${index + 1}`;
+      detailTitle.textContent = title;
+      detailMeta.textContent = `${words} words`;
+      detailBody.textContent = preview;
+    }
+
+    function openAskModal(){
+      if(!askModal || !currentSectionId){
+        dispatchToast('error', 'Select a section first.');
+        return;
+      }
+      const activeRow = root.querySelector(
+        `button[data-action="select-section"][data-section-id="${CSS.escape(currentSectionId)}"]`
+      );
+      const index = activeRow ? Number(activeRow.getAttribute('data-section-index') || '0') : 0;
+      const title = activeRow ? (activeRow.getAttribute('data-section-title') || 'Untitled section') : 'Section';
+      if(askSectionLabel){
+        askSectionLabel.textContent = `Section ${index + 1} · ${title}`;
+      }
+      if(askTextarea){
+        askTextarea.value = '';
+        askTextarea.focus();
+      }
+      askModal.classList.remove('hidden');
+    }
+
+    function closeAskModal(){
+      if(!askModal) return;
+      askModal.classList.add('hidden');
+    }
+
+    root.addEventListener('click', async (event) => {
+      const target = event.target;
+      if(!(target instanceof HTMLElement)) return;
+
+      // Tabs: Summary / Full diff
+      const tab = target.closest('button[data-sections-tab]');
+      if(tab){
+        const key = tab.getAttribute('data-sections-tab') || 'summary';
+        switchTab(key);
+        return;
+      }
+
+      const action = target.dataset.action;
+      if(!action) return;
+
+      if(action === 'select-section'){
+        const row = target.closest('button[data-section-id]');
+        if(!row) return;
+        updateDetailFromRow(row);
+        switchTab('detail');
+        return;
+      }
+
+      if(action === 'back-to-summary'){
+        switchTab('summary');
+        return;
+      }
+
+      if(action === 'open-ask-changes'){
+        openAskModal();
+        return;
+      }
+
+      if(action === 'close-ask-changes'){
+        closeAskModal();
+        return;
+      }
+
+      if(action === 'submit-ask-changes'){
+        if(!currentSectionId || !askTextarea) return;
+        const instructions = (askTextarea.value || '').trim();
+        if(!instructions){
+          dispatchToast('error', 'Please describe the changes you want.');
+          return;
+        }
+        const btn = target;
+        btn.disabled = true;
+        btn.textContent = 'Applying…';
+        try {
+          const res = await fetch(`/api/v1/projects/${projectId}/blog/sections/patch`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ section_id: currentSectionId, instructions }),
+          });
+          if(res.status === 409){
+            dispatchToast('error', 'Blog has been updated since this section was loaded; please reload and retry.');
+            return;
+          }
+          if(!res.ok){
+            dispatchToast('error', 'Failed to apply changes to this section.');
+            return;
+          }
+          const data = await res.json();
+          const body = data && data.section && (data.section.body_mdx || data.section.body_html || '');
+          if(typeof body === 'string'){
+            let trimmed = body.trim();
+            if(trimmed.length > 800){
+              trimmed = trimmed.slice(0, 800) + '…';
+            }
+            // Update detail view
+            if(detailBody){
+              detailBody.textContent = trimmed || 'No content yet.';
+            }
+            // Update summary row preview
+            const row = root.querySelector(
+              `button[data-action="select-section"][data-section-id="${CSS.escape(currentSectionId)}"]`
+            );
+            if(row){
+              const previewEl = row.querySelector('p.text-[11px].text-contentMuted');
+              if(previewEl){
+                previewEl.textContent = trimmed || 'No content yet.';
+              }
+              row.setAttribute('data-section-preview', trimmed || 'No content yet.');
+            }
+          }
+          dispatchToast('success', 'Section updated.');
+          closeAskModal();
+        } catch (err) {
+          dispatchToast('error', 'Unexpected error updating section.');
+        } finally {
+          btn.disabled = false;
+          btn.textContent = 'Apply with AI';
+        }
+      }
+    });
+
+    // Ensure initial detail view has sensible state based on first row, if any.
+    const firstRow = root.querySelector('button[data-action="select-section"]');
+    if(firstRow){
+      updateDetailFromRow(firstRow);
+    }
+  }
+
+  function setupActivityRefresh(){
+    const root = document.getElementById('project-activity');
+    if(!root) return;
+    const projectId = root.dataset.projectId;
+    if(!projectId) return;
+
+    root.addEventListener('click', async (event) => {
+      const target = event.target;
+      if(!(target instanceof HTMLElement)) return;
+      const action = target.dataset.action;
+      if(action !== 'refresh-activity') return;
+
+      const btn = target;
+      btn.disabled = true;
+      btn.textContent = 'Refreshing…';
+      try {
+        const res = await fetch(`/api/v1/projects/${projectId}/activity`, {
+          method: 'GET',
+          credentials: 'same-origin',
+        });
+        if(!res.ok){
+          dispatchToast('error', 'Failed to refresh activity.');
+          return;
+        }
+        const data = await res.json();
+        const items = (data && data.items) || [];
+        const listRoot = root.querySelector('[data-activity-list]');
+        if(!listRoot) return;
+        listRoot.innerHTML = '';
+        if(!items.length){
+          listRoot.innerHTML = '<p class="text-xs text-contentMuted">No recent activity for this project yet.</p>';
+          return;
+        }
+        const ol = document.createElement('ol');
+        ol.className = 'space-y-2 text-sm';
+        items.forEach((item) => {
+          const li = document.createElement('li');
+          li.className = 'rounded-md border border-border bg-surface/60 p-2 flex gap-2';
+          const dot = document.createElement('div');
+          dot.className = 'mt-1 h-2 w-2 rounded-full ' + (
+            item.status === 'failed' || item.status === 'error'
+              ? 'bg-destructive'
+              : item.status === 'completed'
+                ? 'bg-accent'
+                : 'bg-border'
+          );
+          const body = document.createElement('div');
+          body.className = 'flex-1 min-w-0';
+          const header = document.createElement('div');
+          header.className = 'flex items-center justify-between gap-2';
+          const kind = document.createElement('span');
+          kind.className = 'text-[11px] font-medium uppercase text-contentMuted';
+          const kindLabel = (item.kind || '').toString();
+          const eventType = (item.event_type || '').toString();
+          kind.textContent = eventType ? `${kindLabel} · ${eventType}` : kindLabel;
+          const ts = document.createElement('span');
+          ts.className = 'text-[11px] text-contentMuted';
+          ts.textContent = item.created_at || '';
+          header.appendChild(kind);
+          header.appendChild(ts);
+          const label = document.createElement('p');
+          label.className = 'text-xs text-content font-medium';
+          label.textContent = item.label || '';
+          body.appendChild(header);
+          body.appendChild(label);
+          if(item.description){
+            const desc = document.createElement('p');
+            desc.className = 'text-xs text-contentMuted truncate';
+            desc.textContent = item.description;
+            body.appendChild(desc);
+          }
+          li.appendChild(dot);
+          li.appendChild(body);
+          ol.appendChild(li);
+        });
+        listRoot.appendChild(ol);
+      } catch (err) {
+        dispatchToast('error', 'Unexpected error refreshing activity.');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Refresh';
+      }
+    });
+  }
+
+  document.addEventListener('DOMContentLoaded', function(){
+    setupSectionEditing();
+    setupActivityRefresh();
+  });
+})();
+</script>
+{% endblock %}

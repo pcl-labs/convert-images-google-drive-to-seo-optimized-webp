@@ -1362,6 +1362,156 @@ async def list_jobs_by_document(
     return _rows_to_dicts(rows)
 
 
+async def get_project_id_by_document(db: Database, document_id: str, user_id: str) -> Optional[str]:
+    """Return the project_id for a document and user, or None on error/not found.
+
+    This is used by the web layer to decide whether to redirect a document detail
+    view into the project workspace. Any database errors are logged and surfaced
+    as a simple None so the caller can gracefully fall back to the document view.
+    """
+    try:
+        row = await db.execute(
+            "SELECT project_id FROM projects WHERE document_id = ? AND user_id = ? LIMIT 1",
+            (document_id, user_id),
+        )
+    except Exception:
+        logger.exception(
+            "get_project_id_by_document_failed",
+            extra={"document_id": document_id, "user_id": user_id},
+        )
+        return None
+
+    if not row:
+        return None
+
+    data = _jsproxy_to_dict(row)
+    project_id = data.get("project_id") or getattr(row, "project_id", None)
+    return str(project_id) if project_id is not None else None
+
+
+async def list_project_activity(
+    db: Database,
+    *,
+    project_id: str,
+    user_id: str,
+    limit: int = 30,
+) -> List[Dict[str, Any]]:
+    """Return a mixed activity feed for a project.
+
+    Combines jobs and pipeline_events associated with the project's document,
+    scoped to the owning user. Newest items are returned first.
+    """
+    # First resolve the project + its backing document to enforce ownership.
+    project_row = await db.execute(
+        "SELECT document_id FROM projects WHERE project_id = ? AND user_id = ?",
+        (project_id, user_id),
+    )
+    if not project_row:
+        return []
+    project = _jsproxy_to_dict(project_row)
+    document_id = project.get("document_id")
+
+    if not document_id:
+        return []
+
+    # Use a slightly larger internal window for component queries so that when
+    # we merge jobs + events we still have enough items without over-fetching.
+    internal_limit = max(1, min(limit * 2, 100))
+
+    # Jobs for this project's document.
+    jobs_rows = await db.execute_all(
+        """
+        SELECT job_id, status, job_type, document_id, created_at
+        FROM jobs
+        WHERE user_id = ? AND document_id = ?
+        ORDER BY created_at DESC
+        LIMIT ?
+        """,
+        (user_id, document_id, internal_limit),
+    )
+    jobs = _rows_to_dicts(jobs_rows)
+
+    job_ids = [row.get("job_id") for row in jobs if row.get("job_id")]
+
+    # Pipeline events for those jobs.
+    events: List[Dict[str, Any]] = []
+    if job_ids:
+        # Use an IN clause; SQLite/D1 support a reasonable number of parameters.
+        placeholders = ",".join(["?"] * len(job_ids))
+        query = (
+            "SELECT event_id, job_id, event_type, stage, status, message, created_at "
+            "FROM pipeline_events "
+            "WHERE user_id = ? AND job_id IN (" + placeholders + ") "
+            "ORDER BY created_at DESC "
+            "LIMIT ?"
+        )
+        params: List[Any] = [user_id, *job_ids, internal_limit]
+        event_rows = await db.execute_all(query, tuple(params))
+        events = _rows_to_dicts(event_rows)
+
+    items: List[Dict[str, Any]] = []
+
+    for row in jobs:
+        created = row.get("created_at")
+        created_str = _serialize_timestamp(created) if created is not None else None
+        job_type = str(row.get("job_type") or "").strip() or "job"
+        label = {
+            "generate_blog": "Generate blog",
+            "ingest_youtube": "Ingest YouTube video",
+            "ingest_text": "Ingest text",
+            "ingest_drive": "Ingest Drive document",
+            "optimize_drive": "Optimize Drive images",
+        }.get(job_type, job_type.replace("_", " ").title() or "Job")
+        description = f"Job {row.get('job_id')} ({job_type})"
+        items.append(
+            {
+                "id": f"job:{row.get('job_id')}",
+                "kind": "job",
+                "created_at": created_str,
+                "status": row.get("status"),
+                "label": label,
+                "description": description,
+                "job_id": row.get("job_id"),
+                "event_type": None,
+            }
+        )
+
+    for ev in events:
+        created = ev.get("created_at")
+        created_str = _serialize_timestamp(created) if created is not None else None
+        event_type = str(ev.get("event_type") or "").strip() or "event"
+        stage = str(ev.get("stage") or "").strip()
+        stage_suffix = f" · {stage}" if stage else ""
+        label = {
+            "ingest_youtube": "Transcript ingestion",
+            "drive_workspace": "Drive workspace",
+            "transcript": "Transcript processing",
+            "embed": "Embedding",
+            "generate_blog": "Blog pipeline",
+        }.get(event_type, event_type.replace("_", " ").title() or "Event")
+        description = (ev.get("message") or "").strip() or None
+        items.append(
+            {
+                "id": f"event:{ev.get('event_id')}",
+                "kind": "event",
+                "created_at": created_str,
+                "status": ev.get("status"),
+                "label": label,
+                "description": description,
+                "job_id": ev.get("job_id"),
+                "event_type": f"{event_type}{stage_suffix}" if event_type else None,
+            }
+        )
+
+    # Sort mixed list by created_at descending; items missing a timestamp sort last.
+    def _sort_key(item: Dict[str, Any]):
+        ts = item.get("created_at")
+        return ts if ts is not None else ""
+
+    items.sort(key=_sort_key, reverse=True)
+    return items[:limit]
+
+
 async def latest_job_by_type(db: Database, user_id: str, job_type: str) -> Optional[Dict[str, Any]]:
     row = await db.execute(
         """

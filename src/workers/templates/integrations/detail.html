@@ -15,7 +15,7 @@
 
   <div class="space-y-4">
     {% if drive_overview %}
-      {% call card(title='Google Drive workspace status', actions='<a href=\"/dashboard\" class=\"text-sm text-primary hover:text-primary/80\">View documents</a>') %}
+      {% call card(title='Google Drive workspace status', actions='<a href=\"/dashboard\" class=\"text-sm text-primary hover:text-primary/80\">View dashboard</a>') %}
         <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div>
             <p class="text-sm font-semibold text-content">{{ drive_overview.status_label }}</p>

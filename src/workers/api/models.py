@@ -474,3 +474,10 @@ class ProjectBlogDiff(BaseModel):
     to_version_id: str
     changed_sections: List[str]
     diff_body_mdx: Optional[str] = None
+
+
+class ProjectActivityResponse(BaseModel):
+    """Activity feed for a single project combining jobs and pipeline events."""
+
+    project_id: str
+    items: List[Dict[str, Any]]

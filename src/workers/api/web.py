@@ -32,12 +32,6 @@ from .database import (
     update_job_status,
     delete_google_tokens,
     delete_user_account,
-    get_user_preferences,
-    update_user_preferences,
-    create_notification,
-    list_notifications,
-    mark_notification_seen,
-    dismiss_notification,
     get_user_by_id,
     list_documents,
     list_jobs_by_document,
@@ -53,6 +47,9 @@ from .database import (
     list_pipeline_events,
     latest_job_by_type,
     delete_user_session,
+    get_project,
+    list_project_activity,
+    get_project_id_by_document,
 )
 from .auth import create_user_api_key
 from .protected import (
@@ -83,6 +80,7 @@ from .ai_preferences import (
     normalize_ai_preferences,
     set_ai_preferences,
 )
+from core.sections import extract_sections_from_version, get_latest_version_for_project, _word_count
 
 CONTENT_SCHEMA_CHOICES = [
     ("https://schema.org/BlogPosting", "Blog post"),
@@ -515,6 +513,87 @@ def _render_auth_page(request: Request, view_mode: str) -> Response:
     return resp
 
 
+@router.get("/dashboard/projects/{project_id}", response_class=HTMLResponse)
+async def dashboard_project_detail(
+    request: Request,
+    project_id: str,
+    user: dict = Depends(get_current_user),  # noqa: B008 - FastAPI dependency injection pattern
+):
+    """Project workspace: Codex-like editor for blog + activity."""
+    try:
+        db = ensure_db()
+    except HTTPException as exc:
+        if exc.status_code == 500:
+            logger.exception("dashboard_project_detail.db_unavailable")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Service temporarily unavailable",
+            ) from exc
+        raise
+
+    project = await get_project(db, project_id, user["user_id"])
+    if not project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+    version_row = await get_latest_version_for_project(db, project, user["user_id"])
+    normalized_sections: List[Dict[str, Any]] = []
+    if version_row:
+        raw_sections = extract_sections_from_version(version_row)
+        for section in raw_sections:
+            body = (
+                section.get("body_mdx")
+                or section.get("body")
+                or section.get("summary")
+                or ""
+            )
+            preview = (body or "").strip()
+            # Simple truncation for preview; formatting handled by template
+            if len(preview) > 800:
+                preview = preview[:800] + "…"
+            normalized_sections.append(
+                {
+                    "section_id": section.get("section_id"),
+                    "index": section.get("index", 0),
+                    "title": section.get("title"),
+                    "word_count": _word_count(body),
+                    "body_preview": preview,
+                    "summary": section.get("summary"),
+                }
+            )
+
+    try:
+        activity_items = await list_project_activity(
+            db,
+            project_id=project_id,
+            user_id=user["user_id"],
+            limit=30,
+        )
+    except Exception:
+        logger.exception(
+            "dashboard_project_detail.activity_failed",
+            extra={"project_id": project_id, "user_id": user["user_id"]},
+        )
+        activity_items = []
+
+    csrf = _get_csrf_token(request)
+
+    context = {
+        "request": request,
+        "user": user,
+        "project": project,
+        "blog_version": version_row,
+        "sections": normalized_sections,
+        "activity_items": activity_items,
+        "page_title": project.get("youtube_url") or project_id,
+        "csrf_token": csrf,
+    }
+    resp = templates.TemplateResponse("projects/detail.html", context)
+    if not request.cookies.get("csrf_token"):
+        is_secure = is_secure_request(request, settings)
+        resp.set_cookie("csrf_token", csrf, httponly=True, samesite="lax", secure=is_secure)
+    return resp
+
+
 async def _render_account_page(
     request: Request,
     user: dict,
@@ -827,7 +906,7 @@ async def _load_project_views(
         if document_id:
             try:
                 versions = await list_document_versions(db, document_id, user_id, limit=2)
-            except Exception as exc:
+            except Exception:
                 logger.warning(
                     "Failed to load versions for project document",
                     exc_info=True,
@@ -1270,7 +1349,8 @@ async def styleguide(request: Request):
 
 
 @router.get("/dashboard", response_class=HTMLResponse)
-async def dashboard(request: Request, user: dict = Depends(get_current_user)):
+async def dashboard(request: Request, user: dict = Depends(get_current_user),  # noqa: B008 - FastAPI dependency injection pattern
+):
     """
     Main dashboard page showing job stats, integrations, and ingest forms.
     """
@@ -1279,10 +1359,10 @@ async def dashboard(request: Request, user: dict = Depends(get_current_user)):
         db = ensure_db()
     except HTTPException as exc:
         if exc.status_code == 500:
-            logger.error("Dashboard: Database unavailable")
+            logger.exception("Dashboard: Database unavailable")
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Service temporarily unavailable"
+                detail="Service temporarily unavailable",
             ) from exc
         raise
     
@@ -1420,7 +1500,8 @@ async def project_detail_page(project_id: str, request: Request, user: dict = De
 
 
 @router.get("/dashboard/documents/{document_id}/versions/{version_id}", response_class=HTMLResponse)
-async def document_version_partial(document_id: str, version_id: str, request: Request, user: dict = Depends(get_current_user)):
+async def document_version_partial(document_id: str, version_id: str, request: Request, user: dict = Depends(get_current_user),  # noqa: B008 - FastAPI dependency injection pattern
+):
     db = ensure_db()
     doc = await get_document(db, document_id, user_id=user["user_id"])
     if not doc:
@@ -1434,7 +1515,8 @@ async def document_version_partial(document_id: str, version_id: str, request: R
 
 
 @router.get("/dashboard/documents/{document_id}/versions/{version_id}/download")
-async def download_document_version(document_id: str, version_id: str, format: str = "mdx", user: dict = Depends(get_current_user)):
+async def download_document_version(document_id: str, version_id: str, format: str = "mdx", user: dict = Depends(get_current_user),  # noqa: B008 - FastAPI dependency injection pattern
+):
     db = ensure_db()
     row = await get_document_version(db, document_id, version_id, user["user_id"])
     if not row:
@@ -1467,7 +1549,7 @@ async def dashboard_generate_blog(
     content_type: str = Form("https://schema.org/BlogPosting"),
     instructions: Optional[str] = Form(None),
     csrf_token: str = Form(...),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_current_user),  # noqa: B008 - FastAPI dependency injection pattern
 ):
     cookie_token = request.cookies.get("csrf_token")
     if not secrets.compare_digest(str(cookie_token or ""), str(csrf_token or "")):
@@ -1517,71 +1599,12 @@ async def dashboard_generate_blog(
     return _render_flash(request, "Blog generation job queued", "success")
 
 
-@router.post("/dashboard/documents/{document_id}/sections/{section_index}/regenerate", response_class=HTMLResponse)
-async def dashboard_regenerate_section(
-    document_id: str,
-    section_index: int,
-    request: Request,
-    csrf_token: str = Form(...),
-    user: dict = Depends(get_current_user),
-):
-    cookie_token = request.cookies.get("csrf_token")
-    if not secrets.compare_digest(str(cookie_token or ""), str(csrf_token or "")):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
-    if section_index < 0:
-        return _render_flash(request, "Invalid section index", "error", status.HTTP_400_BAD_REQUEST)
-    db, queue = ensure_services()
-    try:
-        options = GenerateBlogOptions(section_index=section_index)
-    except Exception as exc:
-        return _render_flash(
-            request,
-            f"Invalid options: {exc}",
-            "error",
-            status.HTTP_400_BAD_REQUEST,
-        )
-    req_model = GenerateBlogRequest(document_id=document_id, options=options)
-    logger.info(
-        "web.dashboard_regenerate_section.begin",
-        extra={
-            "document_id": document_id,
-            "user_id": user["user_id"],
-            "section_index": section_index,
-        },
-    )
-    try:
-        status = await start_generate_blog_job(db, queue, user["user_id"], req_model)
-        logger.info(
-            "web.dashboard_regenerate_section.complete",
-            extra={
-                "document_id": document_id,
-                "user_id": user["user_id"],
-                "section_index": section_index,
-                "job_id": getattr(status, "job_id", None),
-                "job_status": getattr(status, "status", None),
-            },
-        )
-    except HTTPException as exc:
-        logger.exception(
-            "web.dashboard_regenerate_section.http_error",
-            extra={
-                "document_id": document_id,
-                "user_id": user["user_id"],
-                "section_index": section_index,
-                "status_code": exc.status_code,
-            },
-        )
-        detail = exc.detail if isinstance(exc.detail, str) else "Failed to queue job"
-        return _render_flash(request, detail, "error", exc.status_code)
-    return _render_flash(request, f"Regeneration queued for section {section_index + 1}", "success")
-
-
 @router.post("/dashboard/documents/{document_id}/drive/sync", response_class=HTMLResponse)
 async def dashboard_drive_sync(
     document_id: str,
     request: Request,
     csrf_token: str = Form(...),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_current_user),  # noqa: B008 - FastAPI dependency injection pattern
 ):
     _validate_csrf(request, csrf_token)
     db = ensure_db()
@@ -1613,7 +1636,7 @@ async def dashboard_document_export(
     request: Request,
     version_id: Optional[str] = Form(None),
     csrf_token: str = Form(...),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_current_user),  # noqa: B008 - FastAPI dependency injection pattern
 ):
     cookie_token = request.cookies.get("csrf_token")
     if not secrets.compare_digest(str(cookie_token or ""), str(csrf_token or "")):
@@ -1667,7 +1690,7 @@ async def create_job_html(
     request: Request,
     document_id: str = Form(...),
     csrf_token: str = Form(...),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_current_user),  # noqa: B008 - FastAPI dependency injection pattern
 ):
     _validate_csrf(request, csrf_token)
 
@@ -1709,7 +1732,7 @@ async def create_drive_document_form(
     request: Request,
     drive_source: str = Form(...),
     csrf_token: str = Form(...),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_current_user),  # noqa: B008 - FastAPI dependency injection pattern
 ):
     _validate_csrf(request, csrf_token)
     db = ensure_db()
@@ -1806,7 +1829,7 @@ async def create_text_document_form(
 
 
 @router.get("/dashboard/jobs/{job_id}", response_class=HTMLResponse)
-async def job_detail_partial(job_id: str, request: Request, user: dict = Depends(get_current_user)):
+async def job_detail_partial(job_id: str, request: Request, user: dict = Depends(get_current_user)):  # noqa: B008 - FastAPI dependency injection pattern
     data = await protected_get_job_status(job_id, user)  # reuse existing handler logic
     progress = parse_job_progress(data.progress.model_dump_json() if hasattr(data.progress, "model_dump_json") else "{}")
     csrf = _get_csrf_token(request)
@@ -1835,13 +1858,13 @@ async def job_detail_partial(job_id: str, request: Request, user: dict = Depends
 
 
 @router.get("/dashboard/jobs", response_class=HTMLResponse)
-async def jobs_page(request: Request, user: dict = Depends(get_current_user), page: int = 1, status: Optional[str] = None):
+async def jobs_page(request: Request, user: dict = Depends(get_current_user), page: int = 1, status: Optional[str] = None):  # noqa: B008 - FastAPI dependency injection pattern
     # Handle DB initialization failures with explicit 503 for protected routes
     try:
         db = ensure_db()
     except HTTPException as exc:
         if exc.status_code == 500:
-            logger.error("Jobs page: Database unavailable")
+            logger.exception("Jobs page: Database unavailable")
             from fastapi import status as http_status
             raise HTTPException(
                 status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -1908,7 +1931,7 @@ async def jobs_page(request: Request, user: dict = Depends(get_current_user), pa
 
 
 @router.get("/dashboard/integrations", response_class=HTMLResponse)
-async def integrations_page(request: Request, user: dict = Depends(get_current_user)):
+async def integrations_page(request: Request, user: dict = Depends(get_current_user)):  # noqa: B008 - FastAPI dependency injection pattern
     db = ensure_db()
     tokens = await list_google_tokens(db, user["user_id"])  # type: ignore
     stored_user = await get_user_by_id(db, user["user_id"])  # type: ignore
@@ -1926,7 +1949,7 @@ async def integrations_page(request: Request, user: dict = Depends(get_current_u
 
 
 @router.post("/dashboard/integrations/drive/disconnect")
-async def integrations_drive_disconnect(request: Request, csrf_token: str = Form(...), user: dict = Depends(get_current_user)):
+async def integrations_drive_disconnect(request: Request, csrf_token: str = Form(...), user: dict = Depends(get_current_user)):  # noqa: B008 - FastAPI dependency injection pattern
     cookie_token = request.cookies.get("csrf_token")
     if cookie_token is None or csrf_token is None or not hmac.compare_digest(str(cookie_token), str(csrf_token)):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
