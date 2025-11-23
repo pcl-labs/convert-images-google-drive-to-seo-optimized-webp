@@ -28,13 +28,10 @@ from .database import Database, ensure_notifications_schema, ensure_sessions_sch
 from .exceptions import APIException
 from .app_logging import setup_logging, get_logger, get_request_id
 from .middleware import (
-    FlashMiddleware,
-    AuthCookieMiddleware,
     CORSMiddleware,
     RateLimitMiddleware,
     RequestIDMiddleware,
     SecurityHeadersMiddleware,
-    SessionMiddleware,
 )
 from .deps import set_db_instance, set_queue_producer
 from .notifications_stream import cancel_all_sse_connections
@@ -228,7 +225,6 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
         assets_binding=active_settings.assets
     )
 
-    from .web import router as web_router
     from .public import router as public_router
     from .protected import router as protected_router
     from .content import (
@@ -237,7 +233,6 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
         jobs_router as jobs_v1_router,
     )
 
-    app.include_router(web_router)
     app.include_router(public_router)
     app.include_router(protected_router)
     app.include_router(documents_v1_router)
@@ -314,12 +309,9 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
     # Register AuthCookieMiddleware before SessionMiddleware so SessionMiddleware executes first
     # (SessionMiddleware sets request.state.session_user_id, AuthCookieMiddleware reads it)
     # Re-enabling AuthCookieMiddleware - core auth functionality
-    app.add_middleware(AuthCookieMiddleware)
     # Re-enabling SessionMiddleware - D1 is now working
     # Sessions are used for stateful tracking (notifications, activity) and can help with OAuth flows
-    app.add_middleware(SessionMiddleware)
     # FlashMiddleware re-enabled - testing fix for ASGI errors (moved DB write to after call_next)
-    app.add_middleware(FlashMiddleware)
     
     # RateLimitMiddleware disabled - uses time.monotonic() and asyncio.Lock() which may not work correctly in Workers
     # To re-enable: implement using Cloudflare KV or Workers KV for distributed rate limiting

@@ -102,7 +102,7 @@ from .simple_http import AsyncSimpleClient, HTTPStatusError, RequestError
 from .deps import (
     ensure_db,
     ensure_services,
-    get_current_user,
+    get_saas_user,
     parse_job_progress,
 )
 from core.url_utils import parse_youtube_video_id
@@ -129,7 +129,7 @@ import difflib
 logger = get_logger(__name__)
 
 router = APIRouter(
-    dependencies=[Depends(get_current_user)],
+    dependencies=[Depends(get_saas_user)],
 )
 
 
@@ -618,7 +618,7 @@ async def start_ingest_drive_job(db, queue, user_id: str, document_id: str) -> J
 
 
 @router.post("/api/v1/drive/watch/renew", response_model=JobStatus)
-async def start_drive_watch_renewal_job(user: dict = Depends(get_current_user)):
+async def start_drive_watch_renewal_job(user: dict = Depends(get_saas_user)):
     db, queue = ensure_services()
     job_id = str(uuid.uuid4())
     job_row = await create_job_extended(
@@ -1022,7 +1022,7 @@ def _derive_project_title_from_text(text: str, explicit_title: Optional[str] = N
 
 
 @router.post("/api/v1/projects/text", response_model=ProjectResponse, tags=["Projects"])
-async def create_project_for_text(req: IngestTextRequest, user: dict = Depends(get_current_user)):
+async def create_project_for_text(req: IngestTextRequest, user: dict = Depends(get_saas_user)):
     """Create a new project backed by manually pasted text.
 
     Reuses the existing text ingest flow to create the document and kick off
@@ -1081,7 +1081,7 @@ async def create_project_for_text(req: IngestTextRequest, user: dict = Depends(g
 
 
 @router.post("/api/v1/projects", response_model=ProjectResponse, tags=["Projects"])
-async def create_project_for_youtube(req: CreateProjectRequest, user: dict = Depends(get_current_user)):
+async def create_project_for_youtube(req: CreateProjectRequest, user: dict = Depends(get_saas_user)):
     """Create a new project backed by a YouTube document.
 
     Reuses the existing YouTube ingest flow to create the document and kick
@@ -1165,7 +1165,7 @@ async def create_project_for_youtube(req: CreateProjectRequest, user: dict = Dep
 
 
 @router.get("/api/v1/projects/{project_id}", response_model=ProjectResponse, tags=["Projects"])
-async def get_project_overview(project_id: str, user: dict = Depends(get_current_user)):  # noqa: B008 - FastAPI dependency injection pattern
+async def get_project_overview(project_id: str, user: dict = Depends(get_saas_user)):  # noqa: B008 - FastAPI dependency injection pattern
     db = ensure_db()
     project = await get_project(db, project_id, user["user_id"])
     if not project:
@@ -1190,7 +1190,7 @@ async def get_project_overview(project_id: str, user: dict = Depends(get_current
     response_model=ChunkAndEmbedResponse,
     tags=["Projects"],
 )
-async def chunk_and_embed_transcript(project_id: str, user: dict = Depends(get_current_user)):  # noqa: B008 - FastAPI dependency injection pattern
+async def chunk_and_embed_transcript(project_id: str, user: dict = Depends(get_saas_user)):  # noqa: B008 - FastAPI dependency injection pattern
     db = ensure_db()
     project = await get_project(db, project_id, user["user_id"])
     if not project:
@@ -1398,7 +1398,7 @@ async def chunk_and_embed_transcript(project_id: str, user: dict = Depends(get_c
     response_model=TranscriptResponse,
     tags=["Projects"],
 )
-async def get_project_transcript(project_id: str, user: dict = Depends(get_current_user)):  # noqa: B008 - FastAPI dependency injection pattern
+async def get_project_transcript(project_id: str, user: dict = Depends(get_saas_user)):  # noqa: B008 - FastAPI dependency injection pattern
     db = ensure_db()
     project = await get_project(db, project_id, user["user_id"])
     if not project:
@@ -1424,7 +1424,7 @@ async def get_project_transcript(project_id: str, user: dict = Depends(get_curre
 async def search_project_transcript(
     project_id: str,
     req: TranscriptSearchRequest,
-    user: dict = Depends(get_current_user),  # noqa: B008 - FastAPI dependency injection pattern
+    user: dict = Depends(get_saas_user),  # noqa: B008 - FastAPI dependency injection pattern
 ):
     db = ensure_db()
     project = await get_project(db, project_id, user["user_id"])
@@ -1524,7 +1524,7 @@ async def search_project_transcript(
 async def generate_project_blog(
     project_id: str,
     req: ProjectGenerateBlogRequest,
-    user: dict = Depends(get_current_user),  # noqa: B008 - FastAPI dependency injection pattern
+    user: dict = Depends(get_saas_user),  # noqa: B008 - FastAPI dependency injection pattern
 ):
     db, queue = ensure_services()
     project = await get_project(db, project_id, user["user_id"])
@@ -1710,7 +1710,7 @@ async def generate_project_blog(
     response_model=ProjectBlog,
     tags=["Projects"],
 )
-async def get_project_blog(project_id: str, user: dict = Depends(get_current_user)):  # noqa: B008 - FastAPI dependency injection pattern
+async def get_project_blog(project_id: str, user: dict = Depends(get_saas_user)):  # noqa: B008 - FastAPI dependency injection pattern
     db = ensure_db()
     project = await get_project(db, project_id, user["user_id"])
     if not project:
@@ -1747,7 +1747,7 @@ async def get_project_blog(project_id: str, user: dict = Depends(get_current_use
 async def get_project_activity(
     project_id: str,
     limit: int = 30,
-    user: dict = Depends(get_current_user),  # noqa: B008 - FastAPI dependency injection pattern
+    user: dict = Depends(get_saas_user),  # noqa: B008 - FastAPI dependency injection pattern
 ):
     """Return a mixed activity feed (jobs + pipeline events, etc.) for a project."""
     db = ensure_db()
@@ -1781,7 +1781,7 @@ async def get_project_activity(
 )
 async def list_project_blog_sections(
     project_id: str,
-    user: dict = Depends(get_current_user),  # noqa: B008 - FastAPI dependency injection pattern
+    user: dict = Depends(get_saas_user),  # noqa: B008 - FastAPI dependency injection pattern
 ):
     db = ensure_db()
     project = await get_project(db, project_id, user["user_id"])
@@ -1996,7 +1996,7 @@ def _rebuild_body_with_patched_section(
 async def patch_project_blog_section(
     project_id: str,
     req: PatchSectionRequest,
-    user: dict = Depends(get_current_user),  # noqa: B008 - FastAPI dependency injection pattern
+    user: dict = Depends(get_saas_user),  # noqa: B008 - FastAPI dependency injection pattern
 ):
     db = ensure_db()
     project = await get_project(db, project_id, user["user_id"])
@@ -2120,7 +2120,7 @@ async def patch_project_blog_section(
 )
 async def list_project_blog_versions(
     project_id: str,
-    user: dict = Depends(get_current_user),  # noqa: B008 - FastAPI dependency injection pattern
+    user: dict = Depends(get_saas_user),  # noqa: B008 - FastAPI dependency injection pattern
 ):
     db = ensure_db()
     project = await get_project(db, project_id, user["user_id"])
@@ -2171,7 +2171,7 @@ async def list_project_blog_versions(
 async def get_project_blog_version(
     project_id: str,
     version_id: str,
-    user: dict = Depends(get_current_user),  # noqa: B008 - FastAPI dependency injection pattern
+    user: dict = Depends(get_saas_user),  # noqa: B008 - FastAPI dependency injection pattern
 ):
     db = ensure_db()
     project = await get_project(db, project_id, user["user_id"])
@@ -2210,7 +2210,7 @@ async def diff_project_blog_versions(
     project_id: str,
     from_version_id: str,
     to_version_id: str,
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_saas_user),
 ):
     db = ensure_db()
     project = await get_project(db, project_id, user["user_id"])
@@ -2269,7 +2269,7 @@ async def diff_project_blog_versions(
 async def revert_project_blog_version(
     project_id: str,
     version_id: str,
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_saas_user),
 ):
     db = ensure_db()
     project = await get_project(db, project_id, user["user_id"])
@@ -2349,7 +2349,7 @@ async def revert_project_blog_version(
 )
 async def export_project_blog_mdx(
     project_id: str,
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_saas_user),
 ):
     db = ensure_db()
     project = await get_project(db, project_id, user["user_id"])
@@ -2372,7 +2372,7 @@ async def export_project_blog_mdx(
 async def analyze_project_seo(
     project_id: str,
     req: ProjectSEOAnalyzeRequest = Body(default_factory=ProjectSEOAnalyzeRequest),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_saas_user),
 ):
     db = ensure_db()
     req = req or ProjectSEOAnalyzeRequest()
@@ -2399,7 +2399,7 @@ async def analyze_project_version_seo(
     project_id: str,
     version_id: str,
     req: ProjectSEOAnalyzeRequest = Body(default_factory=ProjectSEOAnalyzeRequest),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_saas_user),
 ):
     db = ensure_db()
     req = req or ProjectSEOAnalyzeRequest()
@@ -2580,7 +2580,7 @@ async def start_generate_blog_job(
 async def debug_google_integrations(
     request: Request,
     video_id: str = Query("p12N2v2WHDA", description="YouTube video ID to test"),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_saas_user),
 ):
     """Debug endpoint to exercise YouTube and Drive integrations from Workers.
 
@@ -2695,7 +2695,7 @@ async def debug_env():
 
 
 @router.get("/auth/github/status", tags=["Authentication"])
-async def github_link_status(user: dict = Depends(get_current_user)):
+async def github_link_status(user: dict = Depends(get_saas_user)):
     db = ensure_db()
     linked = bool(user.get("github_id"))
     github_id = user.get("github_id")
@@ -2718,7 +2718,7 @@ async def google_auth_start(
     request: Request,
     integration: str = Query("drive", description="Google integration to connect (drive, youtube, gmail)"),
     redirect: Optional[str] = Query(None, description="Optional path to redirect after linking"),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_saas_user),
 ):
     """Start Google OAuth flow for linking an integration.
     
@@ -2753,6 +2753,7 @@ async def google_auth_start(
         # Store OAuth state in user's session instead of cookies
         # This is more reliable for cross-site redirects
         db = ensure_db()
+        user_id = user["user_id"]
         session = getattr(request.state, "session", None)
         session_id = getattr(request.state, "session_id", None)
         
@@ -2760,7 +2761,7 @@ async def google_auth_start(
             "Google integration OAuth start: session_present=%s, session_id=%s, user_id=%s",
             session is not None,
             session_id,
-            user["user_id"],
+            user_id,
         )
         
         # If no session exists, create one for this authenticated user
@@ -2769,14 +2770,14 @@ async def google_auth_start(
             from datetime import timedelta
             # Ensure user exists in database (required for foreign key constraint in user_sessions)
             # Check if user exists first to avoid UNIQUE constraint violations on github_id/google_id
-            existing_user = await get_user_by_id(db, user["user_id"])
+            existing_user = await get_user_by_id(db, user_id)
             if not existing_user:
                 # Only create if user doesn't exist
                 # create_user handles UNIQUE constraint violations gracefully by returning existing user
                 try:
                     created_user = await create_user(
                         db,
-                        user["user_id"],
+                        user_id,
                         github_id=user.get("github_id"),
                         google_id=user.get("google_id"),
                         email=user.get("email"),
@@ -2786,19 +2787,19 @@ async def google_auth_start(
                 except Exception as create_error:
                     # If create fails, try to get the existing user - they might have been created by another request
                     logger.warning(f"create_user failed, checking if user exists: {create_error}")
-                    existing_user = await get_user_by_id(db, user["user_id"])
+                    existing_user = await get_user_by_id(db, user_id)
                     if not existing_user:
                         # If user still doesn't exist, we can't create a session - this is a critical error
-                        logger.error(f"Cannot create session: user {user['user_id']} does not exist and could not be created: {create_error}")
+                        logger.error(f"Cannot create session: user {user_id} does not exist and could not be created: {create_error}")
                         raise HTTPException(
                             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                             detail="Failed to create user account. Please try again."
                         ) from create_error
             # Use the existing user's user_id (might be different if UNIQUE constraint returned different user)
-            actual_user_id = existing_user.get("user_id") or user["user_id"]
+            actual_user_id = existing_user.get("user_id") or user_id
             # Verify user exists before creating session
             if not actual_user_id:
-                logger.error(f"Cannot create session: user_id is None for user {user['user_id']}")
+                logger.error(f"Cannot create session: user_id is None for user {user_id}")
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail="User account error. Please try again."
@@ -2823,7 +2824,7 @@ async def google_auth_start(
                 session_id,
                 extra={"oauth_state": state, "google_redirect_uri": redirect_uri, "google_integration": integration_key, "google_redirect_next": redirect_path},
             )
-            logger.info("Google integration OAuth: Created session %s and stored state for user %s", session_id, user["user_id"])
+            logger.info("Google integration OAuth: Created session %s and stored state for user %s", session_id, user_id)
             
             # Set session cookie in response
             is_secure = settings.environment == "production" or request.url.scheme == "https"
@@ -2849,7 +2850,7 @@ async def google_auth_start(
             current_extra["google_redirect_next"] = redirect_path
             
             await touch_user_session(db, session_id, extra=current_extra)
-            logger.info("Google integration OAuth: Stored state in session %s for user %s", session_id, user["user_id"])
+            logger.info("Google integration OAuth: Stored state in session %s for user %s", session_id, user_id)
         
         # If we stored in session, just redirect
         response = RedirectResponse(url=auth_url)
@@ -2892,7 +2893,7 @@ async def google_auth_start(
 
 
 @router.get("/auth/google/callback", tags=["Authentication"])
-async def google_auth_callback(code: str, state: str, request: Request, user: dict = Depends(get_current_user)):
+async def google_auth_callback(code: str, state: str, request: Request, user: dict = Depends(get_saas_user)):
     """Handle Google OAuth callback for integration linking.
     
     Retrieves OAuth state from user's session (preferred) or cookies (fallback).
@@ -3035,7 +3036,7 @@ async def google_auth_callback(code: str, state: str, request: Request, user: di
 
 
 @router.get("/auth/google/status", tags=["Authentication"])
-async def google_link_status(user: dict = Depends(get_current_user)):
+async def google_link_status(user: dict = Depends(get_saas_user)):
     db = ensure_db()
     rows = await list_google_tokens(db, user["user_id"])  # type: ignore
     summary = _summarize_google_tokens(rows)
@@ -3046,7 +3047,7 @@ async def google_link_status(user: dict = Depends(get_current_user)):
 
 
 @router.get("/auth/providers/status", tags=["Authentication"])
-async def providers_status(user: dict = Depends(get_current_user)):
+async def providers_status(user: dict = Depends(get_saas_user)):
     db = ensure_db()
     # Determine GitHub linkage from user or DB
     github_linked = bool(user.get("github_id"))
@@ -3068,13 +3069,10 @@ async def providers_status(user: dict = Depends(get_current_user)):
 async def get_current_user_info(request: Request):
     """Get current authenticated user information.
     
-    This endpoint uses get_current_user dependency internally for compatibility.
-    Architectural change: Uses Request parameter directly for Cloudflare Workers compatibility,
-    but calls get_current_user internally to honor its 401 behavior.
+    This endpoint uses get_saas_user dependency semantics internally.
+    Architectural change: Uses Request parameter directly for Cloudflare Workers compatibility.
     """
-    # Call get_current_user internally to honor its 401 behavior
-    # This maintains compatibility with existing clients while allowing Request parameter
-    user = await get_current_user(request)
+    user = await get_saas_user(request)
     
     # Fetch created_at from database if not in user dict
     created_at = None
@@ -3112,7 +3110,7 @@ async def get_current_user_info(request: Request):
 
 
 @router.post("/auth/keys", response_model=APIKeyResponse, tags=["Authentication"])
-async def create_api_key_endpoint(user: dict = Depends(get_current_user)):
+async def create_api_key_endpoint(user: dict = Depends(get_saas_user)):
     db = ensure_db()
     try:
         api_key = await create_user_api_key(db, user["user_id"])
@@ -3123,13 +3121,13 @@ async def create_api_key_endpoint(user: dict = Depends(get_current_user)):
 
 
 @router.post("/api/v1/documents/drive", response_model=Document, tags=["Documents"])
-async def create_drive_document_endpoint(req: DriveDocumentRequest, user: dict = Depends(get_current_user)):
+async def create_drive_document_endpoint(req: DriveDocumentRequest, user: dict = Depends(get_saas_user)):
     db = ensure_db()
     return await create_drive_document_for_user(db, user["user_id"], req.drive_source)
 
 
 @router.get("/api/v1/documents/{document_id}/versions", response_model=DocumentVersionList, tags=["Documents"])
-async def list_document_versions_endpoint(document_id: str, limit: int = 25, user: dict = Depends(get_current_user)):
+async def list_document_versions_endpoint(document_id: str, limit: int = 25, user: dict = Depends(get_saas_user)):
     db = ensure_db()
     await _load_document_for_user(db, document_id, user["user_id"])
     rows = await list_document_versions(db, document_id, user["user_id"], limit=max(1, min(limit, 50)))
@@ -3137,7 +3135,7 @@ async def list_document_versions_endpoint(document_id: str, limit: int = 25, use
 
 
 @router.get("/api/v1/documents/{document_id}/versions/{version_id}", response_model=DocumentVersionDetail, tags=["Documents"])
-async def get_document_version_endpoint(document_id: str, version_id: str, user: dict = Depends(get_current_user)):
+async def get_document_version_endpoint(document_id: str, version_id: str, user: dict = Depends(get_saas_user)):
     db = ensure_db()
     await _load_document_for_user(db, document_id, user["user_id"])
     row = await get_document_version(db, document_id, version_id, user["user_id"])
@@ -3147,7 +3145,7 @@ async def get_document_version_endpoint(document_id: str, version_id: str, user:
 
 
 @router.get("/api/v1/documents/{document_id}/versions/{version_id}/body", tags=["Documents"])
-async def get_document_version_body(document_id: str, version_id: str, format: str = "mdx", user: dict = Depends(get_current_user)):
+async def get_document_version_body(document_id: str, version_id: str, format: str = "mdx", user: dict = Depends(get_saas_user)):
     db = ensure_db()
     await _load_document_for_user(db, document_id, user["user_id"])
     row = await get_document_version(db, document_id, version_id, user["user_id"])
@@ -3170,7 +3168,7 @@ async def get_document_version_body(document_id: str, version_id: str, format: s
 
 
 @router.post("/api/v1/documents/{document_id}/exports", response_model=DocumentExportResponse, tags=["Documents"])
-async def create_document_export_endpoint(document_id: str, request: DocumentExportRequest, user: dict = Depends(get_current_user)):
+async def create_document_export_endpoint(document_id: str, request: DocumentExportRequest, user: dict = Depends(get_saas_user)):
     db = ensure_db()
     doc = await _load_document_for_user(db, document_id, user["user_id"])
     version_id = request.version_id or doc.get("latest_version_id")
@@ -3254,7 +3252,7 @@ async def start_optimize_job(
 
 
 @router.post("/api/v1/optimize", response_model=JobStatus, tags=["Jobs"])
-async def optimize_images(request: OptimizeDocumentRequest, user: dict = Depends(get_current_user)):
+async def optimize_images(request: OptimizeDocumentRequest, user: dict = Depends(get_saas_user)):
     db = ensure_db()
     queue = ensure_services()[1]
     try:
@@ -3267,7 +3265,7 @@ async def optimize_images(request: OptimizeDocumentRequest, user: dict = Depends
 
 
 @router.post("/api/v1/pipelines/generate_blog", response_model=JobStatus, tags=["Pipelines"])
-async def generate_blog_pipeline(request: GenerateBlogRequest, user: dict = Depends(get_current_user)):
+async def generate_blog_pipeline(request: GenerateBlogRequest, user: dict = Depends(get_saas_user)):
     db, queue = ensure_services()
     try:
         return await start_generate_blog_job(db, queue, user["user_id"], request)
@@ -3279,7 +3277,7 @@ async def generate_blog_pipeline(request: GenerateBlogRequest, user: dict = Depe
 
 
 @router.get("/api/v1/jobs/{job_id}", response_model=JobStatus, tags=["Jobs"])
-async def get_job_status(job_id: str, user: dict = Depends(get_current_user)):
+async def get_job_status(job_id: str, user: dict = Depends(get_saas_user)):
     db = ensure_db()
     job = await get_job(db, job_id, user["user_id"])
     if not job:
@@ -3300,7 +3298,7 @@ async def get_job_status(job_id: str, user: dict = Depends(get_current_user)):
 
 
 @router.get("/api/v1/jobs", response_model=JobListResponse, tags=["Jobs"])
-async def list_user_jobs(page: int = 1, page_size: int = 20, status_filter: Optional[JobStatusEnum] = None, user: dict = Depends(get_current_user)):
+async def list_user_jobs(page: int = 1, page_size: int = 20, status_filter: Optional[JobStatusEnum] = None, user: dict = Depends(get_saas_user)):
     db = ensure_db()
     if page < 1:
         page = 1
@@ -3328,21 +3326,21 @@ async def list_user_jobs(page: int = 1, page_size: int = 20, status_filter: Opti
 
 
 @router.post("/ingest/youtube", response_model=JobStatus, tags=["Ingestion"])
-async def ingest_youtube(req: IngestYouTubeRequest, user: dict = Depends(get_current_user)):
+async def ingest_youtube(req: IngestYouTubeRequest, user: dict = Depends(get_saas_user)):
     db = ensure_db()
     queue = ensure_services()[1]
     return await start_ingest_youtube_job(db, queue, user["user_id"], str(req.url))
 
 
 @router.post("/ingest/text", response_model=JobStatus, tags=["Ingestion"])
-async def ingest_text(req: IngestTextRequest, user: dict = Depends(get_current_user)):
+async def ingest_text(req: IngestTextRequest, user: dict = Depends(get_saas_user)):
     db = ensure_db()
     queue = ensure_services()[1]
     return await start_ingest_text_job(db, queue, user["user_id"], req.text, req.title)
 
 
 @router.delete("/api/v1/jobs/{job_id}", tags=["Jobs"])
-async def cancel_job(job_id: str, user: dict = Depends(get_current_user)):
+async def cancel_job(job_id: str, user: dict = Depends(get_saas_user)):
     db = ensure_db()
     job = await get_job(db, job_id, user["user_id"])
     if not job:
@@ -3360,7 +3358,7 @@ async def cancel_job(job_id: str, user: dict = Depends(get_current_user)):
 
 
 @router.get("/api/v1/stats", response_model=StatsResponse, tags=["Stats"])
-async def get_stats(user: dict = Depends(get_current_user)):
+async def get_stats(user: dict = Depends(get_saas_user)):
     db = ensure_db()
     job_stats = await get_job_stats(db, user["user_id"]) 
     return StatsResponse(
@@ -3376,7 +3374,7 @@ async def get_stats(user: dict = Depends(get_current_user)):
 @router.get("/api/v1/usage/summary", tags=["Usage"]) 
 async def get_usage_summary_endpoint( 
     window: int = Query(7, description="Aggregation window in days (1-365)"), 
-    user: dict = Depends(get_current_user), 
+    user: dict = Depends(get_saas_user), 
 ): 
     """Get usage summary for the current user.""" 
     # Validate input bounds before doing any DB work
@@ -3401,7 +3399,7 @@ async def get_usage_summary_endpoint(
 async def get_usage_events_endpoint( 
     limit: int = Query(50, description="Max events to return (1-100)"), 
     offset: int = Query(0, description="Offset for pagination (>=0)"), 
-    user: dict = Depends(get_current_user), 
+    user: dict = Depends(get_saas_user), 
 ): 
     """List usage events for the current user.""" 
     # Validate inputs
