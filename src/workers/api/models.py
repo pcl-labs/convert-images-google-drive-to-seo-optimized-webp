@@ -498,6 +498,8 @@ class SEOScore(BaseModel):
     level: SEOLevel = Field(description="Simple qualitative bucket: good, average, poor")
     details: Optional[str] = None
 
+    model_config = ConfigDict(use_enum_values=True)
+
 
 class Severity(str, Enum):
     INFO = "info"
@@ -512,6 +514,8 @@ class SEOSuggestion(BaseModel):
     severity: Severity = Field(default=Severity.INFO, description="info, warning, or error")
     metric: Optional[str] = Field(default=None, description="Score that surfaced the suggestion")
 
+    model_config = ConfigDict(use_enum_values=True)
+
 
 class IssueLevel(str, Enum):
     WARNING = "warning"
@@ -524,6 +528,8 @@ class SchemaIssue(BaseModel):
     message: str
     path: Optional[str] = None
     property: Optional[str] = None
+
+    model_config = ConfigDict(use_enum_values=True)
 
 
 class ValidationSeverity(str, Enum):
@@ -549,6 +555,8 @@ class SchemaValidationResult(BaseModel):
         default=ValidationSource.LOCAL,
         description="local, schema.org, google, or mixed",
     )
+
+    model_config = ConfigDict(use_enum_values=True)
 
 
 class ProjectSEOAnalyzeRequest(BaseModel):
@@ -591,3 +599,5 @@ class ProjectSEOAnalysis(BaseModel):
     analyzed_at: Optional[datetime] = None
     is_cached: bool = Field(default=False)
     schema_validation: Optional[SchemaValidationResult] = None
+
+    model_config = ConfigDict(use_enum_values=True)

@@ -276,7 +276,7 @@ def build_schema_json_ld(
                 "@type": "Syllabus",
                 "name": lesson.get("title"),
                 "description": lesson.get("description"),
-                "position": lesson.get("module_index"),
+                "moduleIndex": lesson.get("module_index"),
             }
             for lesson in lessons
             if lesson.get("title")
