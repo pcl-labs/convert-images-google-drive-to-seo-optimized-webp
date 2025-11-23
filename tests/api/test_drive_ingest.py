@@ -14,8 +14,14 @@ from src.workers.api.database import (
     create_job_extended,
     get_document,
     upsert_google_token,
+    update_document,
 )
-from src.workers.api.protected import start_ingest_drive_job
+from src.workers.api.models import DrivePublishRequest
+from src.workers.api.protected import (
+    get_drive_document_status_for_user,
+    publish_drive_document_for_user,
+    start_ingest_drive_job,
+)
 from src.workers.consumer import process_ingest_drive_job, process_drive_change_poll_job
 from src.workers.api.drive_docs import sync_drive_doc_for_document
 
@@ -251,3 +257,108 @@ async def test_sync_drive_doc_for_document_updates_drive(monkeypatch, isolated_d
     assert docs_stub.updates, "Expected Docs batchUpdate call"
     inserted = docs_stub.updates[0]["requests"][-1]["insertText"]["text"]
     assert inserted == "Seed text"
+
+
+@pytest.mark.asyncio
+async def test_get_drive_document_status_for_user_returns_drive_metadata(isolated_db):
+    db = isolated_db
+    user_id = f"user-{uuid.uuid4()}"
+    await create_test_user(db, user_id=user_id, email=f"{user_id}@example.com")
+    document_id = str(uuid.uuid4())
+    drive_file_id = "drv" * 15
+    metadata = {
+        "drive_stage": "draft",
+        "drive_sync_status": "synced",
+        "drive_reconcile_required": False,
+        "drive": {
+            "file_id": drive_file_id,
+            "revision_id": "rev-1",
+            "web_view_link": "https://docs.google.com/document/d/test/edit",
+            "external_edit_detected": True,
+            "last_ingested_revision": "rev-0",
+        },
+    }
+    await create_document(
+        db,
+        document_id=document_id,
+        user_id=user_id,
+        source_type="text",
+        metadata=metadata,
+        drive_file_id=drive_file_id,
+        drive_revision_id="rev-1",
+    )
+    status_payload = await get_drive_document_status_for_user(db, user_id, document_id)
+    assert status_payload.document_id == document_id
+    assert status_payload.linked is True
+    assert status_payload.drive_file_id == drive_file_id
+    assert status_payload.external_edit_detected is True
+    assert status_payload.drive_stage == "draft"
+    assert status_payload.web_view_link.endswith("/edit")
+
+
+@pytest.mark.asyncio
+async def test_publish_drive_document_for_user_pushes_mdx(monkeypatch, isolated_db):
+    db = isolated_db
+    user_id = f"user-{uuid.uuid4()}"
+    await create_test_user(db, user_id=user_id, email=f"{user_id}@example.com")
+    document_id = str(uuid.uuid4())
+    drive_file_id = "drv" * 15
+    await create_document(
+        db,
+        document_id=document_id,
+        user_id=user_id,
+        source_type="text",
+        raw_text="Existing",
+        metadata={"drive": {"file_id": drive_file_id}},
+        drive_file_id=drive_file_id,
+    )
+    sync_stub = AsyncMock()
+    monkeypatch.setattr(
+        "src.workers.api.protected.sync_drive_doc_for_document",
+        sync_stub,
+    )
+    payload = DrivePublishRequest(body="Updated body", stage="published")
+    status_payload = await publish_drive_document_for_user(db, user_id, document_id, payload)
+    sync_stub.assert_awaited_once()
+    expected_updates = {"drive_text": "Updated body", "metadata": {"drive_stage": "published"}}
+    sync_stub.assert_awaited_with(db, user_id, document_id, expected_updates)
+    assert status_payload.linked is True
+
+
+@pytest.mark.asyncio
+async def test_publish_drive_document_auto_links_when_missing(monkeypatch, isolated_db):
+    db = isolated_db
+    user_id = f"user-{uuid.uuid4()}"
+    await create_test_user(db, user_id=user_id, email=f"{user_id}@example.com")
+    document_id = str(uuid.uuid4())
+    await create_document(
+        db,
+        document_id=document_id,
+        user_id=user_id,
+        source_type="text",
+        metadata={},
+    )
+
+    async def fake_link(db, user_id, document_id, document_name, metadata=None, **kwargs):
+        await update_document(
+            db,
+            document_id,
+            {
+                "drive_file_id": "auto-drive-file",
+                "drive_revision_id": "rev-a",
+                "metadata": {"drive": {"file_id": "auto-drive-file", "revision_id": "rev-a"}},
+            },
+        )
+
+    sync_stub = AsyncMock()
+    monkeypatch.setattr(
+        "src.workers.api.protected.link_document_drive_workspace",
+        fake_link,
+    )
+    monkeypatch.setattr(
+        "src.workers.api.protected.sync_drive_doc_for_document",
+        sync_stub,
+    )
+    status_payload = await publish_drive_document_for_user(db, user_id, document_id, DrivePublishRequest())
+    assert status_payload.drive_file_id == "auto-drive-file"
+    assert sync_stub.await_count == 1

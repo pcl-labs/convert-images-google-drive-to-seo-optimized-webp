@@ -24,6 +24,8 @@ from .models import (
     IngestYouTubeRequest,
     IngestTextRequest,
     DriveDocumentRequest,
+    DriveDocumentStatus,
+    DrivePublishRequest,
     OptimizeDocumentRequest,
     GenerateBlogRequest,
     GenerateBlogOptions,
@@ -526,6 +528,72 @@ def _drive_folder_from_document(doc: dict) -> str:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Document is missing Drive folder metadata")
     return folder_id
 
+
+def _frontmatter_dict(doc: dict) -> Dict[str, Any]:
+    return _json_field(doc.get("frontmatter"), {})
+
+
+def _drive_block(doc: dict) -> Dict[str, Any]:
+    metadata = doc.get("metadata") if isinstance(doc.get("metadata"), dict) else {}
+    drive_section = metadata.get("drive")
+    return drive_section if isinstance(drive_section, dict) else {}
+
+
+def _drive_file_id_from_document(doc: dict) -> Optional[str]:
+    drive_section = _drive_block(doc)
+    file_id = doc.get("drive_file_id") or drive_section.get("file_id")
+    if not file_id:
+        nested = drive_section.get("file")
+        if isinstance(nested, dict):
+            file_id = nested.get("id")
+    return file_id
+
+
+def _drive_web_view_link(drive_section: Dict[str, Any]) -> Optional[str]:
+    if not isinstance(drive_section, dict):
+        return None
+    if drive_section.get("web_view_link"):
+        return drive_section.get("web_view_link")
+    nested = drive_section.get("file")
+    if isinstance(nested, dict):
+        return nested.get("webViewLink")
+    return None
+
+
+def _drive_status_model(doc: dict) -> DriveDocumentStatus:
+    metadata = doc.get("metadata") if isinstance(doc.get("metadata"), dict) else {}
+    drive_section = _drive_block(doc)
+    drive_file_id = _drive_file_id_from_document(doc)
+    return DriveDocumentStatus(
+        document_id=doc.get("document_id"),
+        linked=bool(drive_file_id),
+        drive_file_id=drive_file_id,
+        drive_revision_id=doc.get("drive_revision_id") or drive_section.get("revision_id"),
+        drive_stage=metadata.get("drive_stage") or drive_section.get("stage"),
+        sync_status=metadata.get("drive_sync_status") or drive_section.get("sync_status"),
+        needs_reconcile=bool(metadata.get("drive_reconcile_required")),
+        external_edit_detected=bool(drive_section.get("external_edit_detected")),
+        last_ingested_revision=drive_section.get("last_ingested_revision"),
+        last_ingested_at=drive_section.get("last_ingested_at"),
+        pending_revision_id=drive_section.get("pending_revision_id"),
+        pending_modified_time=drive_section.get("pending_modified_time"),
+        web_view_link=_drive_web_view_link(drive_section),
+        drive=drive_section,
+    )
+
+
+def _drive_document_name(doc: dict) -> str:
+    frontmatter = _frontmatter_dict(doc)
+    for key in ("title", "name", "document_title"):
+        value = frontmatter.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    metadata = doc.get("metadata") if isinstance(doc.get("metadata"), dict) else {}
+    maybe_name = metadata.get("title") or metadata.get("document_name")
+    if isinstance(maybe_name, str) and maybe_name.strip():
+        return maybe_name.strip()
+    return doc.get("document_id") or "Drive Document"
+
 async def create_drive_document_for_user(db, user_id: str, drive_source: str) -> Document:
     try:
         service = await build_drive_service_for_user(db, user_id)  # type: ignore
@@ -549,6 +617,96 @@ async def create_drive_document_for_user(db, user_id: str, drive_source: str) ->
         metadata={"input": drive_source},
     )
     return _serialize_document(doc)
+
+
+async def _ensure_drive_linked_document(db, user_id: str, document_id: str, document: dict) -> dict:
+    drive_file_id = _drive_file_id_from_document(document)
+    if drive_file_id:
+        return document
+    name_hint = _drive_document_name(document)
+    raw_metadata = document.get("metadata")
+    if isinstance(raw_metadata, dict):
+        metadata = raw_metadata
+    elif isinstance(raw_metadata, str):
+        try:
+            parsed = json.loads(raw_metadata)
+            metadata = parsed if isinstance(parsed, dict) else None
+        except Exception:
+            metadata = None
+    else:
+        metadata = None
+    try:
+        await link_document_drive_workspace(
+            db,
+            user_id=user_id,
+            document_id=document_id,
+            document_name=name_hint,
+            metadata=metadata,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(
+            "drive_workspace_autolink_failed",
+            exc_info=True,
+            extra={"document_id": document_id, "user_id": user_id, "error": str(exc)},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Failed to link Drive workspace for document",
+        ) from exc
+    refreshed = await _load_document_for_user(db, document_id, user_id)
+    if not _drive_file_id_from_document(refreshed):
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Drive workspace linked but Drive file is missing",
+        )
+    return refreshed
+
+
+async def get_drive_document_status_for_user(db, user_id: str, document_id: str) -> DriveDocumentStatus:
+    document = await _load_document_for_user(db, document_id, user_id)
+    return _drive_status_model(document)
+
+
+async def publish_drive_document_for_user(
+    db,
+    user_id: str,
+    document_id: str,
+    payload: Optional[DrivePublishRequest],
+) -> DriveDocumentStatus:
+    payload = payload or DrivePublishRequest()
+    if payload.body and len(payload.body) > MAX_TEXT_LENGTH:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Drive publish body exceeds limit ({MAX_TEXT_LENGTH} characters)",
+        )
+    document = await _load_document_for_user(db, document_id, user_id)
+    document = await _ensure_drive_linked_document(db, user_id, document_id, document)
+    updates: Dict[str, Any] = {}
+    if payload.body is not None:
+        updates["drive_text"] = payload.body
+    meta_updates: Dict[str, Any] = {}
+    if payload.stage:
+        meta_updates["drive_stage"] = payload.stage
+    if meta_updates:
+        updates["metadata"] = meta_updates
+    try:
+        await sync_drive_doc_for_document(db, user_id, document_id, updates or {})
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(
+            "drive_publish_sync_failed",
+            exc_info=True,
+            extra={"document_id": document_id, "user_id": user_id, "error": str(exc)},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Failed to publish document to Drive",
+        ) from exc
+    refreshed = await _load_document_for_user(db, document_id, user_id)
+    return _drive_status_model(refreshed)
 
 
 async def start_ingest_drive_job(db, queue, user_id: str, document_id: str) -> JobStatus:
@@ -3124,6 +3282,26 @@ async def create_api_key_endpoint(user: dict = Depends(get_saas_user)):
 async def create_drive_document_endpoint(req: DriveDocumentRequest, user: dict = Depends(get_saas_user)):
     db = ensure_db()
     return await create_drive_document_for_user(db, user["user_id"], req.drive_source)
+
+
+@router.get("/api/v1/documents/{document_id}/drive", response_model=DriveDocumentStatus, tags=["Documents"])
+async def get_drive_document_status_endpoint(document_id: str, user: dict = Depends(get_saas_user)):
+    db = ensure_db()
+    return await get_drive_document_status_for_user(db, user["user_id"], document_id)
+
+
+@router.post(
+    "/api/v1/documents/{document_id}/drive/publish",
+    response_model=DriveDocumentStatus,
+    tags=["Documents"],
+)
+async def publish_drive_document_endpoint(
+    document_id: str,
+    req: Optional[DrivePublishRequest] = Body(default=None),
+    user: dict = Depends(get_saas_user),
+):
+    db = ensure_db()
+    return await publish_drive_document_for_user(db, user["user_id"], document_id, req)
 
 
 @router.get("/api/v1/documents/{document_id}/versions", response_model=DocumentVersionList, tags=["Documents"])
