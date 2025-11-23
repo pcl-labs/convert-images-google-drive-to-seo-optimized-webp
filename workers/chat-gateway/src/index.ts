@@ -181,19 +181,33 @@ async function invokeTool(request: Request, env: Env): Promise<Response> {
     }
     body = await request.clone().text();
   }
-  const apiResponse = await fetch(target, {
-    method: tool.method,
-    headers,
-    body,
-  });
-  const passthroughHeaders: Record<string, string> = {
-    "Content-Type": apiResponse.headers.get("content-type") ?? "application/json",
-  };
-  const text = await apiResponse.text();
-  return new Response(text, {
-    status: apiResponse.status,
-    headers: passthroughHeaders,
-  });
+  try {
+    const apiResponse = await fetch(target, {
+      method: tool.method,
+      headers,
+      body,
+    });
+    const passthroughHeaders: Record<string, string> = {
+      "Content-Type": apiResponse.headers.get("content-type") ?? "application/json",
+    };
+    const text = await apiResponse.text();
+    return new Response(text, {
+      status: apiResponse.status,
+      headers: passthroughHeaders,
+    });
+  } catch (error) {
+    console.error("tool_invoke_failed", {
+      tool: toolName,
+      target,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return jsonResponse(
+      {
+        error: "Failed to reach backend API for tool invocation",
+      },
+      { status: 502 },
+    );
+  }
 }
 
 async function createSession(env: Env): Promise<Response> {
