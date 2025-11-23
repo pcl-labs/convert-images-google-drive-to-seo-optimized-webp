@@ -203,6 +203,19 @@ class DriveDocumentRequest(BaseModel):
     drive_source: str = Field(..., min_length=5, max_length=500, description="Drive share link or folder ID")
 
 
+class DriveWorkspaceLinkRequest(BaseModel):
+    document_name: Optional[str] = Field(
+        default=None,
+        description="Optional display name when creating Drive artifacts.",
+        min_length=1,
+        max_length=200,
+    )
+    metadata: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Optional metadata overrides when linking the workspace.",
+    )
+
+
 class OptimizeDocumentRequest(BaseModel):
     document_id: str = Field(..., min_length=5, max_length=100)
     extensions: Optional[List[str]] = Field(

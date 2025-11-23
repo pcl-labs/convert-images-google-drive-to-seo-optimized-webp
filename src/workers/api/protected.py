@@ -26,6 +26,7 @@ from .models import (
     DriveDocumentRequest,
     DriveDocumentStatus,
     DrivePublishRequest,
+    DriveWorkspaceLinkRequest,
     OptimizeDocumentRequest,
     GenerateBlogRequest,
     GenerateBlogOptions,
@@ -750,6 +751,7 @@ async def publish_drive_document_for_user(
     user_id: str,
     document_id: str,
     payload: Optional[DrivePublishRequest],
+    session_id: Optional[str] = None,
 ) -> DriveDocumentStatus:
     payload = payload or DrivePublishRequest()
     if payload.body and len(payload.body) > MAX_TEXT_LENGTH:
@@ -768,8 +770,36 @@ async def publish_drive_document_for_user(
     if meta_updates:
         updates["metadata"] = meta_updates
     try:
+        await record_pipeline_event(
+            db,
+            user_id,
+            job_id=None,
+            event_type="drive_workspace",
+            stage="drive.publish.sync",
+            status="running",
+            message="Syncing document to Drive",
+            data={"document_id": document_id},
+            session_id=session_id,
+        )
+    except Exception:
+        pass
+    try:
         await sync_drive_doc_for_document(db, user_id, document_id, updates or {})
-    except HTTPException:
+    except HTTPException as exc:
+        try:
+            await record_pipeline_event(
+                db,
+                user_id,
+                job_id=None,
+                event_type="drive_workspace",
+                stage="drive.publish.sync",
+                status="error",
+                message=f"Drive publish failed: {exc}",
+                data={"document_id": document_id},
+                session_id=session_id,
+            )
+        except Exception:
+            pass
         raise
     except Exception as exc:
         logger.error(
@@ -777,11 +807,39 @@ async def publish_drive_document_for_user(
             exc_info=True,
             extra={"document_id": document_id, "user_id": user_id, "error": str(exc)},
         )
+        try:
+            await record_pipeline_event(
+                db,
+                user_id,
+                job_id=None,
+                event_type="drive_workspace",
+                stage="drive.publish.sync",
+                status="error",
+                message=f"Drive publish failed: {exc}",
+                data={"document_id": document_id},
+                session_id=session_id,
+            )
+        except Exception:
+            pass
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Failed to publish document to Drive",
         ) from exc
     refreshed = await _load_document_for_user(db, document_id, user_id)
+    try:
+        await record_pipeline_event(
+            db,
+            user_id,
+            job_id=None,
+            event_type="drive_workspace",
+            stage="drive.publish.sync",
+            status="completed",
+            message="Document synced to Drive",
+            data={"document_id": document_id},
+            session_id=session_id,
+        )
+    except Exception:
+        pass
     return _drive_status_model(refreshed)
 
 
@@ -3344,9 +3402,91 @@ async def publish_drive_document_endpoint(
     document_id: str,
     req: Optional[DrivePublishRequest] = Body(default=None),
     user: dict = Depends(get_saas_user),
+    agent_session_id: Optional[str] = Depends(get_agent_session_id),
 ):
     db = ensure_db()
-    return await publish_drive_document_for_user(db, user["user_id"], document_id, req)
+    return await publish_drive_document_for_user(db, user["user_id"], document_id, req, session_id=agent_session_id)
+
+
+@router.post(
+    "/api/v1/documents/{document_id}/drive/link",
+    response_model=DriveDocumentStatus,
+    tags=["Documents"],
+)
+async def link_drive_document_endpoint(
+    document_id: str,
+    req: Optional[DriveWorkspaceLinkRequest] = Body(default=None),
+    user: dict = Depends(get_saas_user),
+    agent_session_id: Optional[str] = Depends(get_agent_session_id),
+):
+    db = ensure_db()
+    document = await _load_document_for_user(db, document_id, user["user_id"])
+    preferred_name = (req.document_name if req else None) or _drive_document_name(document)
+    raw_metadata = document.get("metadata")
+    if isinstance(raw_metadata, str):
+        try:
+            raw_metadata = json.loads(raw_metadata)
+        except Exception:
+            raw_metadata = {}
+    elif not isinstance(raw_metadata, dict):
+        raw_metadata = {}
+    metadata_override = req.metadata if req and req.metadata is not None else raw_metadata
+    try:
+        await record_pipeline_event(
+            db,
+            user["user_id"],
+            job_id=None,
+            event_type="drive_workspace",
+            stage="drive.workspace.link",
+            status="running",
+            message="Linking document to Drive workspace",
+            data={"document_id": document_id},
+            session_id=agent_session_id,
+        )
+    except Exception:
+        pass
+    try:
+        await link_document_drive_workspace(
+            db,
+            user_id=user["user_id"],
+            document_id=document_id,
+            document_name=preferred_name,
+            metadata=metadata_override,
+            job_id=None,
+            event_type="drive_workspace",
+        )
+    except Exception as exc:
+        try:
+            await record_pipeline_event(
+                db,
+                user["user_id"],
+                job_id=None,
+                event_type="drive_workspace",
+                stage="drive.workspace.link",
+                status="error",
+                message=f"Drive workspace link failed: {exc}",
+                data={"document_id": document_id},
+                session_id=agent_session_id,
+            )
+        except Exception:
+            pass
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail="Failed to link Drive workspace") from exc
+    refreshed = await _load_document_for_user(db, document_id, user["user_id"])
+    try:
+        await record_pipeline_event(
+            db,
+            user["user_id"],
+            job_id=None,
+            event_type="drive_workspace",
+            stage="drive.workspace.link",
+            status="completed",
+            message="Drive workspace linked",
+            data={"document_id": document_id},
+            session_id=agent_session_id,
+        )
+    except Exception:
+        pass
+    return _drive_status_model(refreshed)
 
 
 @router.get("/api/v1/documents/{document_id}/versions", response_model=DocumentVersionList, tags=["Documents"])

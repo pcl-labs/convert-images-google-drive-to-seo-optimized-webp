@@ -14,6 +14,7 @@ Create SEO Ranking blogs from YouTube. Ship fast, flexible, and SEO-optimized bl
 - **Automatic Cleanup**: Optionally deletes original images after optimization
 - **Error Handling**: Comprehensive error logging and retry mechanisms
 - **Drive Workspace Sync**: Connecting Google Drive provisions a Quill workspace (root/Drafts/Published) so documents stay mirrored between Drive and the app.
+- **Codex-style Agent Interface**: A Cloudflare Worker chat gateway (`workers/chat-gateway/`) provides `/chat/sessions` + `/agent/tools` so LLM agents can orchestrate Quill via first-class tools, and `/api/v1/sessions/events` streams pipeline events + job snapshots for Codex-like timelines.
 
 ## Installation
 
@@ -84,12 +85,34 @@ wrangler deploy
 - Cloudflare account and `wrangler` CLI installed
 - D1 database created and migrated
 - Secrets configured via `wrangler secret put`
+- (Optional) **Chat Gateway Worker**: See `workers/chat-gateway/README.md` for the Codex SSE/tool gateway. Deploy it separately with its own `wrangler deploy` after setting `API_BASE_URL` (pointing at your FastAPI deployment) and `CHAT_GATEWAY_URL` in your `.env`.
 
 See `docs/CLOUDFLARE_WORKERS.md` for complete setup instructions, including:
 - D1 database setup and migrations
 - Queue configuration
 - Secret management
 - Environment-specific configuration
+- Session-aware flows now rely on `X-Agent-Session-Id`. Any client (chat Worker, CLI, Nuxt app) should generate a session id (UUID) and send it via header (preferred) or `session_id` query param so `/api/v1/sessions/events` and pipeline events stay scoped.
+
+#### Codex Chat Gateway (optional but recommended)
+
+The Worker in `workers/chat-gateway/` exposes:
+
+- `POST /chat/sessions` – allocate a Durable Object session id.
+- `POST /chat/sessions/{id}/messages` – append chat turns (used by LLM orchestrators).
+- `GET /chat/sessions/{id}/events` – SSE stream; internally polls `/api/v1/sessions/events` so Codex UIs receive job + pipeline updates without custom polling.
+- `GET /agent/tools` – self-describing tool catalog (ingest YouTube, ingest text, drive link/publish/status, document versions/exports, session events, etc.).
+- `POST /agent/tools/{tool}/invoke` – forwards tool requests to FastAPI, preserving `Authorization`, API-Key headers, and whitelisted cookies. The worker automatically injects `X-Agent-Session-Id` to keep events scoped.
+
+To configure:
+
+```bash
+cd workers/chat-gateway
+npm install
+wrangler publish           # or `wrangler dev` for local preview
+```
+
+Update `workers/chat-gateway/wrangler.toml` (or `wrangler secret put API_BASE_URL`) so the worker knows which FastAPI origin to call (e.g., `https://quill-api.example.com`). Set `CHAT_GATEWAY_URL` in your `.env` so the frontend knows where to connect.
 
 #### API Endpoints
 
@@ -119,9 +142,12 @@ See `docs/CLOUDFLARE_WORKERS.md` for complete setup instructions, including:
 - `POST /api/v1/optimize` - Start an optimization job for a document
 - `POST /ingest/text` - Ingest text content
 - `POST /ingest/youtube` - Ingest YouTube video transcript (requires Google account linked with Drive + YouTube scopes; failures bubble up as descriptive 4xx errors—no fallback scraping)
+- `POST /api/v1/documents/{document_id}/drive/link` - Ensure/repair the document’s Drive workspace (new; accepts `X-Agent-Session-Id`)
+- `POST /api/v1/documents/{document_id}/drive/publish` - Push the current MDX/drive_text to Google Docs (session-aware)
 - `GET /api/v1/jobs/{job_id}` - Get job status
 - `GET /api/v1/jobs` - List recent jobs
 - `DELETE /api/v1/jobs/{job_id}` - Cancel a job
+- `GET /api/v1/sessions/events?session_id=...` - Pollable feed of pipeline events + pertinent jobs for a given agent session (used by chat gateway/SSE pump)
 
 **Usage Endpoints (require authentication):**
 - `GET /api/v1/usage/summary?window=7` - Get usage summary (events, duration, bytes downloaded)
@@ -196,6 +222,8 @@ curl -H "Authorization: Bearer YOUR_JWT_TOKEN" \
 3. Google OAuth (link integrations):
    - Visit `/auth/google/start?integration=drive` to enable Drive/Doc workflows.
    - Visit `/auth/google/start?integration=youtube` to enable YouTube ingestion.
+
+**Session Header Reminder:** When calling session-aware endpoints (ingest, optimize, drive link/publish, `/sessions/events`), include `X-Agent-Session-Id: <uuid>` so downstream events are attributed to the correct chat/agent transcript. The chat gateway handles this automatically; custom clients should mimic the same header.
 
 #### Interactive API Documentation
 
