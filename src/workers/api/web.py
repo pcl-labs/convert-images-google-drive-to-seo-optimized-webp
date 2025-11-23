@@ -860,7 +860,7 @@ def _diff_line_counts(
 ) -> dict:
     latest_lines = (latest_body or "").splitlines()
     previous_lines = (previous_body or "").splitlines()
-    if not previous_body:
+    if previous_body is None:
         added_default = len([line for line in latest_lines if line.strip()])
         return {"added": added_default, "removed": 0}
     added = 0
