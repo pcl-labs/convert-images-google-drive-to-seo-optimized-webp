@@ -97,7 +97,8 @@ def _keyword_score(text: str, keywords: List[str]) -> Tuple[float, Dict[str, int
 def _schema_score(schema_json: Optional[Dict[str, Any]], content_hint: str) -> float:
     if schema_json:
         return 95.0
-    if content_hint in {"faq", "how_to", "course", "recipe"}:
+    normalized_hint = (content_hint or "").lower()
+    if normalized_hint in {"faq", "faq_page", "how_to", "howto", "how-to", "course", "recipe"}:
         return 45.0
     return 70.0
 
@@ -169,10 +170,11 @@ def analyze_seo_document(
     if schema_asset.get("json_ld") and not seo_payload.get("json_ld"):
         seo_payload["json_ld"] = schema_asset.get("json_ld")
 
-    structured_content = content_plan.get("structured") if isinstance(content_plan, dict) else None
+    structured_content = content_plan.get("structured_content") if isinstance(content_plan, dict) else None
     if not structured_content and isinstance(assets, dict):
         structured_content = assets.get("structured_content")
-    if not structured_content and content_hint in {"faq", "how_to", "course", "recipe"}:
+    schema_aware_hints = {"faq", "faq_page", "how_to", "howto", "how-to", "course", "recipe"}
+    if not structured_content and (content_hint or "").lower() in schema_aware_hints:
         structured_content = build_structured_content(content_hint, sections)
 
     if not seo_payload.get("json_ld"):
@@ -223,7 +225,7 @@ def analyze_seo_document(
             "label": "Heading structure",
             "score": round(heading_value, 2),
             "level": _level_from_score(heading_value),
-            "details": f"{len(re.findall(r'^#{2,4}\\s+', body_mdx, flags=re.MULTILINE))} H2/H3 headings detected",
+            "details": f"{len(re.findall(r'^#{2,4}\\s+', body_mdx or '', flags=re.MULTILINE))} H2/H3 headings detected",
         },
         {
             "name": "metadata",
@@ -284,14 +286,15 @@ def analyze_seo_document(
             "Add structured data",
             "Attach a JSON-LD block for the selected schema so search engines can render rich snippets.",
         )
-    if not frontmatter.get("hero_image"):
+    resolved_hero_image = seo_payload.get("hero_image")
+    if not resolved_hero_image:
         _add_suggestion(
             "media",
             "Add a hero image",
             "Set a featured image for improved click-throughs on social cards and SERPs.",
             severity="info",
         )
-    if content_hint in {"faq", "how_to", "course", "recipe"} and not structured_content:
+    if (content_hint or "").lower() in schema_aware_hints and not structured_content:
         _add_suggestion(
             "structured",
             "Outline structured blocks",

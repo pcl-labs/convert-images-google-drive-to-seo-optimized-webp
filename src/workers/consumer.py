@@ -1490,7 +1490,7 @@ async def generate_blog_for_document(
     # Extract sections from the actual generated blog content
     try:
         sections = extract_sections_from_mdx(markdown_body) if markdown_body else []
-    except (ValueError, SyntaxError) as e:
+    except KeyError as e:
         app_logger.warning(
             "extract_sections_failed",
             exc_info=True,
@@ -1587,7 +1587,7 @@ async def generate_blog_for_document(
         "seo": seo_meta,
         "content_type": content_type_value,
         "schema_type": schema_type_value,
-        "structured": structured_content,
+        "structured_content": structured_content,
         "generated_at": generated_at,
     }
     await update_document(
