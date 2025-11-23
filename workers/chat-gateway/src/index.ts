@@ -145,7 +145,7 @@ function listTools(): Response {
 
 async function invokeTool(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
-  const [, , , , toolName] = url.pathname.split("/", 5);
+  const [, , , toolName] = url.pathname.split("/", 5);
   if (!toolName) {
     return badRequest("Tool name required");
   }
