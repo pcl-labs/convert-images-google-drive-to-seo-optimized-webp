@@ -129,8 +129,9 @@ def resolve_generate_blog_options(options: Optional[GenerateBlogOptions], prefer
     resolved["provider"] = prefs.get("provider", "openai")
     content_type_value = (options.content_type or prefs.get("content_type") or "generic_blog").strip()
     schema_override = (options.schema_type or prefs.get("schema_type") or "").strip() or None
-    stored_content_type, resolved_schema_type, _ = resolve_schema_type(content_type_value, schema_override)
+    stored_content_type, resolved_schema_type, content_type_hint = resolve_schema_type(content_type_value, schema_override)
     resolved["content_type"] = stored_content_type
     resolved["schema_type"] = resolved_schema_type
+    resolved["content_type_hint"] = content_type_hint
     resolved["instructions"] = (options.instructions or prefs.get("instructions") or "").strip() or None
     return resolved

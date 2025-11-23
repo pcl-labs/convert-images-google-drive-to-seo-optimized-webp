@@ -82,7 +82,10 @@ def _keyword_score(text: str, keywords: List[str]) -> Tuple[float, Dict[str, int
         if not keyword:
             continue
         # Use word-boundary matching so "cat" does not match "category".
-        pattern = re.compile(r"\\b" + re.escape(str(keyword).strip()) + r"\\b", flags=re.IGNORECASE)
+        term = str(keyword).strip()
+        if not term:
+            continue
+        pattern = re.compile(r"\b" + re.escape(term) + r"\b", flags=re.IGNORECASE)
         occurrences = len(pattern.findall(text))
         counts[keyword] = occurrences
     target_hits = sum(1 for count in counts.values() if count >= 2)

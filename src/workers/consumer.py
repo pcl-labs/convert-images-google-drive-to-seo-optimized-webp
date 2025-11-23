@@ -1490,11 +1490,15 @@ async def generate_blog_for_document(
     # Extract sections from the actual generated blog content
     try:
         sections = extract_sections_from_mdx(markdown_body) if markdown_body else []
-    except Exception as e:
+    except (ValueError, SyntaxError) as e:
         app_logger.warning(
             "extract_sections_failed",
             exc_info=True,
-            extra={"document_id": document_id, "error": str(e)},
+            extra={
+                "document_id": document_id,
+                "error": str(e),
+                "error_type": type(e).__name__,
+            },
         )
         sections = []
     

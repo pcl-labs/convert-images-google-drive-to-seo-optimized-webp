@@ -14,7 +14,7 @@
       {"value": "archive", "label": "Archive"},
     ]) }}
     <div class="py-4">
-      <div x-cloak x-show="currentTab === 'projects'">
+      <div x-cloak x-show="currentTab === 'projects'" id="panel-projects" role="tabpanel" aria-labelledby="tab-projects">
         {% if projects_active %}
           <div class="space-y-2">
             {% for project in projects_active %}
@@ -27,7 +27,7 @@
           </div>
         {% endif %}
       </div>
-      <div x-cloak x-show="currentTab === 'archive'">
+      <div x-cloak x-show="currentTab === 'archive'" id="panel-archive" role="tabpanel" aria-labelledby="tab-archive">
         {% if projects_archive %}
           <div class="space-y-2">
             {% for project in projects_archive %}
