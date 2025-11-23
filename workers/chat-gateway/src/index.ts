@@ -107,6 +107,12 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
       stage: "published",
     },
   },
+  {
+    name: "session_events",
+    description: "Fetch recent pipeline events and job statuses for the current agent session.",
+    method: "GET",
+    path: "/api/v1/sessions/events",
+  },
 ];
 
 const TOOL_MAP = new Map(TOOL_DEFINITIONS.map((tool) => [tool.name, tool]));
@@ -165,6 +171,11 @@ async function invokeTool(request: Request, env: Env): Promise<Response> {
     if (value) {
       headers.set(header, value);
     }
+  }
+  const sessionId =
+    request.headers.get("x-agent-session-id") ?? url.searchParams.get("session_id");
+  if (sessionId) {
+    headers.set("x-agent-session-id", sessionId);
   }
   const accept = request.headers.get("accept");
   if (accept) {

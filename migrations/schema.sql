@@ -15,10 +15,8 @@ CREATE TABLE IF NOT EXISTS users (
 -- These steps handle existing data in tables that were created before constraints were added
 -- They are safe to run multiple times (idempotent) and will only affect existing data
 
--- Destructive cleanup block: wraps deletes in a transaction for atomicity.
--- WARNING: The following statements permanently remove data.
--- Consider taking a backup or migrating to a soft-delete/archive strategy before running.
-BEGIN TRANSACTION;
+-- Destructive cleanup block: these deletes are executed as part of the migration
+-- Remote D1 manages the overall migration transaction automatically.
 
 -- Step 1: Handle NULL emails (delete rows with NULL email as they're invalid)
 DELETE FROM users WHERE email IS NULL;
@@ -35,8 +33,6 @@ WHERE email IS NOT NULL
     ORDER BY u.created_at ASC, u.user_id ASC
     LIMIT 1
   );
-
-COMMIT;
 
 -- Step 3: Create UNIQUE index on email (if it doesn't exist)
 -- This provides an additional enforcement layer and improves query performance
@@ -90,6 +86,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     document_id TEXT,
     output TEXT,
     payload TEXT,
+    session_id TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     completed_at TEXT,
     error TEXT,
@@ -123,6 +120,7 @@ END;
 CREATE INDEX IF NOT EXISTS idx_jobs_user_id ON jobs(user_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
 CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_jobs_session_id ON jobs(session_id);
 -- Optimize retry scheduling lookups
 CREATE INDEX IF NOT EXISTS idx_jobs_status_next_attempt ON jobs(status, next_attempt_at);
 CREATE INDEX IF NOT EXISTS idx_api_keys_user_id ON api_keys(user_id);
@@ -221,6 +219,7 @@ CREATE TABLE IF NOT EXISTS pipeline_events (
     event_id TEXT NOT NULL UNIQUE,
     user_id TEXT NOT NULL,
     job_id TEXT,
+    session_id TEXT,
     event_type TEXT NOT NULL,
     stage TEXT,
     status TEXT,
@@ -233,6 +232,7 @@ CREATE TABLE IF NOT EXISTS pipeline_events (
 
 CREATE INDEX IF NOT EXISTS idx_pipeline_events_user ON pipeline_events(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_pipeline_events_job ON pipeline_events(job_id, sequence DESC);
+CREATE INDEX IF NOT EXISTS idx_pipeline_events_session ON pipeline_events(session_id, sequence DESC);
 
 -- Enforce allowed values for pipeline_events.event_type for existing databases
 CREATE TRIGGER IF NOT EXISTS check_pipeline_event_type
@@ -360,6 +360,7 @@ CREATE TABLE IF NOT EXISTS step_invocations (
     request_hash TEXT NOT NULL,
     response_body TEXT NOT NULL,
     status_code INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (idempotency_key, user_id)
 );
 

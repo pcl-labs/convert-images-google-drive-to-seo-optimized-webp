@@ -67,8 +67,29 @@ class JobStatus(BaseModel):
     job_type: Optional[str] = None
     document_id: Optional[str] = None
     output: Optional[Dict[str, Any]] = None
+    session_id: Optional[str] = None
     
     model_config = ConfigDict(use_enum_values=True)
+
+
+class PipelineEvent(BaseModel):
+    sequence: int
+    event_id: str
+    user_id: str
+    job_id: str
+    event_type: str
+    stage: Optional[str] = None
+    status: Optional[str] = None
+    message: Optional[str] = None
+    data: Optional[Dict[str, Any]] = None
+    created_at: datetime
+    session_id: Optional[str] = None
+
+
+class SessionEventsResponse(BaseModel):
+    session_id: str
+    events: List[PipelineEvent]
+    jobs: List[JobStatus]
 
 
 class JobListResponse(BaseModel):

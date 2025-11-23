@@ -393,9 +393,12 @@ class Database:
                 cur.execute("ALTER TABLE jobs ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0")
             if 'next_attempt_at' not in cols:
                 cur.execute("ALTER TABLE jobs ADD COLUMN next_attempt_at TEXT")
+            if 'session_id' not in cols:
+                cur.execute("ALTER TABLE jobs ADD COLUMN session_id TEXT")
             # Helpful indexes (CREATE INDEX IF NOT EXISTS is idempotent)
             cur.execute("CREATE INDEX IF NOT EXISTS idx_jobs_job_type ON jobs(job_type)")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_jobs_document_id ON jobs(document_id)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_jobs_session_id ON jobs(session_id)")
 
             cur.execute(
                 """
@@ -756,6 +759,7 @@ async def create_job_extended(
     drive_folder: Optional[str] = None,
     extensions: Optional[List[str]] = None,
     payload: Optional[Dict[str, Any]] = None,
+    session_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Create a new job with extended fields. Keeps compatibility with existing jobs table.
     Stores output as JSON text when provided.
@@ -779,9 +783,10 @@ async def create_job_extended(
     output_json = json.dumps(output or {}) if output is not None else ""
     payload_json = json.dumps(payload or {}) if payload is not None else ""
 
+    session_val = session_id or ""
     query = (
-        "INSERT INTO jobs (job_id, user_id, status, progress, drive_folder, extensions, job_type, document_id, output, payload, attempt_count, next_attempt_at) "
-        "VALUES (?, ?, ?, ?, NULLIF(?, ''), ?, ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), 0, NULL) RETURNING *"
+        "INSERT INTO jobs (job_id, user_id, status, progress, drive_folder, extensions, job_type, document_id, output, payload, session_id, attempt_count, next_attempt_at) "
+        "VALUES (?, ?, ?, ?, NULLIF(?, ''), ?, ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), 0, NULL) RETURNING *"
     )
     result = await db.execute(
         query,
@@ -796,6 +801,7 @@ async def create_job_extended(
             document_id_val,
             output_json,
             payload_json,
+            session_val,
         ),
     )
     return _jsproxy_to_dict(result) if result else {}
@@ -1227,7 +1233,8 @@ async def list_jobs(
     user_id: str,
     page: int = 1,
     page_size: int = 20,
-    status: Optional[str] = None
+    status: Optional[str] = None,
+    session_id: Optional[str] = None,
 ) -> tuple[List[Dict[str, Any]], int]:
     """List jobs for a user with pagination."""
     offset = (page - 1) * page_size
@@ -1237,6 +1244,9 @@ async def list_jobs(
     if status:
         where_clause += " AND status = ?"
         params.append(status)
+    if session_id:
+        where_clause += " AND session_id = ?"
+        params.append(session_id)
     
     # Get total count
     count_query = f"SELECT COUNT(*) as total FROM jobs {where_clause}"
@@ -2316,6 +2326,7 @@ async def ensure_full_schema(db: Database) -> None:
                 document_id TEXT,
                 output TEXT,
                 payload TEXT,
+                session_id TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 completed_at TEXT,
                 error TEXT,
@@ -2333,6 +2344,7 @@ async def ensure_full_schema(db: Database) -> None:
         ("CREATE INDEX IF NOT EXISTS idx_jobs_status_next_attempt ON jobs(status, next_attempt_at)", ()),
         ("CREATE INDEX IF NOT EXISTS idx_jobs_job_type ON jobs(job_type)", ()),
         ("CREATE INDEX IF NOT EXISTS idx_jobs_document_id ON jobs(document_id)", ()),
+        ("CREATE INDEX IF NOT EXISTS idx_jobs_session_id ON jobs(session_id)", ()),
     ]
     
     # Jobs triggers
@@ -2564,6 +2576,7 @@ async def ensure_full_schema(db: Database) -> None:
                 event_id TEXT NOT NULL UNIQUE,
                 user_id TEXT NOT NULL,
                 job_id TEXT,
+                session_id TEXT,
                 event_type TEXT NOT NULL,
                 stage TEXT,
                 status TEXT,
@@ -2756,6 +2769,27 @@ async def ensure_full_schema(db: Database) -> None:
         logger.info("Applied jobs table and triggers")
         
         await db.batch(pipeline_events_tables)
+        # Ensure newer columns exist on legacy databases
+        try:
+            await db.execute("ALTER TABLE pipeline_events ADD COLUMN session_id TEXT", ())
+        except Exception as e:
+            message = str(e).lower()
+            known_markers = [
+                "duplicate column name",
+                "already exists",
+                "column \"session_id\" specified more than once",
+            ]
+            if not any(marker in message for marker in known_markers):
+                logger.error(
+                    "pipeline_events.session_id_migration_failed",
+                    exc_info=True,
+                    extra={"error": str(e)},
+                )
+                raise
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_pipeline_events_session ON pipeline_events(session_id, sequence DESC)",
+            (),
+        )
         await db.batch(pipeline_events_triggers)
         logger.info("Applied pipeline_events table and triggers")
         
@@ -3109,16 +3143,26 @@ async def record_pipeline_event(
     notify_level: Optional[str] = None,
     notify_text: Optional[str] = None,
     notify_context: Optional[Dict[str, Any]] = None,
+    session_id: Optional[str] = None,
 ) -> None:
     event_id = str(uuid.uuid4())
     payload = json.dumps(data or {})
+    session_value = session_id
+    if session_value is None and job_id:
+        try:
+            job_row = await get_job(db, job_id)
+            if job_row:
+                session_value = job_row.get("session_id")
+        except Exception:
+            session_value = None
     await db.execute(
-        "INSERT INTO pipeline_events (event_id, user_id, job_id, event_type, stage, status, message, data, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))",
+        "INSERT INTO pipeline_events (event_id, user_id, job_id, session_id, event_type, stage, status, message, data, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))",
         (
             event_id,
             user_id,
             job_id,
+            session_value,
             event_type,
             stage,
             status,
@@ -3156,17 +3200,21 @@ async def list_pipeline_events(
     user_id: str,
     *,
     job_id: Optional[str] = None,
+    session_id: Optional[str] = None,
     after_sequence: Optional[int] = None,
     limit: int = 50,
 ) -> List[Dict[str, Any]]:
     query = (
-        "SELECT sequence, event_id, user_id, job_id, event_type, stage, status, message, data, created_at "
+        "SELECT sequence, event_id, user_id, job_id, session_id, event_type, stage, status, message, data, created_at "
         "FROM pipeline_events WHERE user_id = ?"
     )
     params: List[Any] = [user_id]
     if job_id:
         query += " AND job_id = ?"
         params.append(job_id)
+    if session_id:
+        query += " AND session_id = ?"
+        params.append(session_id)
     if after_sequence is not None:
         query += " AND sequence > ?"
         params.append(after_sequence)
