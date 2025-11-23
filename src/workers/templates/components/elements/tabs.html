@@ -1,0 +1,14 @@
+{% macro tabs(tab_var, items) %}
+  <div class="flex items-center gap-8 border-b border-border/60 px-2">
+    {% for item in items %}
+      <button
+        type="button"
+        class="py-4 text-sm font-semibold uppercase tracking-wide transition-colors border-b-2 border-transparent"
+        :class="{{ tab_var }} === '{{ item.value }}' ? 'text-content border-b-2 border-primary' : 'text-contentMuted hover:text-content'"
+        @click="{{ tab_var }} = '{{ item.value }}'"
+      >
+        {{ item.label }}
+      </button>
+    {% endfor %}
+  </div>
+{% endmacro %}

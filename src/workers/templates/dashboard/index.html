@@ -3,23 +3,16 @@
 {% from 'components/layout/page.html' import page_container %}
 {% from 'components/dashboard/composer.html' import project_composer %}
 {% from 'components/dashboard/project_list.html' import project_row %}
+{% from 'components/elements/tabs.html' import tabs as dashboard_tabs %}
 {% block content %}
 {% call page_container('space-y-8') %}
   {{ project_composer(csrf_token, content_schema_choices, youtube_connected) }}
 
   <section class="rounded-[32px] bg-surface px-6 py-5 shadow" x-data="{ currentTab: '{{ project_tab }}' }">
-    <div class="flex items-center gap-8 border-b border-border/60 px-2">
-      <button type="button" class="py-4 text-sm font-semibold uppercase tracking-wide transition-colors"
-        :class="currentTab === 'projects' ? 'text-content border-b-2 border-primary' : 'text-contentMuted hover:text-content'"
-        @click="currentTab = 'projects'">
-        Projects
-      </button>
-      <button type="button" class="py-4 text-sm font-semibold uppercase tracking-wide transition-colors"
-        :class="currentTab === 'archive' ? 'text-content border-b-2 border-primary' : 'text-contentMuted hover:text-content'"
-        @click="currentTab = 'archive'">
-        Archive
-      </button>
-    </div>
+    {{ dashboard_tabs('currentTab', [
+      {"value": "projects", "label": "Projects"},
+      {"value": "archive", "label": "Archive"},
+    ]) }}
     <div class="py-4">
       <div x-cloak x-show="currentTab === 'projects'">
         {% if projects_active %}

@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -185,6 +187,12 @@ def test_project_blog_new_routes_registered_require_auth(client):
     # Export
     resp = client.get("/api/v1/projects/proj-1/blog/export")
     assert resp.status_code in {401, 403}
+    # SEO analyze latest
+    resp = client.post("/api/v1/projects/proj-1/seo/analyze")
+    assert resp.status_code in {401, 403}
+    # SEO analyze specific version
+    resp = client.post("/api/v1/projects/proj-1/versions/v1/seo/analyze")
+    assert resp.status_code in {401, 403}
 
 
 def test_get_project_activity_requires_auth(client):
@@ -258,6 +266,151 @@ async def test_get_project_activity_returns_normalized_items(monkeypatch):
     assert isinstance(payload.items, list)
     assert payload.items[0]["id"] == "job:job-1"
     assert payload.items[0]["label"] == "Generate blog"
+
+
+@pytest.mark.asyncio
+async def test_analyze_project_seo_returns_analysis(monkeypatch):
+    """SEO analysis endpoint should return structured scores and metadata."""
+    from src.workers.api import protected as protected_module
+
+    class FakeDB:
+        ...
+
+    fake_project = {"project_id": "proj-123", "document_id": "doc-123"}
+    fake_document = {
+        "metadata": {
+            "content_plan": {
+                "seo": {"title": "Growth Plan", "description": "desc", "keywords": ["growth"]},
+                "content_type": "generic_blog",
+            },
+            "latest_generation": {"generated_at": "2025-01-02T00:00:00Z", "content_type": "generic_blog"},
+        }
+    }
+    fake_version = {
+        "version_id": "v1",
+        "document_id": "doc-123",
+        "body_mdx": "# Growth Plan\n\nLearn how to grow your audience quickly.",
+        "frontmatter": json.dumps({"title": "Growth Plan", "description": "desc"}),
+        "outline": "[]",
+        "sections": json.dumps([{"title": "Intro", "summary": "Overview"}]),
+        "assets": json.dumps({}),
+        "created_at": "2025-01-01T00:00:00Z",
+    }
+
+    async def fake_loader(_db, project_id, user_id, version_id=None):  # type: ignore[unused-argument]
+        assert project_id == "proj-123"
+        return fake_project, fake_document, fake_version
+
+    def fake_ensure_db():  # type: ignore[return-type]
+        return FakeDB()
+
+    async def fake_update_document(_db, _doc_id, _updates):  # type: ignore[unused-argument]
+        return None
+
+    monkeypatch.setattr(protected_module, "ensure_db", fake_ensure_db)
+    monkeypatch.setattr(protected_module, "_load_project_version_or_404", fake_loader)
+    monkeypatch.setattr(protected_module, "update_document", fake_update_document)
+
+    req = protected_module.ProjectSEOAnalyzeRequest(target_keywords=["growth"], focus_keyword="audience")
+    user = {"user_id": "user-1"}
+
+    analysis = await protected_module.analyze_project_seo("proj-123", req=req, user=user)
+
+    assert analysis.project_id == "proj-123"
+    assert analysis.document_id == "doc-123"
+    assert analysis.version_id == "v1"
+    assert analysis.seo["title"] == "Growth Plan"
+    assert analysis.scores
+    assert analysis.word_count > 0
+    assert analysis.analyzed_at is not None
+    assert analysis.is_cached is False
+
+
+@pytest.mark.asyncio
+async def test_analyze_project_seo_uses_cached_analysis(monkeypatch):
+    from src.workers.api import protected as protected_module
+
+    class FakeDB:
+        ...
+
+    cached_payload = {
+        "project_id": "proj-123",
+        "document_id": "doc-123",
+        "version_id": "v1",
+        "content_type": "generic_blog",
+        "content_type_hint": "generic_blog",
+        "schema_type": "https://schema.org/BlogPosting",
+        "seo": {"title": "Cached Title", "description": "desc", "keywords": ["growth"]},
+        "scores": [
+            {
+                "name": "readability",
+                "label": "Readability",
+                "score": 82,
+                "level": "good",
+                "details": "Solid score",
+            }
+        ],
+        "suggestions": [
+            {
+                "id": "kw",
+                "title": "Add keywords",
+                "summary": "Ensure focus keyword appears in intro.",
+                "severity": "warning",
+            }
+        ],
+        "structured_content": None,
+        "word_count": 900,
+        "reading_time_seconds": 360,
+        "generated_at": "2025-01-01T00:00:00+00:00",
+        "analyzed_at": "2025-01-02T00:00:00+00:00",
+        "is_cached": True,
+    }
+
+    fake_project = {"project_id": "proj-123", "document_id": "doc-123"}
+    fake_document = {
+        "metadata": {
+            "latest_seo_analysis": {
+                "version_id": "v1",
+                "analysis": cached_payload,
+            }
+        }
+    }
+    fake_version = {
+        "version_id": "v1",
+        "document_id": "doc-123",
+        "body_mdx": "# Cached",
+        "frontmatter": json.dumps({"title": "Cached Title"}),
+        "outline": "[]",
+        "sections": "[]",
+        "assets": "{}",
+        "created_at": "2025-01-01T00:00:00Z",
+    }
+
+    async def fake_loader(_db, project_id, user_id, version_id=None):  # type: ignore[unused-argument]
+        assert project_id == "proj-123"
+        return fake_project, fake_document, fake_version
+
+    def fake_ensure_db():  # type: ignore[return-type]
+        return FakeDB()
+
+    async def fake_update_document(*_args, **_kwargs):  # type: ignore[unused-argument]
+        raise AssertionError("Cache path should not update document")
+
+    def explode_analyzer(**_kwargs):
+        raise AssertionError("Analyzer should not run when cache is available")
+
+    monkeypatch.setattr(protected_module, "ensure_db", fake_ensure_db)
+    monkeypatch.setattr(protected_module, "_load_project_version_or_404", fake_loader)
+    monkeypatch.setattr(protected_module, "update_document", fake_update_document)
+    monkeypatch.setattr(protected_module, "analyze_seo_document", explode_analyzer)
+
+    req = protected_module.ProjectSEOAnalyzeRequest()
+    user = {"user_id": "user-1"}
+
+    analysis = await protected_module.analyze_project_seo("proj-123", req=req, user=user)
+
+    assert analysis.seo["title"] == "Cached Title"
+    assert analysis.is_cached is True
 
 
 @pytest.mark.asyncio

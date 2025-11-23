@@ -340,8 +340,6 @@ def _version_detail_model(row: Dict[str, Any]) -> DocumentVersionDetail:
         frontmatter=_json_field(row.get("frontmatter"), {}),
         body_mdx=row.get("body_mdx"),
         body_html=row.get("body_html"),
-        outline=_json_field(row.get("outline"), []),
-        chapters=_json_field(row.get("chapters"), []),
         sections=_json_field(row.get("sections"), []),
         assets=_json_field(row.get("assets"), {}),
         created_at=row.get("created_at"),

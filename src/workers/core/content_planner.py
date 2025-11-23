@@ -7,7 +7,8 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from api.config import settings
-from .ai_modules import generate_outline, organize_chapters, generate_seo_metadata
+from .ai_modules import generate_seo_metadata
+from .seo import resolve_schema_type
 
 logger = logging.getLogger(__name__)
 
@@ -23,26 +24,6 @@ class PlannedSection:
     key_points: List[str] = field(default_factory=list)
     cta: bool = False
     call_to_action: Optional[str] = None
-
-    def to_outline_item(self) -> Dict[str, Any]:
-        slot = "intro" if self.order == 0 else ("cta" if self.cta else "body")
-        return {
-            "title": self.title,
-            "summary": self.summary,
-            "slot": slot,
-            "keywords": self.key_points[:8],
-            "purpose": self.purpose,
-            "cta": self.cta,
-        }
-
-    def to_chapter(self) -> Dict[str, Any]:
-        return {
-            "title": self.title,
-            "summary": self.summary,
-            "key_points": self.key_points[:8],
-            "purpose": self.purpose,
-            "cta": self.cta,
-        }
 
     def to_section_dict(self) -> Dict[str, Any]:
         return {
@@ -106,8 +87,6 @@ def _merge_plans(
     provider = "openai" if sections else "fallback"
     if not sections:
         sections = _normalize_sections(fallback_plan.get("sections") or [])
-    outline = [section.to_outline_item() for section in sections]
-    chapters = [section.to_chapter() for section in sections]
     seo_from_ai = ai_payload.get("seo") or {}
     seo = _merge_seo(fallback_plan.get("seo") or {}, seo_from_ai)
     plan = {
@@ -117,8 +96,6 @@ def _merge_plans(
         "intent": ai_payload.get("intent") or fallback_plan.get("intent") or "educate",
         "audience": ai_payload.get("audience") or fallback_plan.get("audience") or "general",
         "sections": [section.to_section_dict() for section in sections],
-        "outline": outline or fallback_plan.get("outline"),
-        "chapters": chapters or fallback_plan.get("chapters"),
         "seo": seo,
         "instructions": (instructions or "").strip() or None,
         "provider": provider,
@@ -135,34 +112,25 @@ def _fallback_plan(
     target_chapters: int,
     instructions: Optional[str],
 ) -> Dict[str, Any]:
-    outline = generate_outline(text, max_sections)
-    chapters = organize_chapters(text, target_chapters)
-    if not chapters and outline:
-        chapters = [
-            {"title": item.get("title"), "summary": item.get("summary")}
-            for item in outline
-            if item
-        ]
-    if not chapters:
-        summary = textwrap.shorten(text or "", width=360, placeholder="…")
-        chapters = [{"title": "Overview", "summary": summary}]
+    summary = textwrap.shorten(text or "", width=360, placeholder="…")
     sections = [
         PlannedSection(
-            order=idx,
-            title=(chapter.get("title") or f"Section {idx + 1}").strip(),
-            summary=chapter.get("summary") or "",
-            purpose="intro" if idx == 0 else ("cta" if idx == len(chapters) - 1 else "body"),
-            key_points=_coerce_key_points(chapter.get("key_points")),
-            cta=idx == len(chapters) - 1,
+            order=0,
+            title="Overview",
+            summary=summary,
+            purpose="intro",
+            key_points=[],
+            cta=False,
         )
-        for idx, chapter in enumerate(chapters)
     ]
     return {
         "content_type": content_type,
-        "outline": outline,
-        "chapters": chapters,
         "sections": [section.to_section_dict() for section in sections],
-        "seo": generate_seo_metadata(text, outline),
+        "seo": generate_seo_metadata(
+            text,
+            content_type=content_type,
+            schema_type=content_type if isinstance(content_type, str) and content_type.startswith("http") else None,
+        ),
         "intent": "educate",
         "audience": "general",
         "instructions": (instructions or "").strip() or None,
@@ -212,6 +180,12 @@ def _merge_seo(
         merged["keywords"] = ai_seo["keywords"][:10]
     if ai_seo.get("hero_image"):
         merged["hero_image"] = ai_seo["hero_image"]
+    for key in ("content_type", "schema_type", "content_hint", "json_ld"):
+        if ai_seo.get(key):
+            merged[key] = ai_seo[key]
+    if merged.get("content_type") and not merged.get("schema_type"):
+        _, schema_type, _ = resolve_schema_type(merged["content_type"], None)
+        merged["schema_type"] = schema_type
     return merged
 
 

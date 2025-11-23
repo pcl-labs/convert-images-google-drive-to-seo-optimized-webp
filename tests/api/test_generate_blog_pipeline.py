@@ -146,6 +146,7 @@ def test_process_generate_blog_job_creates_output(monkeypatch, isolated_db):
             assert output["options"]["tone"] == "playful"
             assert output["options"]["model"]
             assert output["options"]["content_type"] == "generic_blog"
+            assert output["options"]["schema_type"] == "https://schema.org/BlogPosting"
             assert output["options"]["instructions"] == instructions
 
             stored_doc = await get_document(db, document_id, user_id=user_id)
@@ -157,6 +158,7 @@ def test_process_generate_blog_job_creates_output(monkeypatch, isolated_db):
             assert latest_gen.get("model")
             assert latest_gen.get("tone") == "playful"
             assert latest_gen.get("content_type") == "generic_blog"
+            assert latest_gen.get("schema_type") == "https://schema.org/BlogPosting"
             assert latest_gen.get("instructions") == instructions
             outline_snapshot = metadata.get("latest_outline")
             assert isinstance(outline_snapshot, list)
@@ -164,6 +166,8 @@ def test_process_generate_blog_job_creates_output(monkeypatch, isolated_db):
             assert outline_snapshot[0].get("slot") == "intro"
             plan_snapshot = metadata.get("content_plan")
             assert isinstance(plan_snapshot, dict)
+            assert plan_snapshot.get("schema_type") == "https://schema.org/BlogPosting"
+            assert plan_snapshot.get("structured") is not None or plan_snapshot.get("content_type")
             assert stored_doc.get("latest_version_id")
 
             versions = await db.execute_all("SELECT * FROM document_versions WHERE document_id = ?", (document_id,))
@@ -173,6 +177,8 @@ def test_process_generate_blog_job_creates_output(monkeypatch, isolated_db):
             assert version_row.get("content_format") == "mdx"
             assets = json.loads(version_row.get("assets") or "{}")
             assert assets.get("generator", {}).get("model")
+            if assets.get("schema"):
+                assert assets["schema"].get("type") == "https://schema.org/BlogPosting"
         finally:
             # Cleanup: delete in FK-safe order (temp DB makes this less critical, but keep for explicit cleanup)
             await db.execute("DELETE FROM document_versions WHERE document_id = ?", (document_id,))

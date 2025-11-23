@@ -1,5 +1,5 @@
 MAX_TEXT_LENGTH = 20000  # configurable upper bound for text ingestion
-from fastapi import APIRouter, Request, Depends, HTTPException, status
+from fastapi import APIRouter, Request, Depends, HTTPException, status, Body
 from fastapi.responses import RedirectResponse, PlainTextResponse
 from typing import Optional, Dict, Any, Tuple, List
 import uuid
@@ -52,6 +52,8 @@ from .models import (
     ProjectVersionDetail,
     ProjectBlogDiff,
     ProjectActivityResponse,
+    ProjectSEOAnalyzeRequest,
+    ProjectSEOAnalysis,
 )
 from .database import (
     create_job_extended,
@@ -74,6 +76,7 @@ from .database import (
     update_project_status,
     create_transcript_chunk,
     list_transcript_chunks,
+    update_document,
     update_document_latest_version_if_match,
     create_document_version,
     list_project_activity,
@@ -105,7 +108,7 @@ from .deps import (
 from core.url_utils import parse_youtube_video_id
 from .drive_workspace import ensure_drive_workspace, ensure_document_drive_structure, link_document_drive_workspace
 from .drive_docs import sync_drive_doc_for_document
-from .youtube_ingest import ingest_youtube_document, build_outline_from_chapters
+from .youtube_ingest import ingest_youtube_document
 from core.transcript_chunking import chunk_transcript
 from core.embeddings import embed_texts
 from core.vectorize_client import store_embeddings, query_project_chunks
@@ -120,6 +123,7 @@ from core.sections import (
     get_latest_version_for_project,
     _word_count,
 )
+from core.seo_analyzer import analyze_seo_document
 import difflib
 
 logger = get_logger(__name__)
@@ -301,8 +305,6 @@ def _version_payload(row: dict) -> dict:
         "frontmatter": _json_field(row.get("frontmatter"), {}),
         "body_mdx": row.get("body_mdx"),
         "body_html": row.get("body_html"),
-        "outline": _json_field(row.get("outline"), []),
-        "chapters": _json_field(row.get("chapters"), []),
         "sections": _json_field(row.get("sections"), []),
         "assets": _json_field(row.get("assets"), {}),
         "created_at": _parse_db_datetime(row.get("created_at")),
@@ -319,6 +321,189 @@ def _version_summary_model(row: dict) -> DocumentVersionSummary:
         frontmatter=data["frontmatter"],
         created_at=data["created_at"],
     )
+
+
+async def _load_project_version_or_404(
+    db,
+    *,
+    project_id: str,
+    user_id: str,
+    version_id: Optional[str] = None,
+):
+    project = await get_project(db, project_id, user_id)
+    if not project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    document_id = project.get("document_id")
+    if not document_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project is missing document reference")
+
+    document = await get_document(db, document_id, user_id=user_id)
+    if not document:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    document = _coerce_document_metadata(dict(document))
+
+    if version_id:
+        version_row = await get_document_version(db, document_id, version_id, user_id)
+        if not version_row:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Blog version not found")
+    else:
+        version_row = await get_latest_version_for_project(db, project, user_id)
+        if not version_row:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No blog generated for this project yet")
+
+    return project, document, version_row
+
+
+def _resolve_plan(metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if isinstance(metadata, dict):
+        plan = metadata.get("content_plan")
+        if isinstance(plan, dict):
+            return plan
+    return {}
+
+
+def _resolve_latest_generation(metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if isinstance(metadata, dict):
+        latest = metadata.get("latest_generation")
+        if isinstance(latest, dict):
+            return latest
+    return {}
+
+
+def _should_cache_seo_request(req: ProjectSEOAnalyzeRequest) -> bool:
+    if not req:
+        return True
+    return not any(
+        [
+            req.target_keywords,
+            req.focus_keyword,
+            req.content_type,
+            req.schema_type,
+        ]
+    )
+
+
+def _load_cached_analysis(metadata: Dict[str, Any], *, version_id: str) -> Optional[Dict[str, Any]]:
+    cached = metadata.get("latest_seo_analysis")
+    if not isinstance(cached, dict):
+        return None
+    if cached.get("version_id") != version_id:
+        return None
+    analysis = cached.get("analysis")
+    if not isinstance(analysis, dict):
+        return None
+    return dict(analysis)
+
+
+async def _build_project_seo_analysis(
+    db,
+    *,
+    project: Dict[str, Any],
+    document: Dict[str, Any],
+    version_row: Dict[str, Any],
+    req: ProjectSEOAnalyzeRequest,
+) -> ProjectSEOAnalysis:
+    metadata = document.get("metadata") or {}
+    content_plan = _resolve_plan(metadata)
+    latest_gen = _resolve_latest_generation(metadata)
+
+    frontmatter = _json_field(version_row.get("frontmatter"), {}) or {}
+    sections = extract_sections_from_version(version_row)
+    assets = _json_field(version_row.get("assets"), {})
+
+    raw_content_type = (
+        req.content_type
+        or frontmatter.get("content_type")
+        or content_plan.get("content_type")
+        or latest_gen.get("content_type")
+    )
+    schema_override = (
+        req.schema_type
+        or frontmatter.get("schema_type")
+        or content_plan.get("schema_type")
+        or latest_gen.get("schema_type")
+    )
+
+    allow_cache = _should_cache_seo_request(req)
+    cached = None
+    version_id = version_row.get("version_id")
+    if allow_cache and version_id:
+        cached = _load_cached_analysis(metadata, version_id=version_id)
+
+    if cached:
+        cached.setdefault("is_cached", True)
+        analyzed_at = cached.get("analyzed_at")
+        generated_at_cached = cached.get("generated_at")
+        if analyzed_at:
+            cached["analyzed_at"] = _parse_db_datetime(analyzed_at)
+        if generated_at_cached:
+            cached["generated_at"] = _parse_db_datetime(generated_at_cached)
+        return ProjectSEOAnalysis(**cached)
+
+    analysis = analyze_seo_document(
+        frontmatter=frontmatter,
+        body_mdx=version_row.get("body_mdx"),
+        sections=sections,
+        content_plan=content_plan,
+        assets=assets,
+        raw_content_type=raw_content_type,
+        schema_type=schema_override,
+        target_keywords=req.target_keywords,
+        focus_keyword=req.focus_keyword,
+    )
+
+    generated_at = latest_gen.get("generated_at") if latest_gen else None
+    parsed_generated = _parse_db_datetime(generated_at) if generated_at else _parse_db_datetime(version_row.get("created_at"))
+    analyzed_at = datetime.now(timezone.utc)
+
+    payload = {
+        "project_id": project.get("project_id"),
+        "document_id": version_row.get("document_id"),
+        "version_id": version_row.get("version_id"),
+        "content_type": analysis.get("content_type"),
+        "content_type_hint": analysis.get("content_type_hint"),
+        "schema_type": analysis.get("schema_type"),
+        "seo": analysis.get("seo"),
+        "scores": analysis.get("scores", []),
+        "suggestions": analysis.get("suggestions", []),
+        "structured_content": analysis.get("structured_content"),
+        "word_count": analysis.get("word_count", 0),
+        "reading_time_seconds": analysis.get("reading_time_seconds"),
+        "schema_validation": analysis.get("schema_validation"),
+        "generated_at": parsed_generated,
+        "analyzed_at": analyzed_at,
+        "is_cached": False,
+    }
+
+    result = ProjectSEOAnalysis(**payload)
+
+    if allow_cache and document.get("document_id"):
+        next_metadata = dict(metadata or {})
+        next_metadata["latest_seo_analysis"] = {
+            "version_id": version_id,
+            "calculated_at": analyzed_at.isoformat(),
+            "analysis": {
+                **payload,
+                "generated_at": parsed_generated.isoformat() if parsed_generated else None,
+                "analyzed_at": analyzed_at.isoformat(),
+            },
+        }
+        try:
+            await update_document(
+                db,
+                document["document_id"],
+                {"metadata": next_metadata},
+            )
+        except Exception:
+            logger.exception(
+                "project_seo_analysis.cache_update_failed",
+                extra={
+                    "project_id": project.get("project_id"),
+                    "document_id": document.get("document_id"),
+                },
+            )
+
+    return result
 
 
 def _version_detail_model(row: dict) -> DocumentVersionDetail:
@@ -509,12 +694,6 @@ async def start_ingest_youtube_job(
         "title": frontmatter.get("title"),
         "duration_seconds": youtube_meta.get("duration_seconds"),
     }
-    raw_chapters = youtube_meta.get("chapters")
-    if isinstance(raw_chapters, list):
-        seeded_outline = build_outline_from_chapters(raw_chapters)
-        if seeded_outline:
-            doc_meta["latest_outline"] = seeded_outline
-            doc_meta["outline_source"] = "youtube_chapters"
 
     job_id = str(uuid.uuid4())
     document_id = str(uuid.uuid4())
@@ -1556,7 +1735,6 @@ async def get_project_blog(project_id: str, user: dict = Depends(get_current_use
         status=project.get("status"),
         frontmatter=payload["frontmatter"],
         body_mdx=payload["body_mdx"],
-        outline=payload["outline"],
         created_at=payload["created_at"],
     )
 
@@ -1870,8 +2048,6 @@ async def patch_project_blog_section(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Version missing document_id")
 
     content_format = version_row.get("content_format") or "mdx"
-    outline = _json_field(version_row.get("outline"), [])
-    chapters = _json_field(version_row.get("chapters"), [])
     assets = _json_field(version_row.get("assets"), {})
     if isinstance(assets, dict):
         generator_block = assets.get("generator") or {}
@@ -1905,8 +2081,6 @@ async def patch_project_blog_section(
         frontmatter=_json_field(version_row.get("frontmatter"), {}) or {},
         body_mdx=new_body_mdx,
         body_html=body_html,
-        outline=outline or [],
-        chapters=chapters or [],
         sections=updated_sections,
         assets=assets or {},
     )
@@ -2013,7 +2187,6 @@ async def get_project_blog_version(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Blog version not found")
 
     frontmatter = _json_field(row.get("frontmatter"), {})
-    outline = _json_field(row.get("outline"), [])
     sections = _json_field(row.get("sections"), [])
 
     return ProjectVersionDetail(
@@ -2024,7 +2197,6 @@ async def get_project_blog_version(
         created_at=_parse_db_datetime(row.get("created_at")),
         frontmatter=frontmatter,
         body_mdx=row.get("body_mdx"),
-        outline=outline,
         sections=sections,
     )
 
@@ -2113,8 +2285,6 @@ async def revert_project_blog_version(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Blog version not found")
 
     frontmatter = _json_field(source_row.get("frontmatter"), {})
-    outline = _json_field(source_row.get("outline"), [])
-    chapters = _json_field(source_row.get("chapters"), [])
     sections = _json_field(source_row.get("sections"), [])
     assets = _json_field(source_row.get("assets"), {})
 
@@ -2137,8 +2307,6 @@ async def revert_project_blog_version(
         frontmatter=frontmatter or {},
         body_mdx=body_mdx,
         body_html=body_html,
-        outline=outline or [],
-        chapters=chapters or [],
         sections=sections or [],
         assets=assets or {},
     )
@@ -2171,7 +2339,6 @@ async def revert_project_blog_version(
         created_at=_parse_db_datetime(new_row.get("created_at")),
         frontmatter=frontmatter,
         body_mdx=new_row.get("body_mdx"),
-        outline=outline,
         sections=sections,
     )
 
@@ -2195,6 +2362,60 @@ async def export_project_blog_mdx(
 
     body_mdx = version_row.get("body_mdx") or ""
     return {"project_id": project_id, "document_id": version_row.get("document_id"), "version_id": version_row.get("version_id"), "body_mdx": body_mdx}
+
+
+@router.post(
+    "/api/v1/projects/{project_id}/seo/analyze",
+    response_model=ProjectSEOAnalysis,
+    tags=["Projects"],
+)
+async def analyze_project_seo(
+    project_id: str,
+    req: ProjectSEOAnalyzeRequest = Body(default_factory=ProjectSEOAnalyzeRequest),
+    user: dict = Depends(get_current_user),
+):
+    db = ensure_db()
+    req = req or ProjectSEOAnalyzeRequest()
+    project, document, version_row = await _load_project_version_or_404(
+        db,
+        project_id=project_id,
+        user_id=user["user_id"],
+    )
+    return await _build_project_seo_analysis(
+        db,
+        project=project,
+        document=document,
+        version_row=version_row,
+        req=req,
+    )
+
+
+@router.post(
+    "/api/v1/projects/{project_id}/versions/{version_id}/seo/analyze",
+    response_model=ProjectSEOAnalysis,
+    tags=["Projects"],
+)
+async def analyze_project_version_seo(
+    project_id: str,
+    version_id: str,
+    req: ProjectSEOAnalyzeRequest = Body(default_factory=ProjectSEOAnalyzeRequest),
+    user: dict = Depends(get_current_user),
+):
+    db = ensure_db()
+    req = req or ProjectSEOAnalyzeRequest()
+    project, document, version_row = await _load_project_version_or_404(
+        db,
+        project_id=project_id,
+        user_id=user["user_id"],
+        version_id=version_id,
+    )
+    return await _build_project_seo_analysis(
+        db,
+        project=project,
+        document=document,
+        version_row=version_row,
+        req=req,
+    )
 
 
 async def start_generate_blog_job(

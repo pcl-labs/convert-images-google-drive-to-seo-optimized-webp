@@ -19,6 +19,13 @@
           </p>
         </div>
         <div class="flex items-center gap-2">
+          <button
+            id="generate-blog-btn"
+            type="button"
+            class="btn-primary text-xs"
+          >
+            Generate
+          </button>
           <a
             href="/api/v1/projects/{{ project.project_id }}/blog/export"
             class="btn-secondary text-xs"
@@ -32,7 +39,8 @@
     {% endcall %}
   </main>
 
-  <aside class="w-full lg:w-80 xl:w-96 border-t lg:border-t-0 lg:border-l border-border bg-surface px-4 py-4">
+  <aside class="w-full lg:w-80 xl:w-96 border-t lg:border-t-0 lg:border-l border-border bg-surface px-4 py-4 space-y-6">
+    {% include "projects/_seo_panel.html" %}
     {% include "projects/_activity_panel.html" %}
   </aside>
 </div>
@@ -45,6 +53,36 @@
     try {
       window.dispatchEvent(new CustomEvent('toast', { detail: { type: type, text: text } }));
     } catch (_) {}
+  }
+
+  function setupGenerateBlogButton(){
+    const btn = document.getElementById('generate-blog-btn');
+    if(!btn) return;
+    const projectId = {{ project.project_id | tojson }};
+
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      const originalText = btn.textContent;
+      btn.textContent = 'Generating…';
+      try {
+        const res = await fetch(`/api/v1/projects/${projectId}/blog/generate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({}),
+        });
+        if(!res.ok){
+          dispatchToast('error', 'Failed to start blog generation.');
+          return;
+        }
+        dispatchToast('success', 'Blog generation started. This may take a moment.');
+      } catch (err) {
+        dispatchToast('error', 'Unexpected error starting blog generation.');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = originalText;
+      }
+    });
   }
 
   function setupSectionEditing(){
@@ -309,9 +347,255 @@
     });
   }
 
+  function setupSeoPanel(){
+    const panel = document.getElementById('project-seo-panel');
+    if(!panel) return;
+    const projectId = panel.dataset.projectId;
+    if(!projectId) return;
+    const refreshBtn = panel.querySelector('[data-action="refresh-seo"]');
+    const loadingEl = panel.querySelector('[data-seo-loading]');
+    const contentEl = panel.querySelector('[data-seo-content]');
+    const errorEl = panel.querySelector('[data-seo-error]');
+    const summaryEl = panel.querySelector('[data-seo-summary]');
+    const titleEl = panel.querySelector('[data-seo-title]');
+    const descriptionEl = panel.querySelector('[data-seo-description]');
+    const analyzedAtEl = panel.querySelector('[data-seo-analyzed-at]');
+    const cacheBadge = panel.querySelector('[data-seo-cache-badge]');
+    const wordCountEl = panel.querySelector('[data-seo-word-count]');
+    const readingTimeEl = panel.querySelector('[data-seo-reading-time]');
+    const schemaEl = panel.querySelector('[data-seo-schema]');
+    const keywordsWrap = panel.querySelector('[data-seo-keywords]');
+    const scoresWrap = panel.querySelector('[data-seo-scores]');
+    const suggestionsWrap = panel.querySelector('[data-seo-suggestions]');
+
+    const levelColorMap = {
+      good: 'bg-accent',
+      average: 'bg-primary',
+      poor: 'bg-destructive'
+    };
+
+    function setState(state){
+      if(state === 'loading'){
+        loadingEl?.classList.remove('hidden');
+        contentEl?.classList.add('hidden');
+        if(errorEl){
+          errorEl.classList.add('hidden');
+          errorEl.textContent = '';
+        }
+      } else if(state === 'error'){
+        loadingEl?.classList.add('hidden');
+        contentEl?.classList.add('hidden');
+      } else {
+        loadingEl?.classList.add('hidden');
+        contentEl?.classList.remove('hidden');
+        if(errorEl){
+          errorEl.classList.add('hidden');
+          errorEl.textContent = '';
+        }
+      }
+    }
+
+    function formatDateTime(value){
+      if(!value) return 'Never analyzed';
+      try {
+        const date = new Date(value);
+        if(Number.isNaN(date.getTime())){
+          return value;
+        }
+        return `${date.toLocaleDateString()} ${date.toLocaleTimeString()}`;
+      } catch (err) {
+        return value;
+      }
+    }
+
+    function renderKeywords(keywords){
+      if(!keywordsWrap) return;
+      keywordsWrap.innerHTML = '';
+      if(!Array.isArray(keywords) || !keywords.length){
+        const empty = document.createElement('p');
+        empty.className = 'text-[11px] text-contentMuted';
+        empty.textContent = 'No keyword targets detected.';
+        keywordsWrap.appendChild(empty);
+        return;
+      }
+      keywords.forEach((keyword) => {
+        const chip = document.createElement('span');
+        chip.className = 'inline-flex items-center rounded-full border border-border px-2 py-0.5 text-[10px] text-content';
+        chip.textContent = keyword;
+        keywordsWrap.appendChild(chip);
+      });
+    }
+
+    function renderScores(scores){
+      if(!scoresWrap) return;
+      scoresWrap.innerHTML = '';
+      if(!Array.isArray(scores) || !scores.length){
+        scoresWrap.innerHTML = '<p class="text-xs text-contentMuted">Scores will appear after analysis.</p>';
+        return;
+      }
+      scores.forEach((score) => {
+        const container = document.createElement('div');
+        container.className = 'space-y-1 rounded-xl border border-border px-3 py-2 bg-surface/60';
+        const header = document.createElement('div');
+        header.className = 'flex items-center justify-between text-xs font-medium';
+        const label = document.createElement('span');
+        label.textContent = score.label || score.name;
+        const value = document.createElement('span');
+        value.textContent = `${Math.round(score.score || 0)} / 100`;
+        header.appendChild(label);
+        header.appendChild(value);
+
+        const bar = document.createElement('div');
+        bar.className = 'h-2 rounded-full bg-border/70 overflow-hidden';
+        const fill = document.createElement('div');
+        const levelKey = (score.level || '').toLowerCase();
+        const colorClass = levelColorMap[levelKey] || 'bg-primary';
+        fill.className = `h-2 rounded-full ${colorClass}`;
+        fill.style.width = `${Math.max(0, Math.min(100, Number(score.score) || 0))}%`;
+        bar.appendChild(fill);
+
+        container.appendChild(header);
+        container.appendChild(bar);
+        if(score.details){
+          const detail = document.createElement('p');
+          detail.className = 'text-[11px] text-contentMuted';
+          detail.textContent = score.details;
+          container.appendChild(detail);
+        }
+        scoresWrap.appendChild(container);
+      });
+    }
+
+    function renderSuggestions(suggestions){
+      if(!suggestionsWrap) return;
+      suggestionsWrap.innerHTML = '';
+      if(!Array.isArray(suggestions) || !suggestions.length){
+        suggestionsWrap.innerHTML = '<p class="text-xs text-contentMuted">All checks passing—great work.</p>';
+        return;
+      }
+      suggestions.forEach((item) => {
+        const row = document.createElement('div');
+        row.className = 'rounded-lg border border-border/70 bg-surface px-3 py-2';
+        const title = document.createElement('p');
+        title.className = 'text-xs font-semibold text-content';
+        title.textContent = item.title || item.id;
+        const summary = document.createElement('p');
+        summary.className = 'text-[11px] text-contentMuted mt-0.5';
+        summary.textContent = item.summary || '';
+        row.appendChild(title);
+        row.appendChild(summary);
+        suggestionsWrap.appendChild(row);
+      });
+    }
+
+    function renderAnalysis(analysis){
+      if(!analysis){
+        setState('loading');
+        return;
+      }
+      setState('ready');
+      if(summaryEl){
+        summaryEl.textContent = analysis.seo && analysis.seo.description
+          ? analysis.seo.description
+          : 'Latest SEO snapshot for this draft.';
+      }
+      if(titleEl){
+        titleEl.textContent = (analysis.seo && analysis.seo.title) || 'Untitled draft';
+      }
+      if(descriptionEl){
+        descriptionEl.textContent = (analysis.seo && analysis.seo.slug) || 'No slug yet.';
+      }
+      if(analyzedAtEl){
+        analyzedAtEl.textContent = `Analyzed ${formatDateTime(analysis.analyzed_at || analysis.generated_at)}`;
+      }
+      if(cacheBadge){
+        if(analysis.is_cached){
+          cacheBadge.classList.remove('hidden');
+        } else {
+          cacheBadge.classList.add('hidden');
+        }
+      }
+      if(wordCountEl){
+        wordCountEl.textContent = (analysis.word_count || 0).toLocaleString();
+      }
+      if(readingTimeEl){
+        const minutes = Math.max(1, Math.round((analysis.reading_time_seconds || 0) / 60)) || '—';
+        readingTimeEl.textContent = minutes;
+      }
+      if(schemaEl){
+        schemaEl.textContent = analysis.schema_type || 'BlogPosting';
+      }
+      renderKeywords(analysis.seo ? analysis.seo.keywords : []);
+      renderScores(analysis.scores || []);
+      renderSuggestions(analysis.suggestions || []);
+    }
+
+    async function fetchAnalysis(showToast = false){
+      if(refreshBtn){
+        refreshBtn.disabled = true;
+        refreshBtn.textContent = 'Analyzing…';
+      }
+      setState('loading');
+      try {
+        const res = await fetch(`/api/v1/projects/${projectId}/seo/analyze`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({}),
+        });
+        if(!res.ok){
+          throw new Error('Request failed');
+        }
+        const data = await res.json();
+        renderAnalysis(data);
+        if(showToast){
+          dispatchToast('success', 'SEO analysis updated.');
+        }
+      } catch (err) {
+        if(errorEl){
+          errorEl.textContent = 'Failed to load SEO analysis. Try again in a moment.';
+          errorEl.classList.remove('hidden');
+        }
+        setState('error');
+        if(showToast){
+          dispatchToast('error', 'Unable to analyze SEO right now.');
+        }
+      } finally {
+        if(refreshBtn){
+          refreshBtn.disabled = false;
+          refreshBtn.textContent = 'Analyze';
+        }
+      }
+    }
+
+    const initialValue = panel.dataset.initialAnalysis;
+    if(initialValue && initialValue !== 'null'){
+      try {
+        const parsed = JSON.parse(initialValue);
+        renderAnalysis(parsed);
+        loadingEl?.classList.add('hidden');
+        contentEl?.classList.remove('hidden');
+      } catch (err) {
+        fetchAnalysis(false);
+      }
+    } else {
+      fetchAnalysis(false);
+    }
+
+    panel.addEventListener('click', (event) => {
+      const target = event.target;
+      if(!(target instanceof HTMLElement)) return;
+      if(target.dataset.action === 'refresh-seo'){
+        fetchAnalysis(true);
+      }
+    });
+  }
+
   document.addEventListener('DOMContentLoaded', function(){
     setupSectionEditing();
     setupActivityRefresh();
+    setupGenerateBlogButton();
+    setupSeoPanel();
   });
 })();
 </script>
