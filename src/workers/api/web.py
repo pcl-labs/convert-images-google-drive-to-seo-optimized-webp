@@ -1483,20 +1483,8 @@ async def _render_document_detail(
 
 
 @router.get("/dashboard/documents/{document_id}", response_class=HTMLResponse)
-async def document_detail_page(document_id: str, request: Request, user: dict = Depends(get_current_user)):
+async def document_detail_page(document_id: str, request: Request, user: dict = Depends(get_current_user)):  # noqa: B008 - FastAPI dependency injection pattern
     return await _render_document_detail(document_id, request, user, project=None)
-
-
-@router.get("/dashboard/projects/{project_id}", response_class=HTMLResponse)
-async def project_detail_page(project_id: str, request: Request, user: dict = Depends(get_current_user)):
-    db = ensure_db()
-    project = await get_project(db, project_id, user["user_id"])
-    if not project:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
-    document_id = project.get("document_id")
-    if not document_id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project is missing document reference")
-    return await _render_document_detail(document_id, request, user, project=project)
 
 
 @router.get("/dashboard/documents/{document_id}/versions/{version_id}", response_class=HTMLResponse)
