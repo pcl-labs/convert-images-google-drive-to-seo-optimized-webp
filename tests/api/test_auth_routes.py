@@ -135,32 +135,6 @@ def test_dashboard_db_failure_returns_503(client):
         "Response should indicate service is unavailable"
 
 
-def test_documents_page_db_failure_returns_503(client):
-    """Test that /dashboard/documents returns 503 (not 500) when DB is unavailable."""
-    from src.workers.api import deps
-    from src.workers.api.auth import generate_jwt_token
-    
-    def failing_ensure_db():
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to initialize database"
-        )
-    
-    # Create a JWT token with email
-    token = generate_jwt_token("test-user-123", email="test@example.com")
-    
-    # Set the access_token cookie
-    client.cookies.set("access_token", token)
-    
-    # Patch ensure_db to fail in the route handler
-    with patch.object(deps, 'ensure_db', side_effect=failing_ensure_db):
-        response = client.get("/dashboard/documents", follow_redirects=False)
-    
-    # Should return 503 Service Unavailable, not 500
-    assert response.status_code == 503, \
-        f"Expected 503, got {response.status_code}. Response: {response.text[:500]}"
-
-
 def test_jobs_page_db_failure_returns_503(client):
     """Test that /dashboard/jobs returns 503 (not 500) when DB is unavailable."""
     from src.workers.api import deps

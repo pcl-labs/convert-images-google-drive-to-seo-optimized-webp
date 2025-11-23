@@ -1,0 +1,15 @@
+{% macro project_row(item) %}
+  <a href="{{ item.href }}" class="flex items-center justify-between gap-4 rounded-2xl px-4 py-4 transition-colors hover:bg-surfaceMuted/60">
+    <div class="min-w-0">
+      <p class="truncate text-base font-medium text-content">{{ item.title }}</p>
+      <p class="text-sm text-contentMuted">{{ item.date_label }} · {{ item.content_type_label }}</p>
+    </div>
+    <div class="flex shrink-0 items-center gap-4">
+      <span class="rounded-full px-3 py-1 text-xs font-semibold {{ item.status_variant }}" style="white-space: nowrap;">{{ item.status_label }}</span>
+      <div class="text-right text-xs font-mono">
+        <p class="text-emerald-400">+{{ item.diff_added }}</p>
+        <p class="text-rose-400">-{{ item.diff_removed }}</p>
+      </div>
+    </div>
+  </a>
+{% endmacro %}

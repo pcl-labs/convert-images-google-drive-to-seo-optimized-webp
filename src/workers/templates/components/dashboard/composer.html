@@ -1,0 +1,62 @@
+{% from 'components/elements/combobox.html' import combobox %}
+{% macro project_composer(csrf_token, content_schema_choices, youtube_connected) %}
+  {% set composer_config = {
+    'csrfToken': csrf_token or '',
+    'schemaChoices': content_schema_choices or [],
+    'youtubeConnected': youtube_connected or False
+  } %}
+  <section class="rounded-[32px] bg-surface shadow-lg px-6 py-8" x-data='projectComposer({{ composer_config|tojson|safe }})'>
+    <header class="space-y-3 text-center mb-6">
+      <p class="text-[11px] font-semibold uppercase tracking-[0.45em] text-contentMuted">Projects</p>
+      <h1 class="text-4xl font-semibold text-content">What should we write next?</h1>
+      <p class="text-base text-contentMuted">Describe a task or drop a YouTube link and we’ll spin up a Codex workspace.</p>
+    </header>
+    <div class="space-y-6">
+      <div class="rounded-[28px] bg-bg px-6 py-4 focus-within:ring-2 focus-within:ring-primary/20">
+        <textarea x-show="mode === 'text'" x-model="form.text" rows="5" class="w-full resize-none rounded-2xl bg-transparent text-base text-content placeholder:text-contentMuted focus:outline-none" placeholder="Describe the draft, paste transcript notes, or drop any context..." :disabled="busy"></textarea>
+        <input x-show="mode === 'youtube'" x-model="form.youtube" type="url" class="w-full rounded-2xl bg-transparent text-base text-content placeholder:text-contentMuted focus:outline-none" placeholder="https://www.youtube.com/watch?v=..." :disabled="busy">
+      </div>
+      <div class="flex flex-wrap items-center justify-between gap-4 rounded-2xl bg-bg/70 px-4 py-3 text-content">
+        <div class="flex flex-wrap items-center gap-3 text-sm">
+          <button type="button" class="flex items-center gap-2 rounded-full px-4 py-1.5 text-sm font-medium transition-colors"
+            :class="mode === 'text' ? 'bg-primary text-primary-contrast shadow' : 'text-contentMuted hover:text-content'" @click="setMode('text')">
+            <span class="inline-flex h-6 w-6 items-center justify-center rounded-full bg-surface text-xs">+</span>
+            <span>Text</span>
+          </button>
+          <button type="button" class="flex items-center gap-2 rounded-full px-4 py-1.5 text-sm font-medium transition-colors"
+            :class="mode === 'youtube' ? 'bg-primary text-primary-contrast shadow' : 'text-contentMuted hover:text-content'" @click="setMode('youtube')">
+            <span class="inline-flex h-6 w-6 items-center justify-center rounded-full bg-surface text-xs">▶</span>
+            <span>YouTube</span>
+          </button>
+        </div>
+        <div class="flex items-center gap-2 text-xs font-medium">
+          <span class="inline-flex h-2 w-2 rounded-full" :class="youtubeConnected ? 'bg-accent' : 'bg-destructive'"></span>
+          <span x-text="youtubeConnected ? 'YouTube connected' : 'Connect YouTube to ingest videos'"></span>
+        </div>
+      </div>
+      <div class="grid gap-4 md:grid-cols-2">
+        <div class="rounded-2xl bg-surface px-4 py-3 text-sm text-contentMuted">
+          {{ combobox('content_type', label='Content type', options=content_schema_choices, placeholder='Search content schemas...', model='form.content_type') }}
+        </div>
+        <div class="rounded-2xl bg-surface px-4 py-3">
+          <label class="text-xs font-semibold uppercase tracking-wide text-contentMuted block">Instructions (optional)</label>
+          <textarea x-model="form.instructions" rows="2" class="mt-2 w-full rounded-2xl border border-border bg-surface px-3 py-2 text-sm text-content placeholder:text-contentMuted focus:border-primary focus:outline-none" placeholder="Tone, POV, reminders..."></textarea>
+        </div>
+      </div>
+      <div class="flex flex-wrap items-center gap-4">
+        <button type="button" class="inline-flex items-center gap-3 rounded-full bg-primary px-6 py-2 text-sm font-semibold text-primary-contrast shadow hover:brightness-110 disabled:opacity-60 disabled:cursor-not-allowed" @click="submit()" :disabled="busy">
+          <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M5 12h14M12 5l7 7-7 7"/>
+          </svg>
+          <span x-text="mode === 'text' ? 'Create from text' : 'Ingest from YouTube'"></span>
+        </button>
+        <p class="text-xs font-medium text-contentMuted tracking-wide" x-text="mode === 'text' ? '/api/v1/projects/text' : '/api/v1/projects'"></p>
+      </div>
+      <template x-if="error">
+        <div class="rounded-2xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive shadow">
+          <p class="font-medium" x-text="error"></p>
+        </div>
+      </template>
+    </div>
+  </section>
+{% endmacro %}

@@ -822,6 +822,83 @@ async def start_ingest_text_job(
     )
 
 
+def _derive_project_title_from_text(text: str, explicit_title: Optional[str] = None, *, max_length: int = 80) -> Optional[str]:
+    """Derive a human-friendly project title from explicit title or text content.
+
+    Preference order:
+    1. Explicit title if provided and non-empty.
+    2. First non-empty line of text, trimmed and truncated.
+    """
+    if explicit_title:
+        candidate = explicit_title.strip()
+        if candidate:
+            return candidate[:max_length]
+    for line in (text or "").splitlines():
+        candidate = line.strip()
+        if candidate:
+            return candidate[:max_length]
+    return None
+
+
+@router.post("/api/v1/projects/text", response_model=ProjectResponse, tags=["Projects"])
+async def create_project_for_text(req: IngestTextRequest, user: dict = Depends(get_current_user)):
+    """Create a new project backed by manually pasted text.
+
+    Reuses the existing text ingest flow to create the document and kick off
+    ingestion; then creates a project record linked to that document.
+    """
+    db = ensure_db()
+    # Reuse the existing ingest orchestration to avoid duplicating logic.
+    # Disable autopilot so we don't start blog generation from this path.
+    _, queue = ensure_services()
+    job_status = await start_ingest_text_job(
+        db,
+        queue,
+        user["user_id"],
+        req.text,
+        req.title,
+        autopilot_enabled=False,
+    )
+    document_id = job_status.document_id
+    project_title = _derive_project_title_from_text(req.text, req.title)
+    # Create project row and mark transcript_ready if we already have text.
+    try:
+        project_row = await create_project(db, user["user_id"], document_id, "", project_title)
+        doc = await get_document(db, document_id, user_id=user["user_id"])
+        if doc and (doc.get("raw_text") or "").strip():
+            updated = await update_project_status(
+                db,
+                project_row["project_id"],
+                user["user_id"],
+                "transcript_ready",
+            )
+            if updated:
+                project_row["status"] = "transcript_ready"
+    except DatabaseError as exc:
+        logger.error(
+            "create_project_for_text.db_error",
+            exc_info=True,
+            extra={"document_id": document_id, "user_id": user["user_id"], "error": str(exc)},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to create project",
+        ) from exc
+    # Build lightweight embedded document payload
+    document_payload = None
+    if doc:
+        metadata = _json_field(doc.get("metadata"), {})
+        document_payload = {
+            "document_id": doc.get("document_id"),
+            "user_id": doc.get("user_id"),
+            "source_type": doc.get("source_type"),
+            "metadata": metadata,
+            "frontmatter": _json_field(doc.get("frontmatter"), {}),
+            "content_format": doc.get("content_format"),
+        }
+    return ProjectResponse(project=project_row, document=document_payload)
+
+
 @router.post("/api/v1/projects", response_model=ProjectResponse, tags=["Projects"])
 async def create_project_for_youtube(req: CreateProjectRequest, user: dict = Depends(get_current_user)):
     """Create a new project backed by a YouTube document.
@@ -844,7 +921,7 @@ async def create_project_for_youtube(req: CreateProjectRequest, user: dict = Dep
     document_id = job_status.document_id
     # Create project row and mark transcript_ready if we already have text.
     try:
-        project_row = await create_project(db, user["user_id"], document_id, youtube_url_str)
+        project_row = await create_project(db, user["user_id"], document_id, youtube_url_str, youtube_url_str)
         doc = await get_document(db, document_id, user_id=user["user_id"])
         if doc and (doc.get("raw_text") or "").strip():
             updated = await update_project_status(
@@ -2330,144 +2407,6 @@ async def debug_env():
             "token_set": bool(getattr(settings, "cf_ai_gateway_token", None)),
             "openai_api_base": getattr(settings, "openai_api_base", None),
         },
-    }
-
-
-@router.get("/api/v1/debug/ai-gateway-test", tags=["Debug"])
-async def debug_ai_gateway_test():
-    """Exercise Cloudflare AI Gateway chat completions using current Worker configuration.
-
-    This endpoint is intended for local/staging verification only and is
-    exposed via the Settings debug card. It performs a single chat.completions
-    call against the configured AI Gateway using the compat endpoint.
-    """
-
-    if not settings.cloudflare_account_id:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="CLOUDFLARE_ACCOUNT_ID is not configured",
-        )
-    if not getattr(settings, "cf_ai_gateway_token", None):
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="CF_AI_GATEWAY_TOKEN is not configured",
-        )
-
-    gateway_base = "https://gateway.ai.cloudflare.com"
-    endpoint_path = f"/v1/{settings.cloudflare_account_id}/quill/compat/chat/completions"
-
-    prompt = "Test request from Quill via Cloudflare AI Gateway. Respond with a short confirmation message."
-    model_name = "openai/gpt-4.1-mini"
-
-    client = AsyncSimpleClient(base_url=gateway_base, timeout=20.0)
-
-    logger.info(
-        "debug_ai_gateway_test_request",
-        extra={
-            "gateway_base": gateway_base,
-            "endpoint_path": endpoint_path,
-            "model": model_name,
-        },
-    )
-
-    started_at = datetime.now(timezone.utc)
-    try:
-        response = await client.post(
-            endpoint_path,
-            headers={
-                "Content-Type": "application/json",
-                "cf-aig-authorization": f"Bearer {settings.cf_ai_gateway_token}",
-            },
-            json={
-                "model": model_name,
-                "messages": [
-                    {"role": "user", "content": prompt},
-                ],
-            },
-        )
-        response.raise_for_status()
-    except HTTPStatusError as exc:
-        logger.error(
-            "debug_ai_gateway_test_http_error",
-            exc_info=True,
-            extra={
-                "status_code": exc.response.status_code,
-                "body": _redact_http_body_for_logging(getattr(exc.response, "text", None)),
-            },
-        )
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"AI Gateway returned HTTP {exc.response.status_code}",
-        ) from exc
-    except RequestError as exc:
-        logger.error(
-            "debug_ai_gateway_test_request_error",
-            exc_info=True,
-            extra={"error": str(exc)},
-        )
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Failed to reach AI Gateway",
-        ) from exc
-    except Exception as exc:
-        logger.error(
-            "debug_ai_gateway_test_unexpected_error",
-            exc_info=True,
-            extra={"error": str(exc)},
-        )
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Unexpected error calling AI Gateway",
-        ) from exc
-
-    data: Dict[str, Any]
-    try:
-        data = response.json()
-    except Exception:
-        logger.error(
-            "debug_ai_gateway_test_invalid_json",
-            extra={"body_preview": _redact_http_body_for_logging(getattr(response, "text", None))},
-        )
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="AI Gateway returned invalid JSON",
-        )
-
-    reply_text: Optional[str] = None
-    try:
-        choices = data.get("choices") or []
-        if choices:
-            message = choices[0].get("message") or {}
-            reply_text = message.get("content")
-    except Exception:
-        reply_text = None
-
-    # Derive basic diagnostics for easier debugging
-    status_code = getattr(response, "status_code", None)
-    duration_ms = int((datetime.now(timezone.utc) - started_at).total_seconds() * 1000)
-    raw_body_preview = _redact_http_body_for_logging(getattr(response, "text", None))
-
-    logger.info(
-        "debug_ai_gateway_test_response",
-        extra={
-            "model": model_name,
-            "has_reply": bool(reply_text),
-            "usage": data.get("usage"),
-            "status_code": status_code,
-            "duration_ms": duration_ms,
-        },
-    )
-
-    return {
-        "gateway_base": gateway_base,
-        "endpoint_path": endpoint_path,
-        "model": model_name,
-        "prompt": prompt,
-        "reply_preview": (reply_text or "")[:500],
-        "raw_usage": data.get("usage"),
-        "status_code": status_code,
-        "duration_ms": duration_ms,
-        "raw_response_preview": raw_body_preview,
     }
 
 

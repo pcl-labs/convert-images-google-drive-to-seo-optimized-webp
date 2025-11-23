@@ -1,225 +1,57 @@
 {% extends "base.html" %}
 {% set page_title = 'Dashboard' %}
-{% from 'components/layout/page.html' import page_container, page_header %}
-{% from 'components/elements/input.html' import input %}
-{% from 'components/elements/button.html' import button %}
-{% from 'components/elements/card.html' import card %}
+{% from 'components/layout/page.html' import page_container %}
+{% from 'components/dashboard/composer.html' import project_composer %}
+{% from 'components/dashboard/project_list.html' import project_row %}
 {% block content %}
-{% call page_container() %}
-  {{ page_header('Dashboard', 'Kick off ingests and monitor automation jobs') }}
+{% call page_container('space-y-8') %}
+  {{ project_composer(csrf_token, content_schema_choices, youtube_connected) }}
 
-  <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-    <div class="bg-surfaceMuted rounded-xl p-4">
-      <div class="text-contentMuted text-sm">Queued</div>
-      <div class="mt-2 text-2xl font-semibold text-content">{{ stats.queued or 0 }}</div>
+  <section class="rounded-[32px] bg-surface px-6 py-5 shadow" x-data="{ currentTab: '{{ project_tab }}' }">
+    <div class="flex items-center gap-8 border-b border-border/60 px-2">
+      <button type="button" class="py-4 text-sm font-semibold uppercase tracking-wide transition-colors"
+        :class="currentTab === 'projects' ? 'text-content border-b-2 border-primary' : 'text-contentMuted hover:text-content'"
+        @click="currentTab = 'projects'">
+        Projects
+      </button>
+      <button type="button" class="py-4 text-sm font-semibold uppercase tracking-wide transition-colors"
+        :class="currentTab === 'archive' ? 'text-content border-b-2 border-primary' : 'text-contentMuted hover:text-content'"
+        @click="currentTab = 'archive'">
+        Archive
+      </button>
     </div>
-    <div class="bg-surfaceMuted rounded-xl p-4">
-      <div class="text-contentMuted text-sm">Running</div>
-      <div class="mt-2 text-2xl font-semibold text-content">{{ stats.running or 0 }}</div>
-    </div>
-    <div class="bg-surfaceMuted rounded-xl p-4">
-      <div class="text-contentMuted text-sm">Completed</div>
-      <div class="mt-2 text-2xl font-semibold text-content">{{ stats.completed or 0 }}</div>
-    </div>
-  </div>
-
-  <div id="dashboard-flash"></div>
-
-  <div class="space-y-4">
-    {% call card(title='Ingest YouTube Video') %}
-      {% include 'dashboard/partials/youtube_ingest_panel.html' %}
-    {% endcall %}
-
-    {% call card(title='Link Drive Folder') %}
-      <p class="text-xs text-contentMuted mb-2">Automatically build Quill workspace folders inside Drive.</p>
-      <div class="flex items-center justify-between mb-3">
-        <small class="text-contentMuted">Requires Google Drive</small>
-        {% if drive_connected %}
-          {% from 'components/elements/badge.html' import badge %}
-          {{ badge('Connected', status='completed') }}
+    <div class="py-4">
+      <div x-show="currentTab === 'projects'">
+        {% if projects_active %}
+          <div class="space-y-2">
+            {% for project in projects_active %}
+              {{ project_row(project) }}
+            {% endfor %}
+          </div>
         {% else %}
-          <a href="/auth/google/start?integration=drive&redirect=/dashboard" class="text-xs text-primary hover:text-primary/80">Connect Google</a>
+          <div class="rounded-2xl border border-dashed border-border p-8 text-center text-sm text-contentMuted">
+            No projects yet. Create one from the composer above.
+          </div>
         {% endif %}
       </div>
-      <form class="space-y-3" hx-post="/dashboard/documents/drive" hx-target="#dashboard-flash" hx-swap="innerHTML">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-        {{ input('drive_source', label='Drive folder link or ID', placeholder='https://drive.google.com/drive/folders/...', attrs='required' + (' disabled' if not drive_connected else '')) }}
-        {{ button('Register Document', variant='primary', attrs='type=\"submit\" class=\"w-full\"' + (' disabled' if not drive_connected else '')) }}
-      </form>
-    {% endcall %}
-
-    {% call card(title='Paste Raw Text') %}
-      <p class="text-xs text-contentMuted mb-2">Drop outlines or transcripts to keep everything in sync with Drive and auto-generate a draft.</p>
-      <form class="space-y-3" id="text-ingest-form">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-        {{ input('title', label='Title (optional)', placeholder='My interview notes') }}
-        <div class="space-y-1">
-          <label for="text_body" class="text-sm text-contentMuted">Text</label>
-          <textarea id="text_body" name="text_body" rows="5" class="field w-full rounded-lg" placeholder="Paste article, transcript, or outline..." required></textarea>
-        </div>
-        <label class="block text-xs font-semibold uppercase tracking-wide text-contentMuted">Content type</label>
-        <select name="content_type" class="w-full rounded-lg border border-border bg-card/80 px-3 py-2 text-sm text-content focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary">
-          {% for value, label in content_schema_choices %}
-            <option value="{{ value }}" {% if loop.first %}selected{% endif %}>{{ label }}</option>
-          {% endfor %}
-        </select>
-        <label class="block text-xs font-semibold uppercase tracking-wide text-contentMuted">Instructions (optional)</label>
-        <textarea name="instructions" rows="3" class="w-full rounded-lg border border-border bg-card/80 px-3 py-2 text-sm text-content focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary" placeholder="Add any constraints, bullets, or tone guidance..."></textarea>
-        {{ button('Create Document', variant='primary', attrs='type=\"submit\" class=\"w-full\"') }}
-      </form>
-    {% endcall %}
-  </div>
+      <div x-cloak x-show="currentTab === 'archive'">
+        {% if projects_archive %}
+          <div class="space-y-2">
+            {% for project in projects_archive %}
+              {{ project_row(project) }}
+            {% endfor %}
+          </div>
+        {% else %}
+          <div class="rounded-2xl border border-dashed border-border p-8 text-center text-sm text-contentMuted">
+            Archive is empty. Completed projects will land here automatically.
+          </div>
+        {% endif %}
+      </div>
+    </div>
+  </section>
 {% endcall %}
 {% endblock %}
 
 {% block scripts %}
-<script>
-(function(){
-  function extractMeta(payload){
-    if(!payload || typeof payload !== 'object'){
-      return { jobId: null, documentId: null, versionId: null, message: 'Request completed.' };
-    }
-    if(payload.job_id){
-      return {
-        jobId: payload.job_id,
-        documentId: payload.document_id || null,
-        versionId: payload.version_id || null,
-        message: `Job ${payload.job_id} queued`,
-      };
-    }
-    const documentId = payload.document_id || null;
-    const versionId = payload.version_id || (payload.content && payload.content.version_id) || null;
-    let message = 'Request completed.';
-    if(versionId){
-      message = `Version ${versionId} ready`;
-    } else if(documentId){
-      message = `Document ${documentId} updated`;
-    }
-    return { jobId: null, documentId, versionId, message };
-  }
-  function buildLinks(meta){
-    const links = {};
-    if(!meta || typeof meta !== 'object'){
-      return links;
-    }
-    if(meta.documentId){
-      links.document = `/v1/documents/${meta.documentId}`;
-      if(meta.versionId){
-        links.version = `/v1/documents/${meta.documentId}/versions/${meta.versionId}`;
-      }
-    }
-    if(meta.jobId){
-      links.job = `/v1/jobs/${meta.jobId}`;
-    }
-    return links;
-  }
-  function renderFlash(target, kind, meta){
-    if(!target){
-      return;
-    }
-    const links = buildLinks(meta);
-    target.innerHTML = '';
-    const wrapper = document.createElement('div');
-    wrapper.className = `rounded-lg border px-3 py-2 text-sm ${kind === 'success' ? 'border-accent/40 bg-accent/5 text-accent' : 'border-destructive/40 bg-destructive/5 text-destructive'}`;
-    const title = document.createElement('p');
-    title.className = 'font-medium';
-    title.textContent = meta && meta.message ? meta.message : (kind === 'success' ? 'Request completed.' : 'Request failed.');
-    wrapper.appendChild(title);
-    const linkLabels = {
-      document: 'Document API',
-      version: 'Version API',
-      job: 'Job API',
-    };
-    const linkKeys = Object.keys(links);
-    if(linkKeys.length){
-      const linkWrap = document.createElement('div');
-      linkWrap.className = 'mt-2 flex flex-wrap gap-3 text-xs text-contentMuted';
-      linkKeys.forEach((key) => {
-        if(!links[key]){
-          return;
-        }
-        const anchor = document.createElement('a');
-        anchor.href = links[key];
-        anchor.textContent = `${linkLabels[key] || 'Open'} →`;
-        anchor.target = '_blank';
-        anchor.rel = 'noopener';
-        anchor.className = 'text-primary hover:text-primary/80';
-        linkWrap.appendChild(anchor);
-      });
-      wrapper.appendChild(linkWrap);
-    }
-    target.appendChild(wrapper);
-  }
-  function buildTextPayload(formData){
-    const payload = {
-      text: (formData.get('text_body') || '').trim(),
-      title: (formData.get('title') || '').trim() || null,
-      mode: 'structured',
-      async: true,
-      options: {},
-    };
-    const contentType = (formData.get('content_type') || '').trim();
-    payload.options.content_type = contentType || 'https://schema.org/BlogPosting';
-    const instructions = (formData.get('instructions') || '').trim();
-    if(instructions){
-      payload.options.instructions = instructions;
-    }
-    return payload;
-  }
-  async function submitTextForm(event, flashEl){
-    event.preventDefault();
-    const form = event.target;
-    const formData = new FormData(form);
-    const payload = buildTextPayload(formData);
-    const csrfToken = (formData.get('csrf_token') || '').toString();
-    if(!payload.text){
-      renderFlash(flashEl, 'error', { message: 'Text content is required.' });
-      return;
-    }
-    const submitBtn = form.querySelector('button[type="submit"]');
-    if(submitBtn){
-      submitBtn.disabled = true;
-    }
-    try {
-      const headers = { 'Content-Type': 'application/json' };
-      if(csrfToken){
-        headers['X-CSRF-Token'] = csrfToken;
-      }
-      const response = await fetch('/v1/content/blog_from_text', {
-        method: 'POST',
-        headers,
-        credentials: 'same-origin',
-        body: JSON.stringify(payload),
-      });
-      let data = {};
-      try {
-        data = await response.json();
-      } catch (_) {
-        data = {};
-      }
-      if(!response.ok){
-        const message = (data && data.detail) || 'Failed to ingest text.';
-        renderFlash(flashEl, 'error', { message });
-        return;
-      }
-      const meta = extractMeta(data);
-      renderFlash(flashEl, 'success', meta);
-      form.reset();
-    } catch (err) {
-      renderFlash(flashEl, 'error', { message: err && err.message ? err.message : 'Failed to ingest text.' });
-    } finally {
-      if(submitBtn){
-        submitBtn.disabled = false;
-      }
-    }
-  }
-  document.addEventListener('DOMContentLoaded', () => {
-    const flashEl = document.getElementById('dashboard-flash');
-    const textForm = document.getElementById('text-ingest-form');
-    if(textForm){
-      textForm.addEventListener('submit', (event) => submitTextForm(event, flashEl));
-    }
-  });
-})();
-</script>
+  {% include 'components/scripts/project_composer.html' %}
 {% endblock %}

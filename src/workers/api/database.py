@@ -327,6 +327,36 @@ class Database:
                 """
             )
 
+            # Projects table and indexes
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS projects (
+                    project_id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    document_id TEXT NOT NULL UNIQUE,
+                    youtube_url TEXT,
+                    title TEXT,
+                    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN (
+                        'pending',
+                        'transcript_ready',
+                        'embedded',
+                        'blog_generated',
+                        'failed'
+                    )),
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+                    FOREIGN KEY (document_id) REFERENCES documents(document_id) ON DELETE CASCADE
+                )
+                """
+            )
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_projects_user ON projects(user_id, created_at DESC)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status)")
+            cur.execute("PRAGMA table_info('projects')")
+            project_cols = {row[1] for row in cur.fetchall()}
+            if 'title' not in project_cols:
+                cur.execute("ALTER TABLE projects ADD COLUMN title TEXT")
+
             # Rely on FOREIGN KEY (latest_version_id) for referential integrity; no extra triggers needed
             # Idempotent step invocations
             cur.execute(
@@ -2043,6 +2073,23 @@ async def ensure_sessions_schema(db: Database) -> None:
     await db.batch(stmts)
 
 
+async def _ensure_project_title_column(db: Database) -> None:
+    """Ensure the projects table has a nullable title column."""
+    try:
+        await db.execute("ALTER TABLE projects ADD COLUMN title TEXT", ())
+        logger.info("Added title column to projects table")
+    except DatabaseError as exc:
+        message = str(exc).lower()
+        if "duplicate column name" in message or "already exists" in message:
+            return
+        raise
+    except Exception as exc:
+        message = str(exc).lower()
+        if "duplicate column name" in message or "already exists" in message:
+            return
+        logger.warning("ensure_project_title_column_failed", exc_info=True, extra={"error": str(exc)})
+
+
 async def ensure_full_schema(db: Database) -> None:
     """Apply the full database schema from migrations/schema.sql to D1.
     
@@ -2219,6 +2266,7 @@ async def ensure_full_schema(db: Database) -> None:
                 user_id TEXT NOT NULL,
                 document_id TEXT NOT NULL UNIQUE,
                 youtube_url TEXT,
+                title TEXT,
                 status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN (
                     'pending',
                     'transcript_ready',
@@ -2539,6 +2587,7 @@ async def ensure_full_schema(db: Database) -> None:
 
         await db.batch(projects_tables)
         logger.info("Applied projects table")
+        await _ensure_project_title_column(db)
 
         await db.batch(transcript_chunks_tables)
         logger.info("Applied transcript_chunks table")
@@ -3012,7 +3061,7 @@ async def record_usage_event(
     )
     
 
-async def create_project(db: Database, user_id: str, document_id: str, youtube_url: str) -> Dict[str, Any]:
+async def create_project(db: Database, user_id: str, document_id: str, youtube_url: str, title: str | None = None) -> Dict[str, Any]:
     """Insert a new project row and return it as a plain dict.
 
     Timestamps use SQL's datetime('now') format for consistency with the rest
@@ -3021,10 +3070,10 @@ async def create_project(db: Database, user_id: str, document_id: str, youtube_u
     project_id = str(uuid.uuid4())
     await db.execute(
         """
-        INSERT INTO projects (project_id, user_id, document_id, youtube_url, status, created_at, updated_at)
-        VALUES (?, ?, ?, ?, 'pending', datetime('now'), datetime('now'))
+        INSERT INTO projects (project_id, user_id, document_id, youtube_url, title, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, 'pending', datetime('now'), datetime('now'))
         """,
-        (project_id, user_id, document_id, youtube_url),
+        (project_id, user_id, document_id, youtube_url, title),
     )
     row = await db.execute("SELECT * FROM projects WHERE project_id = ?", (project_id,))
     return _jsproxy_to_dict(row) if row else {
@@ -3032,6 +3081,7 @@ async def create_project(db: Database, user_id: str, document_id: str, youtube_u
         "user_id": user_id,
         "document_id": document_id,
         "youtube_url": youtube_url,
+        "title": title,
         "status": "pending",
         "created_at": None,
         "updated_at": None,
@@ -3045,6 +3095,52 @@ async def get_project(db: Database, project_id: str, user_id: str) -> Optional[D
         (project_id, user_id),
     )
     return _jsproxy_to_dict(row) if row else None
+
+
+async def list_projects_for_user(
+    db: Database,
+    user_id: str,
+    *,
+    limit: int = 25,
+    offset: int = 0,
+    statuses: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    """Return recent projects for a user with embedded document metadata."""
+    limit = max(1, min(limit, 50))
+    offset = max(0, offset)
+    params: list[Any] = [user_id]
+    status_clause = ""
+    if statuses:
+        placeholders = ",".join(["?"] * len(statuses))
+        status_clause = f" AND p.status IN ({placeholders})"
+        params.extend(statuses)
+    params.extend([limit, offset])
+    rows = await db.execute_all(
+        f"""
+        SELECT
+            p.project_id,
+            p.user_id,
+            p.document_id,
+            p.youtube_url,
+            p.title,
+            p.status,
+            p.created_at,
+            p.updated_at,
+            d.metadata AS document_metadata,
+            d.frontmatter AS document_frontmatter,
+            d.content_format AS document_content_format,
+            d.latest_version_id AS document_latest_version_id,
+            d.source_type AS document_source_type,
+            d.source_ref AS document_source_ref
+        FROM projects AS p
+        JOIN documents AS d ON d.document_id = p.document_id
+        WHERE p.user_id = ?{status_clause}
+        ORDER BY p.updated_at DESC
+        LIMIT ? OFFSET ?
+        """,
+        params,
+    )
+    return _rows_to_dicts(rows)
 
 
 async def update_project_status(db: Database, project_id: str, user_id: str, status: str) -> int:

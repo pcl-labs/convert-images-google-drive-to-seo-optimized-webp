@@ -10,6 +10,8 @@ import logging
 import json
 import secrets
 import hmac
+import difflib
+from datetime import datetime
 # Jinja2 imports removed - using Jinja2Templates directly
 
 from .models import (
@@ -18,6 +20,7 @@ from .models import (
     JobType,
     GenerateBlogRequest,
     GenerateBlogOptions,
+    IngestTextRequest,
 )
 from .deps import ensure_services, ensure_db, parse_job_progress, get_current_user
 from .auth import verify_jwt_token
@@ -45,6 +48,8 @@ from .database import (
     update_document,
     get_drive_workspace,
     upsert_drive_workspace,
+    get_project,
+    list_projects_for_user,
     list_pipeline_events,
     latest_job_by_type,
     delete_user_session,
@@ -56,6 +61,7 @@ from .protected import (
     create_drive_document_for_user,
     start_ingest_youtube_job,
     start_ingest_text_job,
+    create_project_for_text,
     start_generate_blog_job,
     enqueue_job_with_guard,
 )
@@ -84,6 +90,10 @@ CONTENT_SCHEMA_CHOICES = [
     ("https://schema.org/HowTo", "How-To Guide"),
     ("https://schema.org/Recipe", "Recipe"),
 ]
+CONTENT_SCHEMA_LABELS = {value: label for value, label in CONTENT_SCHEMA_CHOICES}
+DEFAULT_CONTENT_SCHEMA = CONTENT_SCHEMA_CHOICES[0][0]
+PROJECT_ACTIVE_STATUSES = ["pending", "transcript_ready", "embedded"]
+PROJECT_ARCHIVE_STATUSES = ["blog_generated", "failed"]
 
 
 def _status_label(value: str) -> str:
@@ -741,6 +751,135 @@ def _drive_sync_overview(
     return overview
 
 
+def _schema_label_from_value(value: Optional[str]) -> str:
+    if not value:
+        return CONTENT_SCHEMA_LABELS.get(DEFAULT_CONTENT_SCHEMA, "Blog post")
+    normalized = str(value).strip()
+    if not normalized:
+        return CONTENT_SCHEMA_LABELS.get(DEFAULT_CONTENT_SCHEMA, "Blog post")
+    if normalized in CONTENT_SCHEMA_LABELS:
+        return CONTENT_SCHEMA_LABELS[normalized]
+    return normalized.rsplit("/", 1)[-1].replace("_", " ").replace("-", " ").title()
+
+
+def _format_project_timestamp(value: Optional[str]) -> str:
+    if not value:
+        return "—"
+    try:
+        dt = datetime.fromisoformat(str(value))
+    except ValueError:
+        try:
+            dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            return str(value)
+    return dt.strftime("%b %d")
+
+
+def _diff_line_counts(
+    latest_body: Optional[str],
+    previous_body: Optional[str],
+) -> dict:
+    latest_lines = (latest_body or "").splitlines()
+    previous_lines = (previous_body or "").splitlines()
+    if not previous_body:
+        added_default = len([line for line in latest_lines if line.strip()])
+        return {"added": added_default, "removed": 0}
+    added = 0
+    removed = 0
+    for line in difflib.unified_diff(previous_lines, latest_lines, lineterm=""):
+        if not line or line.startswith(("---", "+++", "@@")):
+            continue
+        if line.startswith("+"):
+            added += 1
+        elif line.startswith("-"):
+            removed += 1
+    return {"added": added, "removed": removed}
+
+
+def _project_status_variant(status: str) -> str:
+    mapping = {
+        "pending": "bg-warning/10 text-warning ring-1 ring-inset ring-warning/30",
+        "transcript_ready": "bg-primary/10 text-primary ring-1 ring-inset ring-primary/30",
+        "embedded": "bg-primary/10 text-primary ring-1 ring-inset ring-primary/30",
+        "blog_generated": "bg-accent/10 text-accent ring-1 ring-inset ring-accent/30",
+        "failed": "bg-destructive/10 text-destructive ring-1 ring-inset ring-destructive/30",
+    }
+    return mapping.get(status, "bg-contentMuted/10 text-contentMuted ring-1 ring-inset ring-contentMuted/30")
+
+
+async def _load_project_views(
+    db,
+    user_id: str,
+    *,
+    statuses: Optional[List[str]] = None,
+    limit: int = 15,
+) -> List[dict]:
+    rows = await list_projects_for_user(
+        db,
+        user_id,
+        limit=limit,
+        statuses=statuses,
+    )
+    views: List[dict] = []
+    for row in rows:
+        document_id = row.get("document_id")
+        versions = []
+        if document_id:
+            try:
+                versions = await list_document_versions(db, document_id, user_id, limit=2)
+            except Exception:
+                versions = []
+        frontmatter = _json_field(row.get("document_frontmatter"), {})
+        metadata = _json_field(row.get("document_metadata"), {})
+        title = row.get("title") or (frontmatter.get("title") if isinstance(frontmatter, dict) else None)
+        if not title and isinstance(metadata, dict):
+            youtube_meta = metadata.get("youtube")
+            if isinstance(youtube_meta, dict):
+                title = youtube_meta.get("title")
+        if not title and isinstance(metadata, dict):
+            meta_drive = metadata.get("drive")
+            if isinstance(meta_drive, dict):
+                title = meta_drive.get("title")
+        if not title and row.get("youtube_url"):
+            title = row.get("youtube_url")
+        if not title:
+            title = "Untitled project"
+        if not isinstance(frontmatter, dict):
+            frontmatter = {}
+        content_type_value = (
+            frontmatter.get("content_type")
+            or (metadata.get("content_type") if isinstance(metadata, dict) else None)
+        )
+        if not content_type_value and isinstance(metadata, dict):
+            planner = metadata.get("planner")
+            if isinstance(planner, dict):
+                content_type_value = planner.get("content_type")
+        latest_version = versions[0] if versions else None
+        previous_version = versions[1] if len(versions) > 1 else None
+        diff_counts = _diff_line_counts(
+            (latest_version or {}).get("body_mdx"),
+            (previous_version or {}).get("body_mdx") if previous_version else None,
+        )
+        views.append(
+            {
+                "project_id": row.get("project_id"),
+                "document_id": document_id,
+                "title": title,
+                "status": row.get("status"),
+                "status_label": _status_label(row.get("status", "")),
+                "status_variant": _project_status_variant(row.get("status", "")),
+                "youtube_url": row.get("youtube_url"),
+                "updated_at": row.get("updated_at"),
+                "date_label": _format_project_timestamp(row.get("updated_at") or row.get("created_at")),
+                "content_type_label": _schema_label_from_value(content_type_value),
+                "diff_added": diff_counts["added"],
+                "diff_removed": diff_counts["removed"],
+                "href": f"/dashboard/projects/{row.get('project_id')}",
+            }
+        )
+    return views
+
+
 async def _export_version_to_drive(db, user_id: str, document: dict, version: dict) -> dict:
     """Push a document version into Drive using per-request HTTP clients for thread-safety."""
     docs_service = await build_docs_service_for_user(db, user_id)
@@ -1158,6 +1297,21 @@ async def dashboard(request: Request, user: dict = Depends(get_current_user)):
     drive_connected = "drive" in token_map
     youtube_connected = "youtube" in token_map
     
+    try:
+        projects_active = await _load_project_views(db, user["user_id"], statuses=PROJECT_ACTIVE_STATUSES, limit=20)
+    except Exception:
+        logger.exception("Failed loading active projects")
+        projects_active = []
+    try:
+        projects_archive = await _load_project_views(db, user["user_id"], statuses=PROJECT_ARCHIVE_STATUSES, limit=20)
+    except Exception:
+        logger.exception("Failed loading archived projects")
+        projects_archive = []
+
+    active_tab = request.query_params.get("tab")
+    if active_tab not in {"projects", "archive"}:
+        active_tab = "projects"
+
     context = {
         "request": request,
         "user": user,
@@ -1167,6 +1321,9 @@ async def dashboard(request: Request, user: dict = Depends(get_current_user)):
         "csrf_token": csrf,
         "content_schema_choices": CONTENT_SCHEMA_CHOICES,
         "page_title": "Dashboard",
+        "projects_active": projects_active,
+        "projects_archive": projects_archive,
+        "project_tab": active_tab,
     }
     
     template_name = "dashboard/index_fragment.html" if _is_htmx(request) else "dashboard/index.html"
@@ -1181,62 +1338,12 @@ def _is_htmx(request: Request) -> bool:
     return request.headers.get("HX-Request") == "true"
 
 
-@router.get("/dashboard/documents", response_class=HTMLResponse)
-async def documents_page(request: Request, page: int = 1, user: dict = Depends(get_current_user)):
-    # Handle DB initialization failures with explicit 503 for protected routes
-    try:
-        db = ensure_db()
-    except HTTPException as exc:
-        if exc.status_code == 500:
-            logger.error("Documents page: Database unavailable")
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Service temporarily unavailable"
-            ) from exc
-        raise
-    csrf = _get_csrf_token(request)
-    documents, total = await _load_document_views(db, user["user_id"], page=page, page_size=20)
-    google_tokens = await list_google_tokens(db, user["user_id"])  # type: ignore
-    token_map = {str(row.get("integration")).lower(): row for row in (google_tokens or []) if row.get("integration")}
-    drive_connected = "drive" in token_map
-    youtube_connected = "youtube" in token_map
-    drive_workspace = None
-    if drive_connected:
-        try:
-            drive_workspace = await get_drive_workspace(db, user["user_id"])  # type: ignore
-            if not drive_workspace:
-                logger.info("drive_workspace_missing_sched_provision", extra={"user_id": user["user_id"]})
-                task = asyncio.create_task(_provision_workspace_background(db, user["user_id"]))
-                _track_task(task)
-        except Exception as exc:
-            logger.warning(
-                "drive_workspace_lookup_failed",
-                exc_info=True,
-                extra={"user_id": user["user_id"], "error": str(exc)},
-            )
-            drive_workspace = None
-    context = {
-        "request": request,
-        "user": user,
-        "documents": documents,
-        "total_documents": total,
-        "csrf_token": csrf,
-        "drive_connected": drive_connected,
-        "youtube_connected": youtube_connected,
-        "drive_sync_overview": _drive_sync_overview(documents, drive_connected, drive_workspace),
-        "page_title": "Documents",
-        "flash": None,
-    }
-    template_name = "documents/index_fragment.html" if _is_htmx(request) else "documents/index.html"
-    resp = templates.TemplateResponse(template_name, context)
-    if not request.cookies.get("csrf_token"):
-        is_secure = is_secure_request(request, settings)
-        resp.set_cookie("csrf_token", csrf, httponly=True, samesite="lax", secure=is_secure)
-    return resp
-
-
-@router.get("/dashboard/documents/{document_id}", response_class=HTMLResponse)
-async def document_detail_page(document_id: str, request: Request, user: dict = Depends(get_current_user)):
+async def _render_document_detail(
+    document_id: str,
+    request: Request,
+    user: dict,
+    project: Optional[dict] = None,
+):
     db = ensure_db()
     doc = await get_document(db, document_id, user_id=user["user_id"])
     if not doc:
@@ -1280,6 +1387,7 @@ async def document_detail_page(document_id: str, request: Request, user: dict = 
         "drive_meta": drive_meta,
         "page_title": title_hint or f"Document {document_id}",
         "content_schema_choices": CONTENT_SCHEMA_CHOICES,
+        "project": project,
     }
     template_name = "documents/detail_fragment.html" if _is_htmx(request) else "documents/detail.html"
     resp = templates.TemplateResponse(template_name, context)
@@ -1287,6 +1395,23 @@ async def document_detail_page(document_id: str, request: Request, user: dict = 
         is_secure = is_secure_request(request, settings)
         resp.set_cookie("csrf_token", csrf, httponly=True, samesite="lax", secure=is_secure)
     return resp
+
+
+@router.get("/dashboard/documents/{document_id}", response_class=HTMLResponse)
+async def document_detail_page(document_id: str, request: Request, user: dict = Depends(get_current_user)):
+    return await _render_document_detail(document_id, request, user, project=None)
+
+
+@router.get("/dashboard/projects/{project_id}", response_class=HTMLResponse)
+async def project_detail_page(project_id: str, request: Request, user: dict = Depends(get_current_user)):
+    db = ensure_db()
+    project = await get_project(db, project_id, user["user_id"])
+    if not project:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    document_id = project.get("document_id")
+    if not document_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project is missing document reference")
+    return await _render_document_detail(document_id, request, user, project=project)
 
 
 @router.get("/dashboard/documents/{document_id}/versions/{version_id}", response_class=HTMLResponse)
@@ -1656,31 +1781,16 @@ async def create_text_document_form(
 ):
     _validate_csrf(request, csrf_token)
     db = ensure_db()
-    _, queue = ensure_services()
     body = (text_body or "").strip()
     if not body:
         flash = {"status": "error", "message": "Text content is required"}
         return await _render_ingest_response(request, db, user, flash, status_code=status.HTTP_400_BAD_REQUEST)
-    schema_value = content_type.strip() or "https://schema.org/BlogPosting"
-    autopilot_options = {
-        "content_type": schema_value,
-        "instructions": (instructions or "").strip() or None,
-    }
     try:
-        job = await start_ingest_text_job(
-            db,
-            queue,
-            user["user_id"],
-            body,
-            title,
-            autopilot_options={k: v for k, v in autopilot_options.items() if v},
-            autopilot_enabled=True,
-        )
-        flash = {
-            "status": "success",
-            "message": f"Text ingest job {job.job_id} queued (doc {job.document_id})",
-        }
-        return await _render_ingest_response(request, db, user, flash)
+        # Create a project backed by this text, reusing the Projects API pipeline.
+        req_model = IngestTextRequest(text=body, title=title)
+        project_resp = await create_project_for_text(req_model, user=user)
+        project = project_resp.project
+        return RedirectResponse(url=f"/dashboard/projects/{project.project_id}", status_code=status.HTTP_302_FOUND)
     except HTTPException as exc:
         flash = {"status": "error", "message": exc.detail or "Failed to ingest text"}
         return await _render_ingest_response(request, db, user, flash, status_code=exc.status_code)
