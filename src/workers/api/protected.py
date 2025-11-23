@@ -1,5 +1,5 @@
 MAX_TEXT_LENGTH = 20000  # configurable upper bound for text ingestion
-from fastapi import APIRouter, Request, Depends, HTTPException, status, Body
+from fastapi import APIRouter, Request, Depends, HTTPException, status, Body, Header
 from fastapi.responses import RedirectResponse, PlainTextResponse
 from typing import Optional, Dict, Any, Tuple, List
 import uuid
@@ -56,6 +56,8 @@ from .models import (
     ProjectActivityResponse,
     ProjectSEOAnalyzeRequest,
     ProjectSEOAnalysis,
+    PipelineEvent,
+    SessionEventsResponse,
 )
 from .database import (
     create_job_extended,
@@ -72,6 +74,7 @@ from .database import (
     create_document_export,
     set_job_output,
     record_pipeline_event,
+    list_pipeline_events,
     get_user_preferences,
     create_project,
     get_project,
@@ -133,6 +136,32 @@ logger = get_logger(__name__)
 router = APIRouter(
     dependencies=[Depends(get_saas_user)],
 )
+
+AGENT_SESSION_HEADER = "X-Agent-Session-Id"
+
+
+def _clean_session_id(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    trimmed = value.strip()
+    return trimmed or None
+
+
+def get_agent_session_id(
+    x_agent_session_id: Optional[str] = Header(default=None, alias=AGENT_SESSION_HEADER, convert_underscores=False),
+    session_id: Optional[str] = Query(default=None, alias="session_id"),
+) -> Optional[str]:
+    return _clean_session_id(x_agent_session_id or session_id)
+
+
+def require_agent_session_id(
+    x_agent_session_id: Optional[str] = Header(default=None, alias=AGENT_SESSION_HEADER, convert_underscores=False),
+    session_id: Optional[str] = Query(default=None, alias="session_id"),
+) -> str:
+    value = _clean_session_id(x_agent_session_id or session_id)
+    if not value:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Agent session_id is required")
+    return value
 
 
 def _validate_redirect_path(path: str, fallback: str) -> str:
@@ -594,6 +623,53 @@ def _drive_document_name(doc: dict) -> str:
         return maybe_name.strip()
     return doc.get("document_id") or "Drive Document"
 
+
+def _job_status_from_row(row: dict) -> JobStatus:
+    progress = _parse_job_progress_model(row.get("progress", "{}"))
+    output = row.get("output")
+    if isinstance(output, str) and output:
+        try:
+            output = json.loads(output)
+        except Exception:
+            output = None
+    status_value = row.get("status") or JobStatusEnum.PENDING.value
+    try:
+        status_enum = JobStatusEnum(status_value)
+    except ValueError:
+        status_enum = JobStatusEnum.PENDING
+    return JobStatus(
+        job_id=row.get("job_id"),
+        user_id=row.get("user_id"),
+        status=status_enum,
+        progress=progress,
+        created_at=_parse_db_datetime(row.get("created_at")),
+        completed_at=_parse_db_datetime(row.get("completed_at")) if row.get("completed_at") else None,
+        error=row.get("error"),
+        job_type=row.get("job_type"),
+        document_id=row.get("document_id"),
+        output=output,
+        session_id=row.get("session_id"),
+    )
+
+
+def _pipeline_event_from_row(row: dict) -> PipelineEvent:
+    data = row.get("data")
+    if not isinstance(data, dict):
+        data = {}
+    return PipelineEvent(
+        sequence=row.get("sequence"),
+        event_id=row.get("event_id"),
+        user_id=row.get("user_id"),
+        job_id=row.get("job_id"),
+        session_id=row.get("session_id"),
+        event_type=row.get("event_type"),
+        stage=row.get("stage"),
+        status=row.get("status"),
+        message=row.get("message"),
+        data=data,
+        created_at=_parse_db_datetime(row.get("created_at")),
+    )
+
 async def create_drive_document_for_user(db, user_id: str, drive_source: str) -> Document:
     try:
         service = await build_drive_service_for_user(db, user_id)  # type: ignore
@@ -709,7 +785,7 @@ async def publish_drive_document_for_user(
     return _drive_status_model(refreshed)
 
 
-async def start_ingest_drive_job(db, queue, user_id: str, document_id: str) -> JobStatus:
+async def start_ingest_drive_job(db, queue, user_id: str, document_id: str, session_id: Optional[str] = None) -> JobStatus:
     """Start a Drive ingest job for an existing document."""
     document = await get_document(db, document_id, user_id=user_id)
     if not document:
@@ -744,6 +820,7 @@ async def start_ingest_drive_job(db, queue, user_id: str, document_id: str) -> J
         job_type=JobType.INGEST_DRIVE.value,
         document_id=document_id,
         payload={"drive_file_id": drive_file_id},
+        session_id=session_id,
     )
     
     payload = {
@@ -753,6 +830,8 @@ async def start_ingest_drive_job(db, queue, user_id: str, document_id: str) -> J
         "document_id": document_id,
         "drive_file_id": drive_file_id,
     }
+    if session_id:
+        payload["session_id"] = session_id
     
     enqueued, enqueue_exception, should_fail = await enqueue_job_with_guard(queue, job_id, user_id, payload, allow_inline_fallback=False)
     if should_fail:
@@ -763,20 +842,14 @@ async def start_ingest_drive_job(db, queue, user_id: str, document_id: str) -> J
             extra={"job_id": job_id, "document_id": document_id, "reason": "queue unavailable", "exception": str(enqueue_exception) if enqueue_exception else None},
         )
     
-    progress = _parse_job_progress_model(progress_str=job_row.get("progress", "{}"))
-    return JobStatus(
-        job_id=job_id,
-        user_id=user_id,
-        status=JobStatusEnum.PENDING,
-        progress=progress,
-        created_at=_parse_db_datetime(job_row.get("created_at")),
-        job_type=JobType.INGEST_DRIVE.value,
-        document_id=document_id,
-    )
+    return _job_status_from_row(job_row)
 
 
 @router.post("/api/v1/drive/watch/renew", response_model=JobStatus)
-async def start_drive_watch_renewal_job(user: dict = Depends(get_saas_user)):
+async def start_drive_watch_renewal_job(
+    user: dict = Depends(get_saas_user),
+    agent_session_id: Optional[str] = Depends(get_agent_session_id),
+):
     db, queue = ensure_services()
     job_id = str(uuid.uuid4())
     job_row = await create_job_extended(
@@ -785,12 +858,15 @@ async def start_drive_watch_renewal_job(user: dict = Depends(get_saas_user)):
         user["user_id"],
         job_type=JobType.DRIVE_WATCH_RENEWAL.value,
         payload={},
+        session_id=agent_session_id,
     )
     payload = {
         "job_id": job_id,
         "user_id": user["user_id"],
         "job_type": JobType.DRIVE_WATCH_RENEWAL.value,
     }
+    if agent_session_id:
+        payload["session_id"] = agent_session_id
     enqueued, enqueue_exception, should_fail = await enqueue_job_with_guard(
         queue,
         job_id,
@@ -805,15 +881,7 @@ async def start_drive_watch_renewal_job(user: dict = Depends(get_saas_user)):
             "drive_watch_renewal_not_enqueued",
             extra={"job_id": job_id, "user_id": user["user_id"], "error": str(enqueue_exception) if enqueue_exception else None},
         )
-    progress = _parse_job_progress_model(progress_str=job_row.get("progress", "{}"))
-    return JobStatus(
-        job_id=job_id,
-        user_id=user["user_id"],
-        status=JobStatusEnum.PENDING,
-        progress=progress,
-        created_at=_parse_db_datetime(job_row.get("created_at")),
-        job_type=JobType.DRIVE_WATCH_RENEWAL.value,
-    )
+    return _job_status_from_row(job_row)
 
 
 async def start_ingest_youtube_job(
@@ -824,6 +892,7 @@ async def start_ingest_youtube_job(
     *,
     autopilot_options: Optional[Dict[str, Any]] = None,
     autopilot_enabled: bool = True,
+    session_id: Optional[str] = None,
 ) -> JobStatus:
     clean_url = (url or "").strip()
     video_id = parse_youtube_video_id(clean_url)
@@ -876,6 +945,8 @@ async def start_ingest_youtube_job(
         payload["autopilot_options"] = autopilot_options
     if not autopilot_enabled:
         payload["autopilot_disabled"] = True
+    if session_id:
+        payload["session_id"] = session_id
     job_row = await create_job_extended(
         db,
         job_id,
@@ -883,6 +954,7 @@ async def start_ingest_youtube_job(
         job_type=JobType.INGEST_YOUTUBE.value,
         document_id=document_id,
         payload=payload,
+        session_id=session_id,
     )
     if settings.use_inline_queue:
         inline_progress = {"stage": "ingesting_youtube"}
@@ -946,6 +1018,7 @@ async def start_ingest_youtube_job(
                     status="running",
                     message="Linking document to Drive workspace",
                     data={"document_id": document_id},
+                    session_id=session_id,
                 )
             except Exception:
                 pass
@@ -982,6 +1055,7 @@ async def start_ingest_youtube_job(
                         status="completed",
                         message="Drive workspace linked",
                         data={"document_id": document_id},
+                        session_id=session_id,
                     )
                 except Exception:
                     pass
@@ -1001,6 +1075,7 @@ async def start_ingest_youtube_job(
                         status="error",
                         message="Drive workspace link failed",
                         data={"document_id": document_id},
+                        session_id=session_id,
                     )
                 except Exception:
                     pass
@@ -1015,6 +1090,7 @@ async def start_ingest_youtube_job(
                     status="skipped",
                     message="Drive workspace linking disabled",
                     data={"document_id": document_id},
+                    session_id=session_id,
                 )
             except Exception:
                 pass
@@ -1041,7 +1117,7 @@ async def start_ingest_youtube_job(
                 overrides = {k: v for k, v in (autopilot_options or {}).items() if v is not None}
                 override_model = GenerateBlogOptions(**overrides) if overrides else GenerateBlogOptions()
                 request = GenerateBlogRequest(document_id=document_id, options=override_model)
-                autopilot_job = await start_generate_blog_job(db, queue, user_id, request)
+                autopilot_job = await start_generate_blog_job(db, queue, user_id, request, session_id=session_id)
                 try:
                     await record_pipeline_event(
                         db,
@@ -1052,6 +1128,7 @@ async def start_ingest_youtube_job(
                         status="running",
                         message="Starting AI draft pipeline",
                         data={"document_id": document_id, "next_job_id": autopilot_job.job_id},
+                        session_id=session_id,
                     )
                 except Exception:
                     pass
@@ -1062,17 +1139,7 @@ async def start_ingest_youtube_job(
                     extra={"document_id": document_id, "job_id": job_id, "error": str(exc)},
                 )
 
-        return JobStatus(
-            job_id=job_id,
-            user_id=user_id,
-            status=JobStatusEnum.COMPLETED,
-            progress=progress,
-            created_at=_parse_db_datetime(final_row.get("created_at")),
-            completed_at=_parse_db_datetime(completed_at) if completed_at else None,
-            job_type=JobType.INGEST_YOUTUBE.value,
-            document_id=document_id,
-            output=output,
-        )
+        return _job_status_from_row(final_row)
     payload = {
         "job_id": job_id,
         "user_id": user_id,
@@ -1080,6 +1147,8 @@ async def start_ingest_youtube_job(
         "document_id": document_id,
         "youtube_video_id": video_id,
     }
+    if session_id:
+        payload["session_id"] = session_id
     enqueued, enqueue_exception, should_fail = await enqueue_job_with_guard(queue, job_id, user_id, payload, allow_inline_fallback=False)
     if should_fail:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Queue unavailable or enqueue failed; background processing is required in production.")
@@ -1088,16 +1157,7 @@ async def start_ingest_youtube_job(
             "YouTube ingestion job created but not enqueued",
             extra={"job_id": job_id, "document_id": document_id, "reason": "queue unavailable", "exception": str(enqueue_exception) if enqueue_exception else None},
         )
-    progress = _parse_job_progress_model(progress_str=job_row.get("progress", "{}"))
-    return JobStatus(
-        job_id=job_id,
-        user_id=user_id,
-        status=JobStatusEnum.PENDING,
-        progress=progress,
-        created_at=_parse_db_datetime(job_row.get("created_at")),
-        job_type=JobType.INGEST_YOUTUBE.value,
-        document_id=document_id,
-    )
+    return _job_status_from_row(job_row)
 
 
 async def start_ingest_text_job(
@@ -1109,6 +1169,7 @@ async def start_ingest_text_job(
     *,
     autopilot_options: Optional[Dict[str, Any]] = None,
     autopilot_enabled: bool = True,
+    session_id: Optional[str] = None,
 ) -> JobStatus:
     clean_text = (text or "").strip()
     if not clean_text:
@@ -1139,8 +1200,11 @@ async def start_ingest_text_job(
         job_type=JobType.INGEST_TEXT.value,
         document_id=document_id,
         payload=payload,
+        session_id=session_id,
     )
     payload = {"job_id": job_id, "user_id": user_id, "job_type": JobType.INGEST_TEXT.value, "document_id": document_id}
+    if session_id:
+        payload["session_id"] = session_id
     enqueued, enqueue_exception, should_fail = await enqueue_job_with_guard(queue, job_id, user_id, payload, allow_inline_fallback=False)
     if should_fail:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Queue unavailable or enqueue failed; background processing is required in production.")
@@ -1149,16 +1213,7 @@ async def start_ingest_text_job(
             "Text ingestion job created but not enqueued",
             extra={"job_id": job_id, "document_id": document_id, "reason": "queue unavailable", "exception": str(enqueue_exception) if enqueue_exception else None},
         )
-    progress = _parse_job_progress_model(progress_str=job_row.get("progress", "{}"))
-    return JobStatus(
-        job_id=job_id,
-        user_id=user_id,
-        status=JobStatusEnum.PENDING,
-        progress=progress,
-        created_at=_parse_db_datetime(job_row.get("created_at")),
-        job_type=JobType.INGEST_TEXT.value,
-        document_id=document_id,
-    )
+    return _job_status_from_row(job_row)
 
 
 def _derive_project_title_from_text(text: str, explicit_title: Optional[str] = None, *, max_length: int = 500) -> Optional[str]:
@@ -1180,7 +1235,11 @@ def _derive_project_title_from_text(text: str, explicit_title: Optional[str] = N
 
 
 @router.post("/api/v1/projects/text", response_model=ProjectResponse, tags=["Projects"])
-async def create_project_for_text(req: IngestTextRequest, user: dict = Depends(get_saas_user)):
+async def create_project_for_text(
+    req: IngestTextRequest,
+    user: dict = Depends(get_saas_user),
+    agent_session_id: Optional[str] = Depends(get_agent_session_id),
+):
     """Create a new project backed by manually pasted text.
 
     Reuses the existing text ingest flow to create the document and kick off
@@ -1197,6 +1256,7 @@ async def create_project_for_text(req: IngestTextRequest, user: dict = Depends(g
         req.text,
         req.title,
         autopilot_enabled=False,
+        session_id=agent_session_id,
     )
     document_id = job_status.document_id
     project_title = _derive_project_title_from_text(req.text, req.title)
@@ -2581,6 +2641,7 @@ async def start_generate_blog_job(
     queue,
     user_id: str,
     req: GenerateBlogRequest,
+    session_id: Optional[str] = None,
 ) -> JobStatus:
     document_id = req.document_id
     logger.info(
@@ -2605,6 +2666,7 @@ async def start_generate_blog_job(
         job_type=JobType.GENERATE_BLOG.value,
         document_id=document_id,
         payload={"options": resolved_options},
+        session_id=session_id,
     )
 
     # In inline mode we run the full blog generation pipeline synchronously,
@@ -2682,17 +2744,7 @@ async def start_generate_blog_job(
         except ValueError:
             status_enum = JobStatusEnum.COMPLETED
 
-        return JobStatus(
-            job_id=job_id,
-            user_id=user_id,
-            status=status_enum,
-            progress=progress,
-            created_at=_parse_db_datetime(final_row.get("created_at")),
-            completed_at=_parse_db_datetime(completed_at) if completed_at else None,
-            job_type=JobType.GENERATE_BLOG.value,
-            document_id=document_id,
-            output=output,
-        )
+        return _job_status_from_row(final_row)
 
     payload = {
         "job_id": job_id,
@@ -2701,6 +2753,8 @@ async def start_generate_blog_job(
         "document_id": document_id,
         "options": resolved_options,
     }
+    if session_id:
+        payload["session_id"] = session_id
     enqueued, enqueue_exception, should_fail = await enqueue_job_with_guard(
         queue,
         job_id,
@@ -2722,16 +2776,7 @@ async def start_generate_blog_job(
                 "enqueue_exception": (str(enqueue_exception) if enqueue_exception else None),
             },
         )
-    progress = _parse_job_progress_model(progress_str=job_row.get("progress", "{}"))
-    return JobStatus(
-        job_id=job_id,
-        user_id=user_id,
-        status=JobStatusEnum.PENDING,
-        progress=progress,
-        created_at=_parse_db_datetime(job_row.get("created_at")),
-        job_type=JobType.GENERATE_BLOG.value,
-        document_id=document_id,
-    )
+    return _job_status_from_row(job_row)
 
 
 @router.get("/debug/google", tags=["Debug"])
@@ -3379,6 +3424,7 @@ async def start_optimize_job(
     user_id: str,
     document_id: str,
     request: OptimizeDocumentRequest,
+    session_id: Optional[str] = None,
 ) -> JobStatus:
     doc = await _load_document_for_user(db, document_id, user_id)
     folder_id = _drive_folder_from_document(doc)
@@ -3391,6 +3437,7 @@ async def start_optimize_job(
         document_id=document_id,
         extensions=request.extensions or [],
         payload=request.model_dump(),
+        session_id=session_id,
     )
     payload = {
         "job_id": job_id,
@@ -3403,6 +3450,8 @@ async def start_optimize_job(
         "cleanup_originals": request.cleanup_originals,
         "max_retries": request.max_retries,
     }
+    if session_id:
+        payload["session_id"] = session_id
     enqueued, enqueue_exception, should_fail = await enqueue_job_with_guard(queue, job_id, user_id, payload, allow_inline_fallback=False)
     if should_fail:
         detail = "Queue unavailable or enqueue failed; background processing is required in production."
@@ -3417,24 +3466,19 @@ async def start_optimize_job(
                 "enqueue_exception": (str(enqueue_exception) if enqueue_exception else None),
             },
         )
-    progress = _parse_job_progress_model(progress_str=job_row.get("progress", "{}"))
-    return JobStatus(
-        job_id=job_id,
-        user_id=user_id,
-        status=JobStatusEnum.PENDING,
-        progress=progress,
-        created_at=_parse_db_datetime(job_row.get("created_at")),
-        job_type=JobType.OPTIMIZE_DRIVE.value,
-        document_id=document_id,
-    )
+    return _job_status_from_row(job_row)
 
 
 @router.post("/api/v1/optimize", response_model=JobStatus, tags=["Jobs"])
-async def optimize_images(request: OptimizeDocumentRequest, user: dict = Depends(get_saas_user)):
+async def optimize_images(
+    request: OptimizeDocumentRequest,
+    user: dict = Depends(get_saas_user),
+    agent_session_id: Optional[str] = Depends(get_agent_session_id),
+):
     db = ensure_db()
     queue = ensure_services()[1]
     try:
-        return await start_optimize_job(db, queue, user["user_id"], request.document_id, request)
+        return await start_optimize_job(db, queue, user["user_id"], request.document_id, request, session_id=agent_session_id)
     except HTTPException:
         raise
     except Exception as e:
@@ -3443,10 +3487,14 @@ async def optimize_images(request: OptimizeDocumentRequest, user: dict = Depends
 
 
 @router.post("/api/v1/pipelines/generate_blog", response_model=JobStatus, tags=["Pipelines"])
-async def generate_blog_pipeline(request: GenerateBlogRequest, user: dict = Depends(get_saas_user)):
+async def generate_blog_pipeline(
+    request: GenerateBlogRequest,
+    user: dict = Depends(get_saas_user),
+    agent_session_id: Optional[str] = Depends(get_agent_session_id),
+):
     db, queue = ensure_services()
     try:
-        return await start_generate_blog_job(db, queue, user["user_id"], request)
+        return await start_generate_blog_job(db, queue, user["user_id"], request, session_id=agent_session_id)
     except HTTPException:
         raise
     except Exception as exc:
@@ -3460,61 +3508,84 @@ async def get_job_status(job_id: str, user: dict = Depends(get_saas_user)):
     job = await get_job(db, job_id, user["user_id"])
     if not job:
         raise JobNotFoundError(job_id)
-    progress = _parse_job_progress_model(progress_str=job.get("progress", "{}"))
-    return JobStatus(
-        job_id=job["job_id"],
-        user_id=job["user_id"],
-        status=JobStatusEnum(job["status"]),
-        progress=progress,
-        created_at=_parse_db_datetime(job.get("created_at")),
-        completed_at=_parse_db_datetime(job.get("completed_at")) if job.get("completed_at") else None,
-        error=job.get("error"),
-        job_type=job.get("job_type"),
-        document_id=job.get("document_id"),
-        output=(job.get("output") if isinstance(job.get("output"), dict) else None),
-    )
+    return _job_status_from_row(job)
 
 
 @router.get("/api/v1/jobs", response_model=JobListResponse, tags=["Jobs"])
-async def list_user_jobs(page: int = 1, page_size: int = 20, status_filter: Optional[JobStatusEnum] = None, user: dict = Depends(get_saas_user)):
+async def list_user_jobs(
+    page: int = 1,
+    page_size: int = 20,
+    status_filter: Optional[JobStatusEnum] = None,
+    user: dict = Depends(get_saas_user),
+    agent_session_id: Optional[str] = Depends(get_agent_session_id),
+):
     db = ensure_db()
     if page < 1:
         page = 1
     if page_size < 1 or page_size > 100:
         page_size = 20
-    jobs_list, total = await list_jobs(db, user["user_id"], page=page, page_size=page_size, status=status_filter.value if status_filter else None)
-    job_statuses = []
-    for job in jobs_list:
-        progress = _parse_job_progress_model(progress_str=job.get("progress", "{}"))
-        job_statuses.append(
-            JobStatus(
-                job_id=job["job_id"],
-                user_id=job["user_id"],
-                status=JobStatusEnum(job["status"]),
-                progress=progress,
-                created_at=_parse_db_datetime(job.get("created_at")),
-                completed_at=_parse_db_datetime(job.get("completed_at")) if job.get("completed_at") else None,
-                error=job.get("error"),
-                job_type=job.get("job_type"),
-                document_id=job.get("document_id"),
-                output=(job.get("output") if isinstance(job.get("output"), dict) else None),
-            )
-        )
+    jobs_list, total = await list_jobs(
+        db,
+        user["user_id"],
+        page=page,
+        page_size=page_size,
+        status=status_filter.value if status_filter else None,
+        session_id=agent_session_id,
+    )
+    job_statuses = [_job_status_from_row(job) for job in jobs_list]
     return JobListResponse(jobs=job_statuses, total=total, page=page, page_size=page_size, has_more=(page * page_size) < total)
 
 
+@router.get("/api/v1/sessions/events", response_model=SessionEventsResponse, tags=["Sessions"])
+async def list_session_events_endpoint(
+    after_sequence: Optional[int] = Query(default=None, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
+    user: dict = Depends(get_saas_user),
+    session_id: str = Depends(require_agent_session_id),
+):
+    db = ensure_db()
+    safe_limit = max(1, min(limit, 200))
+    events = await list_pipeline_events(
+        db,
+        user["user_id"],
+        session_id=session_id,
+        after_sequence=after_sequence,
+        limit=safe_limit,
+    )
+    jobs_rows, _ = await list_jobs(
+        db,
+        user["user_id"],
+        page=1,
+        page_size=safe_limit,
+        session_id=session_id,
+    )
+    return SessionEventsResponse(
+        session_id=session_id,
+        events=[_pipeline_event_from_row(evt) for evt in events],
+        jobs=[_job_status_from_row(row) for row in jobs_rows],
+    )
+
+
 @router.post("/ingest/youtube", response_model=JobStatus, tags=["Ingestion"])
-async def ingest_youtube(req: IngestYouTubeRequest, user: dict = Depends(get_saas_user)):
+async def ingest_youtube(
+    req: IngestYouTubeRequest,
+    user: dict = Depends(get_saas_user),
+    agent_session_id: Optional[str] = Depends(get_agent_session_id),
+):
     db = ensure_db()
     queue = ensure_services()[1]
-    return await start_ingest_youtube_job(db, queue, user["user_id"], str(req.url))
+    return await start_ingest_youtube_job(db, queue, user["user_id"], str(req.url), session_id=agent_session_id)
 
 
 @router.post("/ingest/text", response_model=JobStatus, tags=["Ingestion"])
-async def ingest_text(req: IngestTextRequest, user: dict = Depends(get_saas_user)):
+async def ingest_text(
+    req: IngestTextRequest,
+    user: dict = Depends(get_saas_user),
+    agent_session_id: Optional[str] = Depends(get_agent_session_id),
+):
     db = ensure_db()
     queue = ensure_services()[1]
-    return await start_ingest_text_job(db, queue, user["user_id"], req.text, req.title)
+    return await start_ingest_text_job(db, queue, user["user_id"], req.text, req.title, session_id=agent_session_id)
 
 
 @router.delete("/api/v1/jobs/{job_id}", tags=["Jobs"])

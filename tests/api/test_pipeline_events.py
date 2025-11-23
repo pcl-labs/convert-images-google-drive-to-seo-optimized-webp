@@ -28,6 +28,10 @@ async def test_pipeline_events_round_trip(tmp_path, monkeypatch):
         "INSERT OR REPLACE INTO jobs (job_id, user_id, status, progress, job_type, created_at) VALUES (?, ?, 'pending', '{}', 'ingest_youtube', datetime('now'))",
         ("job-1", "user-1"),
     )
+    await db.execute(
+        "UPDATE jobs SET session_id = ? WHERE job_id = ?",
+        ("sess-1", "job-1"),
+    )
     await record_pipeline_event(
         db,
         "user-1",
@@ -45,6 +49,11 @@ async def test_pipeline_events_round_trip(tmp_path, monkeypatch):
     assert events
     assert events[0]["stage"] == "test"
     assert events[0]["data"].get("foo") == "bar"
+    assert events[0]["session_id"] == "sess-1"
+    filtered = await list_pipeline_events(db, "user-1", session_id="sess-1")
+    assert filtered
+    assert filtered[0]["event_id"] == events[0]["event_id"]
+    assert await list_pipeline_events(db, "user-1", session_id="missing") == []
     rows = await db.execute_all("SELECT * FROM notifications WHERE user_id = ?", ("user-1",))
     assert rows is not None
     notifications = [dict(row) for row in rows]

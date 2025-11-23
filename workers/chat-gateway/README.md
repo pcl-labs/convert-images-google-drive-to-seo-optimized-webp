@@ -13,7 +13,7 @@ can offer:
 - `GET /agent/tools` – list the available Codex-style tools (ingest_youtube,
   ingest_text, optimize, generate_blog, drive_publish).
 - `POST /agent/tools/:tool/invoke` – forward tool calls to the FastAPI backend
-  (authorization headers are forwarded automatically).
+  (authorization headers and `X-Agent-Session-Id` are forwarded automatically).
 
 ## Development
 
