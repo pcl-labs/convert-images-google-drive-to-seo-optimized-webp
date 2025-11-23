@@ -148,6 +148,36 @@ class Document(BaseModel):
     updated_at: Optional[datetime] = None
 
 
+class DriveDocumentStatus(BaseModel):
+    document_id: str
+    linked: bool = False
+    drive_file_id: Optional[str] = None
+    drive_revision_id: Optional[str] = None
+    drive_stage: Optional[str] = None
+    sync_status: Optional[str] = None
+    needs_reconcile: bool = False
+    external_edit_detected: bool = False
+    last_ingested_revision: Optional[str] = None
+    last_ingested_at: Optional[str] = None
+    pending_revision_id: Optional[str] = None
+    pending_modified_time: Optional[str] = None
+    web_view_link: Optional[str] = None
+    drive: Dict[str, Any] = Field(default_factory=dict)
+
+
+class DrivePublishRequest(BaseModel):
+    body: Optional[str] = Field(
+        default=None,
+        description="Optional MDX body to send to Google Docs (defaults to stored raw_text when omitted).",
+    )
+    stage: Optional[str] = Field(
+        default=None,
+        min_length=2,
+        max_length=40,
+        description="Optional drive_stage metadata value to set after publishing (e.g., draft, transcript, published).",
+    )
+
+
 class DriveDocumentRequest(BaseModel):
     drive_source: str = Field(..., min_length=5, max_length=500, description="Drive share link or folder ID")
 
