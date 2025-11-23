@@ -2217,8 +2217,22 @@ async def ensure_sessions_schema(db: Database) -> None:
     await db.batch(stmts)
 
 
+async def _table_has_column(db: Database, table_name: str, column_name: str) -> bool:
+    """Return True when the given table already has the requested column."""
+    # PRAGMA table_info cannot parameterize table names, so ensure we quote safely.
+    safe_table = table_name.replace('"', '""')
+    rows = await db.execute_all(f'PRAGMA table_info("{safe_table}")', ())
+    for row in rows or []:
+        row_dict = _jsproxy_to_dict(row)
+        if (row_dict.get("name") or "").lower() == column_name.lower():
+            return True
+    return False
+
+
 async def _ensure_project_title_column(db: Database) -> None:
     """Ensure the projects table has a nullable title column."""
+    if await _table_has_column(db, "projects", "title"):
+        return
     try:
         await db.execute("ALTER TABLE projects ADD COLUMN title TEXT", ())
         logger.info("Added title column to projects table")

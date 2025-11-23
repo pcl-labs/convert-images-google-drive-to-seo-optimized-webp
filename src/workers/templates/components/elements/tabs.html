@@ -1,10 +1,54 @@
+{#
+  tabs(tab_var, items)
+
+  - tab_var: Name of the Alpine.js state variable that stores the active tab
+    value (e.g. "currentTab"). The surrounding component is expected to
+    define `x-data="{ currentTab: 'first' }"` or similar.
+  - items: Iterable of objects with at least:
+      - value: unique string used as the tab's value and ID suffix
+      - label: text label rendered inside the tab
+
+  Usage example:
+
+    <div x-data="{ currentTab: 'overview' }">
+      {{ tabs('currentTab', [
+        {"value": "overview", "label": "Overview"},
+        {"value": "details", "label": "Details"},
+      ]) }}
+
+      <div
+        x-show="currentTab === 'overview'"
+        id="panel-overview"
+        role="tabpanel"
+        aria-labelledby="tab-overview"
+      >
+        ...
+      </div>
+      <div
+        x-show="currentTab === 'details'"
+        id="panel-details"
+        role="tabpanel"
+        aria-labelledby="tab-details"
+      >
+        ...
+      </div>
+    </div>
+#}
 {% macro tabs(tab_var, items) %}
-  <div class="flex items-center gap-8 border-b border-border/60 px-2">
+  <div
+    class="flex items-center gap-8 border-b border-border/60 px-2"
+    role="tablist"
+  >
     {% for item in items %}
       <button
         type="button"
         class="py-4 text-sm font-semibold uppercase tracking-wide transition-colors border-b-2 border-transparent"
+        id="tab-{{ item.value }}"
+        role="tab"
         :class="{{ tab_var }} === '{{ item.value }}' ? 'text-content border-b-2 border-primary' : 'text-contentMuted hover:text-content'"
+        :aria-selected="{{ tab_var }} === '{{ item.value }}'"
+        :tabindex="{{ tab_var }} === '{{ item.value }}' ? '0' : '-1'"
+        :aria-controls="'panel-{{ item.value }}'"
         @click="{{ tab_var }} = '{{ item.value }}'"
       >
         {{ item.label }}

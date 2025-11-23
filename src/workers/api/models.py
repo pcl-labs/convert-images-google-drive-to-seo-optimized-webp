@@ -485,38 +485,68 @@ class ProjectActivityResponse(BaseModel):
     items: List[Dict[str, Any]]
 
 
+class SEOLevel(str, Enum):
+    GOOD = "good"
+    AVERAGE = "average"
+    POOR = "poor"
+
+
 class SEOScore(BaseModel):
     name: str
     label: str
     score: float = Field(ge=0.0, le=100.0)
-    level: str = Field(description="Simple qualitative bucket: good, average, poor")
+    level: SEOLevel = Field(description="Simple qualitative bucket: good, average, poor")
     details: Optional[str] = None
+
+
+class Severity(str, Enum):
+    INFO = "info"
+    WARNING = "warning"
+    ERROR = "error"
 
 
 class SEOSuggestion(BaseModel):
     id: str
     title: str
     summary: str
-    severity: str = Field(default="info", description="info, warning, or error")
+    severity: Severity = Field(default=Severity.INFO, description="info, warning, or error")
     metric: Optional[str] = Field(default=None, description="Score that surfaced the suggestion")
+
+
+class IssueLevel(str, Enum):
+    WARNING = "warning"
+    ERROR = "error"
 
 
 class SchemaIssue(BaseModel):
     code: str
-    level: str = Field(description="warning or error")
+    level: IssueLevel = Field(description="warning or error")
     message: str
     path: Optional[str] = None
     property: Optional[str] = None
 
 
+class ValidationSeverity(str, Enum):
+    OK = "ok"
+    WARNING = "warning"
+    ERROR = "error"
+
+
+class ValidationSource(str, Enum):
+    LOCAL = "local"
+    SCHEMA_ORG = "schema.org"
+    GOOGLE = "google"
+    MIXED = "mixed"
+
+
 class SchemaValidationResult(BaseModel):
     is_valid: bool
-    severity: str = Field(description="ok, warning, or error")
+    severity: ValidationSeverity = Field(description="ok, warning, or error")
     issues: List[SchemaIssue] = Field(default_factory=list)
     schema_type: Optional[str] = None
     hint: Optional[str] = None
-    source: Optional[str] = Field(
-        default="local",
+    source: Optional[ValidationSource] = Field(
+        default=ValidationSource.LOCAL,
         description="local, schema.org, google, or mixed",
     )
 

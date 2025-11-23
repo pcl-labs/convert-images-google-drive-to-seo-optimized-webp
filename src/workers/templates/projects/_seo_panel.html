@@ -2,7 +2,7 @@
   id="project-seo-panel"
   class="mb-6 rounded-2xl border border-border bg-surface px-4 py-4 shadow-sm"
   data-project-id="{{ project.project_id }}"
-  data-initial-analysis="{{ ((initial_seo_analysis | tojson) if initial_seo_analysis is not none else 'null') | e }}"
+  data-initial-analysis="{{ (initial_seo_analysis | tojson) if initial_seo_analysis is not none else 'null' }}"
 >
   <header class="flex items-center justify-between gap-3">
     <div class="min-w-0">
@@ -21,7 +21,12 @@
   <div class="mt-3 text-xs text-contentMuted" data-seo-loading>
     Ready to analyze this draft.
   </div>
-  <div class="mt-3 hidden rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive" data-seo-error></div>
+  <div
+    class="mt-3 hidden rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+    data-seo-error
+    aria-live="assertive"
+    aria-atomic="true"
+  ></div>
 
   <div class="mt-3 hidden space-y-4" data-seo-content>
     <div class="rounded-xl border border-border bg-surface/70 px-3 py-3 space-y-2">

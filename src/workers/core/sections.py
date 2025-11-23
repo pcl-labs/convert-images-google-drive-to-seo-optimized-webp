@@ -108,6 +108,29 @@ def _word_count(text: str) -> int:
     return len(str(text).split())
 
 
+def _extract_summary(body_text: str, max_length: int = 200) -> str:
+    """Return a short summary from the first paragraph of body_text.
+
+    - Falsy body_text -> empty string.
+    - Uses the first paragraph, split on double newlines ("\n\n").
+    - Trims and truncates to ``max_length`` characters.
+    - Appends "..." only if the original paragraph exceeds ``max_length``.
+    """
+    if not body_text:
+        return ""
+
+    if "\n\n" in body_text:
+        first_para = body_text.split("\n\n", 1)[0]
+    else:
+        first_para = body_text
+
+    trimmed = first_para.strip()
+    if len(trimmed) <= max_length:
+        return trimmed
+
+    return trimmed[:max_length].strip() + "..."
+
+
 def extract_sections_from_mdx(body_mdx: str) -> List[Dict[str, Any]]:
     """Extract sections from MDX content by parsing H2 and H3 headings.
     
@@ -134,17 +157,25 @@ def extract_sections_from_mdx(body_mdx: str) -> List[Dict[str, Any]]:
         h3_match = re.match(r"^###\s+(.+)$", stripped)
         
         if h2_match or h3_match:
-            # Save previous section if exists
-            if current_section is not None:
+            # Save intro content before first heading as an Introduction section.
+            if current_section is None and current_content:
                 body_text = "\n".join(current_content).strip()
-                # Extract summary from first paragraph
-                summary = ""
-                if body_text:
-                    # Get first paragraph or first 200 chars
-                    first_para = body_text.split("\n\n")[0] if "\n\n" in body_text else body_text
-                    summary = first_para[:200].strip()
-                    if len(first_para) > 200:
-                        summary += "..."
+                summary = _extract_summary(body_text)
+                sections.append(
+                    {
+                        "section_id": "sec-0",
+                        "index": 0,
+                        "title": "Introduction",
+                        "summary": summary,
+                        "body_mdx": body_text,
+                    }
+                )
+                current_content = []
+
+            # Save previous section if exists
+            elif current_section is not None:
+                body_text = "\n".join(current_content).strip()
+                summary = _extract_summary(body_text)
                 current_section["summary"] = summary
                 current_section["body_mdx"] = body_text
                 sections.append(current_section)
@@ -172,21 +203,14 @@ def extract_sections_from_mdx(body_mdx: str) -> List[Dict[str, Any]]:
     # Save last section
     if current_section is not None:
         body_text = "\n".join(current_content).strip()
-        summary = ""
-        if body_text:
-            first_para = body_text.split("\n\n")[0] if "\n\n" in body_text else body_text
-            summary = first_para[:200].strip()
-            if len(first_para) > 200:
-                summary += "..."
+        summary = _extract_summary(body_text)
         current_section["summary"] = summary
         current_section["body_mdx"] = body_text
         sections.append(current_section)
     elif current_content:
         # No headings found, create single section from all content
         body_text = "\n".join(current_content).strip()
-        summary = body_text[:200].strip()
-        if len(body_text) > 200:
-            summary += "..."
+        summary = _extract_summary(body_text)
         sections.append({
             "section_id": "sec-0",
             "index": 0,

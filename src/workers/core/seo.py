@@ -28,7 +28,9 @@ HINT_ALIASES: Dict[str, str] = {
     "how-to": "how_to",
 }
 
-HINT_BY_SCHEMA: Dict[str, str] = {schema: hint for hint, schema in SCHEMA_TYPE_BY_HINT.items()}
+HINT_BY_SCHEMA: Dict[str, List[str]] = {}
+for hint, schema in SCHEMA_TYPE_BY_HINT.items():
+    HINT_BY_SCHEMA.setdefault(schema, []).append(hint)
 
 
 def normalize_content_type_value(value: Optional[str]) -> str:
@@ -47,11 +49,13 @@ def derive_content_type_hint(content_type: str, schema_type: Optional[str] = Non
     if lowered in SCHEMA_TYPE_BY_HINT:
         return lowered
     if schema_type:
-        hint = HINT_BY_SCHEMA.get(schema_type.strip())
-        if hint:
-            return hint
+        hints = HINT_BY_SCHEMA.get(schema_type.strip())
+        if hints:
+            # Prefer the first registered hint for this schema.
+            return hints[0]
     if lowered.startswith("http"):
-        return HINT_BY_SCHEMA.get(lowered, "custom")
+        hints = HINT_BY_SCHEMA.get(lowered)
+        return hints[0] if hints else "custom"
     return lowered or "generic_blog"
 
 
@@ -71,7 +75,8 @@ def resolve_schema_type(content_type: str, schema_type: Optional[str]) -> Tuple[
         # When content_type is empty but schema_type points to a known type,
         # expose the canonical hint for downstream usage.
         if hint == "custom":
-            hint = HINT_BY_SCHEMA.get(normalized_schema, stored_content_type.lower())
+            hints = HINT_BY_SCHEMA.get(normalized_schema)
+            hint = hints[0] if hints else stored_content_type.lower()
         return stored_content_type, normalized_schema, hint or "generic_blog"
 
     if stored_content_type.startswith("http"):
@@ -82,7 +87,8 @@ def resolve_schema_type(content_type: str, schema_type: Optional[str]) -> Tuple[
 
     hint_value = derive_content_type_hint(stored_content_type, normalized_schema)
     if hint_value == "custom" and stored_content_type.startswith("http"):
-        hint_value = HINT_BY_SCHEMA.get(stored_content_type, "custom")
+        hints = HINT_BY_SCHEMA.get(stored_content_type)
+        hint_value = hints[0] if hints else "custom"
     return stored_content_type, normalized_schema or DEFAULT_SCHEMA_TYPE, hint_value or "generic_blog"
 
 
@@ -97,11 +103,26 @@ def build_structured_content(content_hint: str, sections: List[Dict[str, Any]]) 
         summary = str(raw.get("summary") or raw.get("body_mdx") or "").strip()
         if not title and not summary:
             continue
+        raw_order = raw.get("order", idx)
+        order_value: int
+        if isinstance(raw_order, int):
+            order_value = raw_order
+        else:
+            # Best-effort parse of order; fall back to the enumerated index.
+            try:
+                if isinstance(raw_order, str):
+                    cleaned = raw_order.strip()
+                    order_value = int(cleaned) if cleaned else idx
+                else:
+                    order_value = int(raw_order)  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                order_value = idx
+
         normalized_sections.append(
             {
                 "title": title or f"Section {idx + 1}",
                 "summary": summary,
-                "order": int(raw.get("order", idx)),
+                "order": order_value,
                 "section_id": raw.get("section_id") or f"sec-{idx}",
             }
         )
@@ -250,12 +271,12 @@ def build_schema_json_ld(
             lessons = (structured or {}).get("lessons")
         if not lessons:
             return base
-        base["hasCourseInstance"] = [
+        base["syllabusSections"] = [
             {
-                "@type": "CourseInstance",
+                "@type": "Syllabus",
                 "name": lesson.get("title"),
                 "description": lesson.get("description"),
-                "courseMode": "online",
+                "position": lesson.get("module_index"),
             }
             for lesson in lessons
             if lesson.get("title")

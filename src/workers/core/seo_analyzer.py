@@ -77,13 +77,13 @@ def _meta_score(title: str, description: str) -> float:
 def _keyword_score(text: str, keywords: List[str]) -> Tuple[float, Dict[str, int]]:
     if not keywords:
         return 100.0, {}
-    lowered = text.lower()
     counts: Dict[str, int] = {}
     for keyword in keywords:
         if not keyword:
             continue
-        needle = keyword.lower()
-        occurrences = lowered.count(needle)
+        # Use word-boundary matching so "cat" does not match "category".
+        pattern = re.compile(r"\\b" + re.escape(str(keyword).strip()) + r"\\b", flags=re.IGNORECASE)
+        occurrences = len(pattern.findall(text))
         counts[keyword] = occurrences
     target_hits = sum(1 for count in counts.values() if count >= 2)
     coverage = target_hits / max(1, len(keywords))
