@@ -181,7 +181,7 @@ async def authenticate_with_better_auth(request: Request) -> Dict[str, Any]:
 
     if result is None:
         # Better Auth returned null (no session) - this is valid for unauthenticated requests
-        # Return None to indicate no authentication, rather than raising an error
+        # Return a minimal identity dict for rate limiting purposes
         logger.info(
             "better_auth_no_session",
             extra={
@@ -189,7 +189,17 @@ async def authenticate_with_better_auth(request: Request) -> Dict[str, Any]:
                 "url": url,
             },
         )
-        return None
+        # Return minimal identity for rate limiting - use Authorization header as identity key
+        auth_header = headers.get("Authorization", "")
+        return {
+            "user_id": None,
+            "session_id": None,
+            "organization_id": None,
+            "role": None,
+            "session": {},
+            "user": {},
+            "_auth_header": auth_header[:20] if auth_header else None,  # For rate limiting
+        }
 
     return _extract_identity(result)
 
