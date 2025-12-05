@@ -32,14 +32,22 @@ def _rate_limits() -> tuple[int, int]:
 
 
 def _identity_key(user: Dict[str, Any], request: Request) -> str:
-    return (
-        str(user.get("organization_id"))
-        or str(user.get("user_id"))
-        or str(user.get("session_id"))
-        or request.headers.get("Authorization", "").strip()
-        or getattr(request.client, "host", "")  # type: ignore[arg-type]
-        or "anonymous"
-    )
+    org_id = user.get("organization_id")
+    if org_id:
+        return str(org_id)
+    user_id = user.get("user_id")
+    if user_id:
+        return str(user_id)
+    session_id = user.get("session_id")
+    if session_id:
+        return str(session_id)
+    auth_header = request.headers.get("Authorization", "").strip()
+    if auth_header:
+        return auth_header
+    host = getattr(request.client, "host", "")  # type: ignore[arg-type]
+    if host:
+        return host
+    return "anonymous"
 
 
 def _is_identity_rate_limited(identity: str) -> bool:

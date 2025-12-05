@@ -204,6 +204,10 @@ class Settings:
                 raise ValueError("CF_QUEUE_NAME is required when USE_INLINE_QUEUE=false")
         session_endpoint = (self.better_auth_session_endpoint or "/api/auth/get-session").strip()
         self.better_auth_session_endpoint = session_endpoint or "/api/auth/get-session"
+        if not self.better_auth_session_endpoint.startswith("/"):
+            raise ValueError(
+                f"better_auth_session_endpoint must start with '/': {self.better_auth_session_endpoint}"
+            )
         self.better_auth_timeout_seconds = max(2.0, _float(self.better_auth_timeout_seconds, 10.0))
 
     @classmethod
