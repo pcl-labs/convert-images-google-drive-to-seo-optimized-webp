@@ -665,3 +665,21 @@ class ProjectSEOAnalysis(BaseModel):
     schema_validation: Optional[SchemaValidationResult] = None
 
     model_config = ConfigDict(use_enum_values=True)
+
+
+class TranscriptProxyRequest(BaseModel):
+    """Request model for YouTube transcript proxy endpoint."""
+    
+    video_id: str = Field(..., description="YouTube video ID (11 characters)", min_length=11, max_length=11)
+    api_key: Optional[str] = Field(default=None, description="Optional API key if Authorization header unavailable")
+
+
+class TranscriptProxyResponse(BaseModel):
+    """Response model for YouTube transcript proxy endpoint."""
+    
+    success: bool
+    transcript: Optional[Dict[str, Any]] = Field(default=None, description="Transcript data with text, format, language, track_kind")
+    metadata: Optional[Dict[str, Any]] = Field(default=None, description="Metadata including client_version, method, video_id")
+    error: Optional[Dict[str, Any]] = Field(default=None, description="Error details when success is False")
+    
+    model_config = ConfigDict(use_enum_values=True)

@@ -28,9 +28,9 @@ DEAD_LETTER_QUEUE_NAME = "quill-dlq"
 USE_INLINE_QUEUE = "false"  # Ignored at runtime; environment controls inline vs queue
 TRANSCRIPT_LANGS = "en,en-US,en-GB"
 OPENAI_API_BASE = "https://gateway.ai.cloudflare.com/v1/fa3dc6c06433f6b0ea78d95bce23ad91/quill/compat"
-OPENAI_BLOG_MODEL = "gpt-4.1-mini"
-OPENAI_BLOG_TEMPERATURE = "0.6"
-OPENAI_BLOG_MAX_OUTPUT_TOKENS = "2200"
+# YouTube transcript proxy service (tubularblogs.com)
+# Set via: wrangler secret put YOUTUBE_PROXY_API_URL
+# Set via: wrangler secret put YOUTUBE_PROXY_API_KEY
 
 # D1 Database binding
 # The binding name "DB" must match what the code expects (see src/workers/runtime.py)
@@ -71,7 +71,9 @@ binding = "DLQ"  # Must match WORKER_DLQ_BINDING in src/workers/runtime.py
 # Optional:
 #   wrangler secret put GITHUB_REDIRECT_URI     # OAuth redirect URI (optional)
 #   wrangler secret put BASE_URL                 # Base URL for the app (optional)
-#   wrangler secret put OPENAI_API_KEY          # OpenAI API key (optional, for AI features)
+#   wrangler secret put OPENAI_API_KEY          # OpenAI API key (optional, for lean gateway)
+#   wrangler secret put YOUTUBE_PROXY_API_URL   # YouTube proxy service URL (e.g., https://tubularblogs.com)
+#   wrangler secret put YOUTUBE_PROXY_API_KEY   # YouTube proxy service API key
 #
 # For production with Cloudflare Queues (USE_INLINE_QUEUE=false):
 #   wrangler secret put CLOUDFLARE_ACCOUNT_ID   # Cloudflare account ID (required for Queues and Vectorize)
@@ -80,12 +82,10 @@ binding = "DLQ"  # Must match WORKER_DLQ_BINDING in src/workers/runtime.py
 #   wrangler secret put CF_QUEUE_NAME           # Queue name (default: "quill-jobs")
 #   wrangler secret put CF_QUEUE_DLQ            # DLQ name (default: "quill-dlq")
 #
-# Note: CLOUDFLARE_API_TOKEN must have Vectorize permissions for transcript chunk-and-embed to work.
+# Note: CLOUDFLARE_API_TOKEN permissions depend on features used.
 # Create token in Cloudflare Dashboard → My Profile → API Tokens with:
 #   - Queues Read
 #   - Queues Edit
-#   - Vectorize Read
-#   - Vectorize Edit
 #   - Restricted to account: fa3dc6c06433f6b0ea78d95bce23ad91
 #
 # See docs/CLOUDFLARE_WORKERS.md for complete setup instructions.

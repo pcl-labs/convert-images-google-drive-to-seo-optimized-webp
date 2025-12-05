@@ -24,7 +24,7 @@ from .static_loader import mount_static_files
 
 from .config import Settings, settings as global_settings
 from .cloudflare_queue import QueueProducer
-from .database import Database, ensure_notifications_schema, ensure_sessions_schema, ensure_full_schema
+from .database import Database, ensure_sessions_schema, ensure_full_schema
 from .exceptions import APIException
 from .app_logging import setup_logging, get_logger, get_request_id
 from .middleware import (
@@ -34,7 +34,6 @@ from .middleware import (
     SecurityHeadersMiddleware,
 )
 from .deps import set_db_instance, set_queue_producer
-from .notifications_stream import cancel_all_sse_connections
 
 
 def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
@@ -80,11 +79,6 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
         set_db_instance(db_instance)
 
         try:
-            if active_settings.enable_notifications:
-                await ensure_notifications_schema(db_instance)
-                app_logger.info("Notifications schema ensured")
-            else:
-                app_logger.info("Notifications disabled; skipping schema ensure")
             await ensure_sessions_schema(db_instance)
             app_logger.info("Session schema ensured")
             # Apply full schema to ensure all tables exist
@@ -115,12 +109,7 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
             """Perform shutdown cleanup operations."""
             nonlocal db_instance, queue_producer
 
-            try:
-                sse_count = await cancel_all_sse_connections()
-                if sse_count > 0:
-                    app_logger.info("Cancelled %s SSE connections", sse_count)
-            except Exception as exc:  # pragma: no cover - defensive logging
-                app_logger.error("Error cancelling SSE connections: %s", exc, exc_info=True)
+            # Removed: SSE connection cleanup - notifications stream removed
 
             try:
                 current_task = asyncio.current_task()
@@ -229,17 +218,11 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
 
     from .public import router as public_router
     from .protected import router as protected_router
-    from .content import (
-        router as content_router,
-        documents_router as documents_v1_router,
-        jobs_router as jobs_v1_router,
-    )
+    from .proxy import router as proxy_router
 
     app.include_router(public_router)
     app.include_router(protected_router)
-    app.include_router(documents_v1_router)
-    app.include_router(jobs_v1_router)
-    app.include_router(content_router)
+    app.include_router(proxy_router)
 
     @app.get("/favicon.ico", include_in_schema=False)
     async def favicon():

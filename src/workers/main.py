@@ -81,7 +81,6 @@ class Default(WorkerEntrypoint):
         #    secrets via os.environ, it is safe to import modules that access
         #    api.config.settings at import time.
         from api.database import Database
-        from consumer import handle_queue_message
         from api.config import settings
         from api.cloudflare_queue import QueueProducer
         import json as _json
@@ -98,6 +97,8 @@ class Default(WorkerEntrypoint):
         queue_producer = QueueProducer(queue=settings.queue, dlq=settings.dlq)
         
         # Process each message in the batch
+        # Note: Most job processors have been removed (Drive, YouTube OAuth, content generation)
+        # Only optimization jobs remain, which may also be removed in the future
         for message in batch.messages:
             try:
                 body = message.body
@@ -113,7 +114,14 @@ class Default(WorkerEntrypoint):
                 else:
                     payload = body
 
-                await handle_queue_message(payload, db, queue_producer)
+                # Stub: Most job processors removed
+                job_type = payload.get("job_type", "unknown")
+                logger.warning(
+                    "Queue message received but job processor removed",
+                    extra={"job_type": job_type, "job_id": payload.get("job_id")}
+                )
+                # Acknowledge to prevent retries for removed job types
+                message.ack()
             except Exception:
                 logger.exception(
                     "Error processing queue message",

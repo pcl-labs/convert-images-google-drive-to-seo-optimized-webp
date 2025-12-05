@@ -134,7 +134,6 @@ class Settings:
     cors_origins: List[str] = field(default_factory=lambda: ["http://localhost:8000"])
     transcript_langs: List[str] = field(default_factory=lambda: ["en"])
     enable_drive_pipeline: bool = True
-    enable_notifications: bool = False
     auto_generate_after_ingest: bool = True
     drive_webhook_url: Optional[str] = None
     drive_webhook_secret: Optional[str] = None
@@ -142,11 +141,10 @@ class Settings:
     static_files_dir: Optional[str] = None
     openai_api_key: Optional[str] = None
     openai_api_base: Optional[str] = None
-    # Default OpenAI blog model (GPT-5.1 is the current target model).
-    # See https://platform.openai.com/docs/models/gpt-5.1
-    openai_blog_model: str = "gpt-5.1"
-    openai_blog_temperature: float = 0.6
-    openai_blog_max_output_tokens: int = 2200
+    
+    # YouTube transcript service configuration
+    youtube_proxy_api_url: Optional[str] = None
+    youtube_proxy_api_key: Optional[str] = None
 
     def __post_init__(self) -> None:
         self.environment = (self.environment or "development").lower()
@@ -161,7 +159,6 @@ class Settings:
             self.use_inline_queue = True
         elif self.environment == "production":
             self.use_inline_queue = False
-        self.enable_notifications = _bool(self.enable_notifications)
         # static_files_dir: None means use package-based loader (Worker-compatible)
         # If set to a path, mount_static_files() will try filesystem first, then fall back to package
         if self.static_files_dir:
@@ -188,8 +185,6 @@ class Settings:
                 f"{self.session_ttl_hours * 3600} seconds)"
             )
         self.drive_watch_renewal_window_minutes = _int(self.drive_watch_renewal_window_minutes, 60)
-        self.openai_blog_temperature = _float(self.openai_blog_temperature, 0.6)
-        self.openai_blog_max_output_tokens = _int(self.openai_blog_max_output_tokens, 2200)
         if not self.jwt_secret_key:
             raise ValueError("JWT_SECRET_KEY is required")
         # In production we always require external queues; in development
