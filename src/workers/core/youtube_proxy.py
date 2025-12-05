@@ -22,6 +22,9 @@ DEFAULT_HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
     "Accept-Encoding": "identity",
 }
+YOUTUBE_API_CLIENT_HEADERS = {
+    "Accept-Encoding": "identity",
+}
 INNERTUBE_KEY_RE = re.compile(r'"INNERTUBE_API_KEY":"(?P<key>[^"]+)"')
 CLIENT_VERSION_RE = re.compile(r'"INNERTUBE_CONTEXT_CLIENT_VERSION":"(?P<ver>[^"]+)"')
 
@@ -90,14 +93,13 @@ async def fetch_transcript_via_youtube_api(video_id: str, access_token: str) -> 
     headers = {
         "Authorization": f"Bearer {access_token}",
         "Accept": "application/json",
-        "Accept-Encoding": "gzip, deflate",
     }
     params = {
         "part": "id,snippet",
         "videoId": video_id,
         "maxResults": 50,
     }
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(timeout=30.0, headers=YOUTUBE_API_CLIENT_HEADERS) as client:
         try:
             response = await client.get(YOUTUBE_CAPTIONS_API, headers=headers, params=params)
         except httpx.HTTPError as exc:
@@ -131,7 +133,6 @@ async def fetch_transcript_via_youtube_api(video_id: str, access_token: str) -> 
         download_headers = {
             "Authorization": f"Bearer {access_token}",
             "Accept": "text/plain",
-            "Accept-Encoding": "gzip, deflate",
         }
         download_params = {"tfmt": "vtt", "alt": "media"}
         try:

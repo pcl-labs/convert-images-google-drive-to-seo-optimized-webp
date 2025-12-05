@@ -2769,17 +2769,11 @@ async def ensure_full_schema(db: Database) -> None:
         logger.info("Applied jobs table and triggers")
         
         await db.batch(pipeline_events_tables)
-        # Ensure newer columns exist on legacy databases
-        try:
-            await db.execute("ALTER TABLE pipeline_events ADD COLUMN session_id TEXT", ())
-        except Exception as e:
-            message = str(e).lower()
-            known_markers = [
-                "duplicate column name",
-                "already exists",
-                "column \"session_id\" specified more than once",
-            ]
-            if not any(marker in message for marker in known_markers):
+        # Legacy datasets might predate the session_id column; add it only if missing
+        if not await _table_has_column(db, "pipeline_events", "session_id"):
+            try:
+                await db.execute("ALTER TABLE pipeline_events ADD COLUMN session_id TEXT", ())
+            except Exception as e:
                 logger.error(
                     "pipeline_events.session_id_migration_failed",
                     exc_info=True,
