@@ -163,6 +163,13 @@ async def authenticate_with_better_auth(request: Request) -> Dict[str, Any]:
             detail="Better Auth returned invalid response",
         ) from exc
 
+    if result is None:
+        logger.error("better_auth_empty_response", extra={"status": response.status_code})
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Better Auth returned empty response",
+        )
+
     return _extract_identity(result)
 
 
