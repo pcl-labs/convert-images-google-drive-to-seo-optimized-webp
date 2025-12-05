@@ -8,4 +8,3 @@ httpx
 pydantic-settings
 pytest
 openai>=1.30.0
-youtube-transcript-api>=0.6.2

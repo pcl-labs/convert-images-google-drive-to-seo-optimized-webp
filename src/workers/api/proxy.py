@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from fastapi import APIRouter, Depends, Request, status, HTTPException
 from fastapi.responses import JSONResponse
@@ -28,14 +28,10 @@ logger = logging.getLogger(__name__)
 _identity_request_log: Dict[str, list[datetime]] = {}
 _identity_last_cleanup: Optional[datetime] = None
 _identity_cleanup_interval = 300.0  # seconds
-FALLBACK_ERROR_CODES = {
-    "no_captions",
-    "blocked",
-    "network_error",
-    "rate_limited",
-    "proxy_error",
-    "unknown",
-}
+
+YOUTUBE_LINK_HINT = (
+    "Link your YouTube account in Settings → Integrations to unlock higher-accuracy transcripts."
+)
 
 
 def _rate_limits() -> tuple[int, int]:
@@ -65,10 +61,6 @@ def _identity_key(user: Dict[str, Any], request: Request) -> str:
     if host:
         return host
     return "anonymous"
-
-
-def _should_attempt_youtube_api(error_code: str) -> bool:
-    return (error_code or "").lower() in FALLBACK_ERROR_CODES
 
 
 def _is_identity_rate_limited(identity: str) -> bool:
@@ -109,19 +101,24 @@ def _is_expired(expires_at: Optional[datetime]) -> bool:
     return expires_at <= datetime.now(timezone.utc)
 
 
-async def _try_youtube_api_fallback(request: Request, video_id: str) -> Optional[TranscriptProxyResponse]:
+async def _try_youtube_api_primary(
+    request: Request, video_id: str
+) -> Tuple[Optional[TranscriptProxyResponse], Optional[str]]:
     integration, forbidden = await fetch_youtube_integration(request)
     if forbidden:
-        logger.info("youtube_api_fallback_forbidden")
-        return None
+        logger.info("youtube_api_access_forbidden")
+        return None, YOUTUBE_LINK_HINT
     if not integration:
-        return None
+        return None, YOUTUBE_LINK_HINT
 
     token = integration.access_token
     if _is_expired(integration.expires_at):
         if not integration.refresh_token:
-            logger.warning("youtube_api_token_expired_no_refresh", extra={"integration_id": integration.integration_id})
-            return None
+            logger.warning(
+                "youtube_api_token_expired_no_refresh",
+                extra={"integration_id": integration.integration_id},
+            )
+            return None, YOUTUBE_LINK_HINT
         try:
             refreshed = await refresh_youtube_access_token(integration.refresh_token)
         except HTTPException as exc:
@@ -129,24 +126,28 @@ async def _try_youtube_api_fallback(request: Request, video_id: str) -> Optional
                 "youtube_api_token_refresh_failed",
                 extra={"status": exc.status_code if isinstance(exc, HTTPException) else None},
             )
-            return None
+            return None, YOUTUBE_LINK_HINT
         token = refreshed.get("access_token")
 
     if not token:
-        logger.warning("youtube_api_missing_access_token", extra={"integration_id": integration.integration_id})
-        return None
+        logger.warning(
+            "youtube_api_missing_access_token",
+            extra={"integration_id": integration.integration_id},
+        )
+        return None, YOUTUBE_LINK_HINT
 
     try:
         result = await fetch_transcript_via_youtube_api(video_id, token)
     except TranscriptProxyError as fallback_exc:
         logger.warning(
-            "youtube_api_fallback_failed",
+            "youtube_api_primary_failed",
             extra={"video_id": video_id, "error_code": fallback_exc.code},
         )
-        return None
+        hint = YOUTUBE_LINK_HINT if fallback_exc.code in {"permission_denied", "auth_failed"} else None
+        return None, hint
 
-    logger.info("youtube_api_fallback_success", extra={"video_id": video_id})
-    return _response_from_result(result, video_id)
+    logger.info("youtube_api_primary_success", extra={"video_id": video_id})
+    return _response_from_result(result, video_id), None
 
 
 def _error_response(
@@ -203,20 +204,25 @@ async def proxy_youtube_transcript(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
         )
     
+    youtube_hint: Optional[str] = None
+    youtube_response, youtube_hint = await _try_youtube_api_primary(request, request_body.video_id)
+    if youtube_response:
+        return youtube_response
+
     try:
         result = await fetch_transcript_via_proxy(request_body.video_id)
         return _response_from_result(result, request_body.video_id)
-        
+
     except TranscriptProxyError as exc:
-        fallback_response = None
-        if _should_attempt_youtube_api(exc.code):
-            fallback_response = await _try_youtube_api_fallback(request, request_body.video_id)
-        if fallback_response:
-            return fallback_response
+        details = exc.details or {}
+        if youtube_hint:
+            merged = dict(details)
+            merged.setdefault("accountLinkHint", youtube_hint)
+            details = merged
         return _error_response(
             exc.code,
             exc.message,
-            details=exc.details,
+            details=details,
             status_code=exc.status_code,
         )
         
