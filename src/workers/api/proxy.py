@@ -219,7 +219,7 @@ async def proxy_youtube_transcript(
         if youtube_hint:
             metadata = dict(youtube_response.metadata or {})
             metadata["accountLinkHint"] = youtube_hint
-            youtube_response.metadata = metadata
+            youtube_response = youtube_response.model_copy(update={"metadata": metadata})
         return youtube_response
 
     try:
