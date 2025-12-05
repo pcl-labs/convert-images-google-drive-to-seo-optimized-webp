@@ -44,6 +44,23 @@ def setup_test_env():
         os.environ["JWT_SECRET_KEY"] = _ORIGINAL_JWT_SECRET
 
 
+@pytest.fixture(autouse=True)
+def clear_proxy_rate_limit_state():
+    """Clear proxy rate limiting global state before each test for isolation."""
+    # Import here to avoid circular imports
+    from src.workers.api import proxy
+    
+    # Clear the request log and reset cleanup time
+    proxy._identity_request_log.clear()
+    proxy._identity_last_cleanup = None
+    
+    yield
+    
+    # Clean up after test as well
+    proxy._identity_request_log.clear()
+    proxy._identity_last_cleanup = None
+
+
 @pytest.fixture
 def isolated_db(tmp_path_factory):
     """

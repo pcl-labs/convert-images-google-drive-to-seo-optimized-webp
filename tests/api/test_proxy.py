@@ -51,7 +51,7 @@ def test_identity_key_user_id_fallback(mock_user, mock_request):
     assert key == "user-123"
 
 
-def test_identity_key_session_id_fallback(mock_user, mock_request):
+def test_identity_key_session_id_fallback(mock_request):
     """Test that session_id is used when org and user_id are missing."""
     user_minimal = {"session_id": "sess-789"}
     key = _identity_key(user_minimal, mock_request)
@@ -91,12 +91,24 @@ def test_is_identity_rate_limited_no_limits():
 
 
 def test_is_identity_rate_limited_below_limit():
-    """Test rate limiting when under the limit."""
-    # This test is tricky because it uses global state
-    # We'll just verify it doesn't crash
-    result = _is_identity_rate_limited("test-identity-2")
-    # Should return False for first request
-    assert isinstance(result, bool)
+    """Test rate limiting behavior up to and beyond the limit."""
+    identity = "test-identity-rate-limit"
+    
+    # First call should return False (under limit)
+    result = _is_identity_rate_limited(identity)
+    assert result is False
+    
+    # Call repeatedly up to the minute limit (default is 60)
+    # The limit check is >=, so 60 requests means we've hit the limit
+    with patch("src.workers.api.proxy._rate_limits", return_value=(60, 1000)):
+        # Make 59 calls (just under the limit), all should return False
+        for i in range(59):
+            result = _is_identity_rate_limited(identity)
+            assert result is False, f"Call {i+1} should not be rate limited"
+        
+        # The 60th call should be rate limited (hits the limit)
+        result = _is_identity_rate_limited(identity)
+        assert result is True, "60th call should be rate limited (hits limit of 60)"
 
 
 def test_error_response_structure():
