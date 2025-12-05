@@ -141,7 +141,7 @@ async def test_pick_proxy_with_free_proxies_disabled():
         mock_settings.youtube_scraper_proxy_pool = []
         
         result = await _pick_proxy()
-        assert result is None
+        assert result == (None, False)
 
 
 @pytest.mark.asyncio
@@ -154,15 +154,15 @@ async def test_pick_proxy_with_manual_proxies():
         mock_settings.youtube_scraper_enable_free_proxies = False
         mock_settings.youtube_scraper_proxy_pool = ["http://proxy1:8080", "http://proxy2:8080"]
         
-        result = await _pick_proxy()
-        assert result in ["http://proxy1:8080", "http://proxy2:8080"]
+        proxy, is_free = await _pick_proxy()
+        assert proxy in ["http://proxy1:8080", "http://proxy2:8080"]
+        assert is_free is False
 
 
 @pytest.mark.asyncio
 async def test_pick_proxy_with_free_proxies_enabled():
     """Test that _pick_proxy uses proxy pool manager when free proxies enabled."""
     from src.workers.core.youtube_proxy import _pick_proxy
-    from unittest.mock import MagicMock, AsyncMock
     import asyncio
     
     with patch("src.workers.core.youtube_proxy.settings") as mock_settings, \
@@ -174,8 +174,9 @@ async def test_pick_proxy_with_free_proxies_enabled():
         mock_manager.refresh_pool = AsyncMock()
         mock_get_manager.return_value = mock_manager
         
-        result = await _pick_proxy()
-        assert result == "http://free-proxy:8080"
+        proxy, is_free = await _pick_proxy()
+        assert proxy == "http://free-proxy:8080"
+        assert is_free is True
         # Give the task a moment to be created
         await asyncio.sleep(0.01)
         # refresh_pool is called via create_task, so we can't easily assert it was called
