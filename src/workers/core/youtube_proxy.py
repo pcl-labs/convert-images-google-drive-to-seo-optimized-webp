@@ -112,13 +112,13 @@ def _select_transcript(transcript_list: Any) -> Any:
     # Prefer manually created English transcripts if available
     try:
         return transcript_list.find_manually_created_transcript(["en", "en-US", "en-GB"])
-    except Exception:
+    except (NoTranscriptFound, TranscriptsDisabled):
         pass
 
     # Fallback to generated tracks
     try:
         return transcript_list.find_generated_transcript(["en", "en-US", "en-GB"])
-    except Exception:
+    except (NoTranscriptFound, TranscriptsDisabled):
         pass
 
     # Try translating a few common languages to English

@@ -203,17 +203,7 @@ def _parse_db_datetime(value):
     return datetime.now(timezone.utc)
 
 
-def _coerce_document_metadata(doc: dict) -> dict:
-    metadata = doc.get("metadata")
-    if isinstance(metadata, str):
-        try:
-            metadata = json.loads(metadata)
-        except Exception:
-            metadata = {}
-    if metadata is None:
-        metadata = {}
-    doc["metadata"] = metadata
-    return doc
+# Removed: _coerce_document_metadata - Documents feature removed
 
 
 def _json_field(value, default):
@@ -268,19 +258,7 @@ def _job_status_from_row(row: dict) -> JobStatus:
 
 
 # Removed: _pipeline_event_from_row - Pipeline events removed
-
-# Removed: create_drive_document_for_user - Drive integration removed
-async def _create_drive_document_for_user_removed(db, user_id: str, drive_source: str) -> None:
-    raise HTTPException(status_code=status.HTTP_410_GONE, detail="Drive integration has been removed")
-
-
-async def create_drive_document_for_user(db, user_id: str, drive_source: str) -> Document:
-    raise HTTPException(status_code=status.HTTP_410_GONE, detail="Drive integration has been removed")
-
-
-# Removed: _ensure_drive_linked_document - Drive integration removed
-async def _ensure_drive_linked_document(db, user_id: str, document_id: str, document: dict) -> dict:
-    raise HTTPException(status_code=status.HTTP_410_GONE, detail="Drive integration has been removed")
+# Removed: create_drive_document_for_user, _create_drive_document_for_user_removed, _ensure_drive_linked_document - Documents feature removed
 
 
 # Removed: start_ingest_text_job and _derive_project_title_from_text - Text ingestion removed
@@ -786,25 +764,8 @@ async def create_api_key_endpoint(user: dict = Depends(get_saas_user)):
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to create API key")
 
 
-# Removed: link_drive_document_endpoint - Drive integration removed
-
-
 # Removed: All document endpoints - Documents feature removed
-
-
-# Removed: start_optimize_job - Drive image optimization removed
-async def start_optimize_job(
-    db,
-    queue,
-    user_id: str,
-    document_id: str,
-    request: OptimizeDocumentRequest,
-    session_id: Optional[str] = None,
-) -> JobStatus:
-    raise HTTPException(status_code=status.HTTP_410_GONE, detail="Drive image optimization has been removed")
-
-
-# Removed: optimize and generate_blog endpoints - Not needed for YouTube proxy API
+# Removed: link_drive_document_endpoint, start_optimize_job, optimize, generate_blog endpoints - Documents feature removed
 
 
 @router.get("/api/v1/jobs/{job_id}", response_model=JobStatus, tags=["Jobs"])

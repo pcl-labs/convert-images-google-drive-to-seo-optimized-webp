@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from typing import Any, Dict, Optional
 
@@ -15,6 +16,7 @@ from .models import TranscriptProxyRequest, TranscriptProxyResponse
 from core.youtube_proxy import TranscriptProxyError, fetch_transcript_via_proxy
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 _api_key_request_log: Dict[str, list[float]] = {}
 _api_key_rate_lock = asyncio.Lock()
@@ -36,8 +38,12 @@ def _extract_api_key(auth_header: Optional[str], body_api_key: Optional[str]) ->
 
 
 def _rate_limits() -> tuple[int, int]:
-    minute = getattr(settings, "rate_limit_per_minute", 60) or 60
-    hour = getattr(settings, "rate_limit_per_hour", 1000) or 1000
+    minute = getattr(settings, "rate_limit_per_minute", 60)
+    hour = getattr(settings, "rate_limit_per_hour", 1000)
+    if minute is None:
+        minute = 60
+    if hour is None:
+        hour = 1000
     return minute, hour
 
 
@@ -73,7 +79,7 @@ def _error_response(
     message: str,
     *,
     details: Optional[Any] = None,
-    status_code: int = status.HTTP_200_OK,
+    status_code: int = status.HTTP_400_BAD_REQUEST,
 ) -> JSONResponse:
     """Build standardized error response."""
     payload = TranscriptProxyResponse(
@@ -157,9 +163,9 @@ async def proxy_youtube_transcript(
         )
         
     except Exception as exc:
+        logger.exception("youtube_transcript_proxy_unexpected_error", extra={"video_id": request_body.video_id})
         return _error_response(
             "internal_error",
             "An unexpected error occurred while fetching transcript.",
-            details=str(exc),
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )

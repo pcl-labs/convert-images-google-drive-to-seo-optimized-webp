@@ -149,108 +149,11 @@ class StatsResponse(BaseModel):
     total_users: Optional[int] = None
 
 
-class Document(BaseModel):
-    document_id: str
-    user_id: str
-    source_type: str
-    source_ref: Optional[str] = None
-    raw_text: Optional[str] = None
-    metadata: Optional[Dict[str, Any]] = None
-    content_format: Optional[str] = None
-    frontmatter: Optional[Dict[str, Any]] = None
-    latest_version_id: Optional[str] = None
-    drive_file_id: Optional[str] = None
-    drive_revision_id: Optional[str] = None
-    drive_folder_id: Optional[str] = None
-    drive_drafts_folder_id: Optional[str] = None
-    drive_media_folder_id: Optional[str] = None
-    drive_published_folder_id: Optional[str] = None
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
+# Removed: Document, DriveDocumentStatus, DrivePublishRequest, DriveDocumentRequest, 
+# DriveWorkspaceLinkRequest, OptimizeDocumentRequest - Documents feature removed
 
-
-class DriveDocumentStatus(BaseModel):
-    document_id: str
-    linked: bool = False
-    drive_file_id: Optional[str] = None
-    drive_revision_id: Optional[str] = None
-    drive_stage: Optional[str] = None
-    sync_status: Optional[str] = None
-    needs_reconcile: bool = False
-    external_edit_detected: bool = False
-    last_ingested_revision: Optional[str] = None
-    last_ingested_at: Optional[str] = None
-    pending_revision_id: Optional[str] = None
-    pending_modified_time: Optional[str] = None
-    web_view_link: Optional[str] = None
-    drive: Dict[str, Any] = Field(default_factory=dict)
-
-
-class DrivePublishRequest(BaseModel):
-    body: Optional[str] = Field(
-        default=None,
-        description="Optional MDX body to send to Google Docs (defaults to stored raw_text when omitted).",
-    )
-    stage: Optional[str] = Field(
-        default=None,
-        min_length=2,
-        max_length=40,
-        description="Optional drive_stage metadata value to set after publishing (e.g., draft, transcript, published).",
-    )
-
-
-class DriveDocumentRequest(BaseModel):
-    drive_source: str = Field(..., min_length=5, max_length=500, description="Drive share link or folder ID")
-
-
-class DriveWorkspaceLinkRequest(BaseModel):
-    document_name: Optional[str] = Field(
-        default=None,
-        description="Optional display name when creating Drive artifacts.",
-        min_length=1,
-        max_length=200,
-    )
-    metadata: Optional[Dict[str, Any]] = Field(
-        default=None,
-        description="Optional metadata overrides when linking the workspace.",
-    )
-
-
-class OptimizeDocumentRequest(BaseModel):
-    document_id: str = Field(..., min_length=5, max_length=100)
-    extensions: Optional[List[str]] = Field(
-        default=["jpg", "jpeg", "png", "bmp", "tiff", "heic", "webp"],
-        description="List of image extensions to process",
-        max_length=10
-    )
-    overwrite: bool = Field(default=False)
-    skip_existing: bool = Field(default=True)
-    cleanup_originals: bool = Field(default=False)
-    max_retries: int = Field(default=3, ge=0, le=10)
-
-    @field_validator('extensions')
-    @classmethod
-    def validate_extensions(cls, v):
-        allowed = {'jpg', 'jpeg', 'png', 'bmp', 'tiff', 'tif', 'heic', 'webp'}
-        if not v:
-            return ["jpg", "jpeg", "png", "bmp", "tiff", "heic", "webp"]
-        validated = []
-        invalid = []
-        for ext in v:
-            ext_clean = str(ext).lower().lstrip('.')
-            if ext_clean in allowed:
-                validated.append(ext_clean)
-            else:
-                invalid.append(ext)
-        if invalid:
-            raise ValueError(f"Invalid extensions: {invalid}. Allowed: {sorted(allowed)}")
-        return validated
-
-    @model_validator(mode="after")
-    def validate_flags(self):
-        if self.overwrite and self.skip_existing:
-            raise ValueError("'overwrite' and 'skip_existing' cannot both be True")
-        return self
+# Note: GenerateBlogOptions kept for Project blog generation (YouTube-related)
+# Removed: GenerateBlogRequest - Standalone blog generation removed (documents feature)
 
 
 class GenerateBlogOptions(BaseModel):
@@ -288,51 +191,9 @@ class GenerateBlogOptions(BaseModel):
         return self
 
 
-class GenerateBlogRequest(BaseModel):
-    document_id: str = Field(..., min_length=5, max_length=100)
-    options: GenerateBlogOptions = Field(default_factory=GenerateBlogOptions)
-
-
-class DocumentVersionSummary(BaseModel):
-    version_id: str
-    document_id: str
-    version: int = Field(ge=0)
-    content_format: str
-    frontmatter: Optional[Dict[str, Any]] = None
-    created_at: datetime
-
-
-class DocumentVersionDetail(DocumentVersionSummary):
-    body_mdx: Optional[str] = None
-    body_html: Optional[str] = None
-    sections: Optional[List[Dict[str, Any]]] = None
-    assets: Optional[Dict[str, Any]] = None
-
-
-class DocumentVersionList(BaseModel):
-    versions: List[DocumentVersionSummary]
-
-
-class ExportTarget(str, Enum):
-    google_docs = "google_docs"
-    zapier = "zapier"
-    wordpress = "wordpress"
-
-
-class DocumentExportRequest(BaseModel):
-    target: ExportTarget
-    version_id: Optional[str] = None
-    metadata: Optional[Dict[str, Any]] = None
-
-
-class DocumentExportResponse(BaseModel):
-    export_id: str
-    status: str
-    target: ExportTarget
-    version_id: str
-    document_id: str
-    created_at: datetime
-
+# Removed: GenerateBlogRequest - Blog generation feature removed
+# Removed: DocumentVersionSummary, DocumentVersionDetail, DocumentVersionList - Documents feature removed
+# Removed: ExportTarget, DocumentExportRequest, DocumentExportResponse - Documents feature removed
 
 class IngestYouTubeRequest(BaseModel):
     url: HttpUrl
@@ -350,18 +211,7 @@ class IngestYouTubeRequest(BaseModel):
         return v
 
 
-class IngestTextRequest(BaseModel):
-    text: str = Field(..., max_length=20000)
-    title: Optional[str] = Field(default=None, max_length=500)
-
-
-class IngestDriveRequest(BaseModel):
-    document_id: str = Field(..., min_length=5, max_length=100)
-
-
-class DriveChangePollRequest(BaseModel):
-    document_ids: Optional[List[str]] = None
-
+# Removed: IngestTextRequest, IngestDriveRequest, DriveChangePollRequest - Documents feature removed
 
 class Project(BaseModel):
     project_id: str
@@ -396,7 +246,7 @@ class CreateProjectRequest(BaseModel):
 
 class ProjectResponse(BaseModel):
     project: Project
-    document: Optional[Document] = None
+    # Removed: document field - Documents feature removed
 
 
 class TranscriptChunk(BaseModel):

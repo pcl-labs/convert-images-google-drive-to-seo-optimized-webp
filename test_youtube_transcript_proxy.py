@@ -153,7 +153,8 @@ def main():
     
     print(f"Testing YouTube Transcript Proxy Endpoint")
     print(f"Base URL: {base_url}")
-    print(f"API Key: {api_key[:10]}...{api_key[-4:] if len(api_key) > 14 else ''}")
+    masked = f"{api_key[:4]}...{api_key[-4:]}" if len(api_key) > 8 else "***"
+    print(f"API Key: {masked}")
     
     results = []
     for video_id in TEST_VIDEO_IDS:

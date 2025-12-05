@@ -120,8 +120,6 @@ class Default(WorkerEntrypoint):
                     "Queue message received but job processor removed",
                     extra={"job_type": job_type, "job_id": payload.get("job_id")}
                 )
-                # Acknowledge to prevent retries for removed job types
-                message.ack()
             except Exception:
                 logger.exception(
                     "Error processing queue message",

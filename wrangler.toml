@@ -71,7 +71,7 @@ binding = "DLQ"  # Must match WORKER_DLQ_BINDING in src/workers/runtime.py
 # Optional:
 #   wrangler secret put GITHUB_REDIRECT_URI     # OAuth redirect URI (optional)
 #   wrangler secret put BASE_URL                 # Base URL for the app (optional)
-#   wrangler secret put OPENAI_API_KEY          # OpenAI API key (optional, for lean gateway)
+#   wrangler secret put OPENAI_API_KEY          # OpenAI API key (optional, for Cloudflare AI Gateway)
 #   wrangler secret put YOUTUBE_PROXY_API_URL   # YouTube proxy service URL (e.g., https://tubularblogs.com)
 #   wrangler secret put YOUTUBE_PROXY_API_KEY   # YouTube proxy service API key
 #
