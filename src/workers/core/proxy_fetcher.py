@@ -16,9 +16,21 @@ async def fetch_proxyscrape_proxies(timeout: float = 10.0) -> List[str]:
     proxies: List[str] = []
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.get(PROXYSCRAPE_API_URL)
+            # Disable automatic decompression to handle raw response
+            response = await client.get(
+                PROXYSCRAPE_API_URL,
+                headers={"Accept-Encoding": "identity"}  # Request no compression
+            )
             if response.status_code == 200:
-                proxy_list = response.text.strip().split('\n')
+                # Try to decode as text, handling both compressed and uncompressed
+                try:
+                    text = response.text
+                except Exception:
+                    # If text decoding fails, try to decompress manually
+                    import gzip
+                    text = gzip.decompress(response.content).decode('utf-8')
+                
+                proxy_list = text.strip().split('\n')
                 for proxy in proxy_list:
                     proxy = normalize_proxy_url(proxy)
                     if proxy:
@@ -31,7 +43,7 @@ async def fetch_proxyscrape_proxies(timeout: float = 10.0) -> List[str]:
     except httpx.HTTPError as e:
         logger.warning(f"HTTP error fetching from ProxyScrape: {str(e)}")
     except Exception as e:
-        logger.error(f"Unexpected error fetching from ProxyScrape: {str(e)}")
+        logger.error(f"Unexpected error fetching from ProxyScrape: {str(e)}", exc_info=True)
     return proxies
 
 
