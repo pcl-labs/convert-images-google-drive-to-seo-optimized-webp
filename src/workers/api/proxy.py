@@ -223,14 +223,16 @@ async def proxy_youtube_transcript(
     youtube_response, youtube_hint = await _try_youtube_api_primary(request, request_body.video_id)
     if youtube_response:
         if youtube_hint:
-            metadata = dict(youtube_response.metadata or {}) if youtube_response.metadata else {}
+            # Use model_dump() to safely extract data from Pydantic model in Workers
+            response_dict = youtube_response.model_dump(exclude_none=False)
+            metadata = dict(response_dict.get("metadata") or {})
             metadata["accountLinkHint"] = youtube_hint
             # Create a new instance instead of mutating
             youtube_response = TranscriptProxyResponse(
-                success=youtube_response.success,
-                transcript=youtube_response.transcript,
+                success=response_dict.get("success", True),
+                transcript=response_dict.get("transcript"),
                 metadata=metadata,
-                error=youtube_response.error,
+                error=response_dict.get("error"),
             )
         return youtube_response
 
