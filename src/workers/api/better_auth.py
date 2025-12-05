@@ -173,11 +173,9 @@ async def fetch_youtube_integration(request: Request) -> Tuple[Optional[YouTubeI
             detail="BETTER_AUTH_BASE_URL is not configured",
         )
     headers = _session_headers(request)
-    if not headers:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication required",
-        )
+    # If no cookies/auth headers, can't fetch integrations (need authenticated session)
+    if not headers.get("Cookie") and not headers.get("Authorization"):
+        return None, False  # No integration available, not forbidden
     endpoint = settings.better_auth_integrations_endpoint or "/api/organization/integrations"
     url = endpoint if endpoint.startswith("http") else f"{base_url.rstrip('/')}{endpoint}"
     try:

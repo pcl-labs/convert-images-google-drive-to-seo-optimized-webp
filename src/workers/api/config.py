@@ -168,6 +168,15 @@ class Settings:
     youtube_scraper_max_retries: int = 3
     youtube_scraper_retry_base_delay: float = 0.5
     youtube_scraper_jitter_max_seconds: float = 0.2
+    
+    # Free proxy pool configuration
+    youtube_scraper_enable_free_proxies: bool = False
+    youtube_scraper_proxy_fetch_interval_minutes: int = 60
+    youtube_scraper_proxy_health_check_interval_minutes: int = 30
+    youtube_scraper_max_free_proxies: int = 50
+    youtube_scraper_proxy_health_check_timeout: float = 5.0
+    youtube_scraper_proxy_min_success_rate: float = 0.3
+    youtube_scraper_proxy_rotation_strategy: str = "random"  # random, round_robin, lru, best
 
     def __post_init__(self) -> None:
         self.environment = (self.environment or "development").lower()
@@ -248,6 +257,18 @@ class Settings:
         self.youtube_scraper_max_retries = max(1, _int(self.youtube_scraper_max_retries, 3))
         self.youtube_scraper_retry_base_delay = max(0.05, _float(self.youtube_scraper_retry_base_delay, 0.5))
         self.youtube_scraper_jitter_max_seconds = max(0.0, _float(self.youtube_scraper_jitter_max_seconds, 0.2))
+        
+        # Free proxy pool settings
+        self.youtube_scraper_enable_free_proxies = _bool(self.youtube_scraper_enable_free_proxies)
+        self.youtube_scraper_proxy_fetch_interval_minutes = max(1, _int(self.youtube_scraper_proxy_fetch_interval_minutes, 60))
+        self.youtube_scraper_proxy_health_check_interval_minutes = max(1, _int(self.youtube_scraper_proxy_health_check_interval_minutes, 30))
+        self.youtube_scraper_max_free_proxies = max(1, _int(self.youtube_scraper_max_free_proxies, 50))
+        self.youtube_scraper_proxy_health_check_timeout = max(1.0, _float(self.youtube_scraper_proxy_health_check_timeout, 5.0))
+        self.youtube_scraper_proxy_min_success_rate = max(0.0, min(1.0, _float(self.youtube_scraper_proxy_min_success_rate, 0.3)))
+        rotation_strategy = (self.youtube_scraper_proxy_rotation_strategy or "random").lower()
+        if rotation_strategy not in {"random", "round_robin", "lru", "best"}:
+            rotation_strategy = "random"
+        self.youtube_scraper_proxy_rotation_strategy = rotation_strategy
 
     @classmethod
     def from_env(cls, **overrides: Any) -> "Settings":
