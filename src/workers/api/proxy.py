@@ -1,9 +1,8 @@
 """YouTube transcript proxy endpoint."""
 from __future__ import annotations
 
-import asyncio
 import logging
-import time
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Request, status
@@ -18,10 +17,10 @@ from core.youtube_proxy import TranscriptProxyError, fetch_transcript_via_proxy
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-_api_key_request_log: Dict[str, list[float]] = {}
-_api_key_rate_lock = asyncio.Lock()
-_api_key_last_cleanup = 0.0
-_api_key_cleanup_interval = 300.0
+# Rate limiting state - no lock needed since Workers are single-threaded per isolate
+_api_key_request_log: Dict[str, list[datetime]] = {}
+_api_key_last_cleanup: Optional[datetime] = None
+_api_key_cleanup_interval = 300.0  # seconds
 
 
 def _extract_api_key(auth_header: Optional[str], body_api_key: Optional[str]) -> Optional[str]:
@@ -48,30 +47,41 @@ def _rate_limits() -> tuple[int, int]:
 
 
 async def _is_api_key_rate_limited(api_key: str) -> bool:
-    """Track API key usage with simple in-memory rate limiting."""
+    """Track API key usage with simple in-memory rate limiting.
+    
+    Uses datetime instead of time.monotonic() and no locks since Workers are single-threaded per isolate.
+    """
     minute_limit, hour_limit = _rate_limits()
     if minute_limit <= 0 and hour_limit <= 0:
         return False
-    now = time.monotonic()
-    async with _api_key_rate_lock:
-        global _api_key_last_cleanup
-        if now - _api_key_last_cleanup > _api_key_cleanup_interval:
-            for key in list(_api_key_request_log.keys()):
-                history = _api_key_request_log[key]
-                history[:] = [ts for ts in history if now - ts < 3600]
-                if not history:
-                    del _api_key_request_log[key]
-            _api_key_last_cleanup = now
-        history = _api_key_request_log.setdefault(api_key, [])
-        history[:] = [ts for ts in history if now - ts < 3600]
-        requests_last_hour = len(history)
-        requests_last_minute = len([ts for ts in history if now - ts < 60])
-        if (minute_limit > 0 and requests_last_minute >= minute_limit) or (
-            hour_limit > 0 and requests_last_hour >= hour_limit
-        ):
-            return True
-        history.append(now)
-        return False
+    
+    # Use datetime instead of time.monotonic() per Cloudflare Workers gotchas
+    now = datetime.now(timezone.utc)
+    
+    # No lock needed - Workers are single-threaded per isolate
+    global _api_key_last_cleanup
+    if _api_key_last_cleanup is None or (now - _api_key_last_cleanup).total_seconds() > _api_key_cleanup_interval:
+        # Clean up old entries
+        for key in list(_api_key_request_log.keys()):
+            history = _api_key_request_log[key]
+            history[:] = [ts for ts in history if (now - ts).total_seconds() < 3600]
+            if not history:
+                del _api_key_request_log[key]
+        _api_key_last_cleanup = now
+    
+    # Check rate limits for this API key
+    history = _api_key_request_log.setdefault(api_key, [])
+    history[:] = [ts for ts in history if (now - ts).total_seconds() < 3600]
+    requests_last_hour = len(history)
+    requests_last_minute = len([ts for ts in history if (now - ts).total_seconds() < 60])
+    
+    if (minute_limit > 0 and requests_last_minute >= minute_limit) or (
+        hour_limit > 0 and requests_last_hour >= hour_limit
+    ):
+        return True
+    
+    history.append(now)
+    return False
 
 
 def _error_response(

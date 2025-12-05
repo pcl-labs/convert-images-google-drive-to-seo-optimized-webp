@@ -46,7 +46,10 @@ async def fetch_transcript_via_proxy(video_id: str) -> Dict[str, Any]:
         raise ValueError("Invalid video_id: must be 11 characters")
 
     try:
-        return await asyncio.to_thread(_fetch_transcript_sync, video_id)
+        # Use run_in_executor instead of asyncio.to_thread for better Workers compatibility
+        # This pattern is used elsewhere in the codebase (see google_async.py)
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, _fetch_transcript_sync, video_id)
     except TranscriptProxyError:
         raise
     except Exception as exc:
