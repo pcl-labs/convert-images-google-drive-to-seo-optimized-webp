@@ -258,9 +258,13 @@ def _select_caption_item(items: Iterable[Dict[str, Any]]) -> Optional[Dict[str, 
 
 
 def _parse_vtt_text(vtt_text: str) -> str:
+    raw_lines = vtt_text.splitlines()
     lines: list[str] = []
-    for line in vtt_text.splitlines():
-        stripped = line.strip()
+    total = len(raw_lines)
+    idx = 0
+    while idx < total:
+        stripped = raw_lines[idx].strip()
+        idx += 1
         if not stripped:
             continue
         if stripped.startswith("WEBVTT"):
@@ -268,7 +272,18 @@ def _parse_vtt_text(vtt_text: str) -> str:
         if "-->" in stripped:
             continue
         if stripped.isdigit():
-            continue
+            # Peek ahead to find next non-empty line
+            lookahead_idx = idx
+            next_line = ""
+            while lookahead_idx < total:
+                candidate = raw_lines[lookahead_idx].strip()
+                if candidate:
+                    next_line = candidate
+                    break
+                lookahead_idx += 1
+            if next_line and "-->" in next_line:
+                # treat as cue identifier
+                continue
         lines.append(stripped)
     return _normalize_whitespace(" ".join(lines))
 
