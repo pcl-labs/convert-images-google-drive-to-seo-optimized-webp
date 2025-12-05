@@ -217,9 +217,15 @@ async def proxy_youtube_transcript(
     youtube_response, youtube_hint = await _try_youtube_api_primary(request, request_body.video_id)
     if youtube_response:
         if youtube_hint:
-            metadata = dict(youtube_response.metadata or {})
+            metadata = dict(youtube_response.metadata or {}) if youtube_response.metadata else {}
             metadata["accountLinkHint"] = youtube_hint
-            youtube_response = youtube_response.model_copy(update={"metadata": metadata})
+            # Create a new instance instead of mutating
+            youtube_response = TranscriptProxyResponse(
+                success=youtube_response.success,
+                transcript=youtube_response.transcript,
+                metadata=metadata,
+                error=youtube_response.error,
+            )
         return youtube_response
 
     try:
