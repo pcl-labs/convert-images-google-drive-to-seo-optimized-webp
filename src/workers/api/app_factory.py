@@ -237,14 +237,15 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
         auth_html = """
         <div id="auth-shortcuts">
             <h3>Authentication Shortcuts</h3>
-            <p>Use these to log in and create API keys for trying endpoints directly in Swagger.</p>
+            <p>Use these to log in; API keys must be created via POST /auth/keys using your Bearer token.</p>
             <div class="auth-buttons">
                 <a class="auth-btn" href="/auth/github/start" target="_blank" rel="noopener">GitHub OAuth Login</a>
                 <a class="auth-btn" href="/auth/google/start" target="_blank" rel="noopener">Google OAuth Login</a>
-                <form action="/auth/keys" method="post" target="_blank">
-                    <button type="submit" class="auth-btn">Create API Key</button>
-                </form>
             </div>
+            <p class="auth-note">
+                After logging in, call <code>POST /auth/keys</code> with the Authorization header from your session
+                (see README for curl example). Browsers cannot invoke it directly.
+            </p>
         </div>
         <style>
             #auth-shortcuts {
@@ -267,9 +268,6 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
                 flex-wrap: wrap;
                 gap: 10px;
             }
-            #auth-shortcuts .auth-buttons form {
-                margin: 0;
-            }
             #auth-shortcuts .auth-btn {
                 background: #00bcd4;
                 color: #0b0c10;
@@ -280,6 +278,16 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
             }
             #auth-shortcuts .auth-btn:hover {
                 background: #0097a7;
+            }
+            #auth-shortcuts .auth-note {
+                margin-top: 10px;
+                font-size: 0.9rem;
+                color: rgba(255,255,255,0.85);
+            }
+            #auth-shortcuts code {
+                background: rgba(255,255,255,0.15);
+                padding: 2px 4px;
+                border-radius: 3px;
             }
         </style>
         """

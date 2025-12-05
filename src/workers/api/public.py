@@ -25,7 +25,6 @@ from .exceptions import AuthenticationError
 from .deps import ensure_db, get_queue_producer, get_current_user
 from .database import create_user_session, delete_user_session
 from .app_logging import get_logger
-from .database import create_job_extended
 from .models import JobType
 from .simple_http import AsyncSimpleClient, HTTPStatusError, RequestError
 
