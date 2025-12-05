@@ -237,14 +237,13 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
         auth_html = """
         <div id="auth-shortcuts">
             <h3>Authentication Shortcuts</h3>
-            <p>Use these to log in; API keys must be created via POST /auth/keys using your Bearer token.</p>
+            <p>Use these login shortcuts; API keys are managed in the Better Auth dashboard.</p>
             <div class="auth-buttons">
                 <a class="auth-btn" href="/auth/github/start" target="_blank" rel="noopener">GitHub OAuth Login</a>
                 <a class="auth-btn" href="/auth/google/start" target="_blank" rel="noopener">Google OAuth Login</a>
             </div>
             <p class="auth-note">
-                After logging in, call <code>POST /auth/keys</code> with the Authorization header from your session
-                (see README for curl example). Browsers cannot invoke it directly.
+                After logging in, visit your Better Auth account to create or manage API keys and reuse them here.
             </p>
         </div>
         <style>

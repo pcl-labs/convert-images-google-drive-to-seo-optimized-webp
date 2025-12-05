@@ -16,7 +16,6 @@ from .models import (
     JobProgress,
     JobListResponse,
     UserResponse,
-    APIKeyResponse,
     JobStatusEnum,
     JobType,
 )
@@ -28,7 +27,6 @@ from .database import (
     list_google_tokens,
     get_user_by_id,
 )
-from .auth import create_user_api_key
 from .google_oauth import (
     get_google_oauth_url,
     exchange_google_code,
@@ -751,17 +749,6 @@ async def get_current_user_info(request: Request):
         email=user.get("email"),
         created_at=created_at,
     )
-
-
-@router.post("/auth/keys", response_model=APIKeyResponse, tags=["Authentication"])
-async def create_api_key_endpoint(user: dict = Depends(get_saas_user)):
-    db = ensure_db()
-    try:
-        api_key = await create_user_api_key(db, user["user_id"])
-        return APIKeyResponse(api_key=api_key, created_at=datetime.now(timezone.utc))
-    except Exception as e:
-        logger.error(f"API key creation failed: {e}", exc_info=True)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to create API key")
 
 
 # Removed: All document endpoints - Documents feature removed

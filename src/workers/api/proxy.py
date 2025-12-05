@@ -5,35 +5,20 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Request, status
+from fastapi import APIRouter, Depends, Request, status
 from fastapi.responses import JSONResponse
 
-from .auth import authenticate_api_key
 from .config import settings
-from .deps import ensure_db
-from .models import TranscriptProxyRequest, TranscriptProxyResponse
+from .deps import get_saas_user
 from core.youtube_proxy import TranscriptProxyError, fetch_transcript_via_proxy
+from .models import TranscriptProxyRequest, TranscriptProxyResponse
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-# Rate limiting state - no lock needed since Workers are single-threaded per isolate
-_api_key_request_log: Dict[str, list[datetime]] = {}
-_api_key_last_cleanup: Optional[datetime] = None
-_api_key_cleanup_interval = 300.0  # seconds
-
-
-def _extract_api_key(auth_header: Optional[str], body_api_key: Optional[str]) -> Optional[str]:
-    """Extract API key from Authorization header or request body."""
-    if auth_header:
-        prefix = "Bearer "
-        if auth_header.startswith(prefix):
-            token = auth_header[len(prefix) :].strip()
-            if token:
-                return token
-    if body_api_key:
-        return body_api_key.strip() or None
-    return None
+_identity_request_log: Dict[str, list[datetime]] = {}
+_identity_last_cleanup: Optional[datetime] = None
+_identity_cleanup_interval = 300.0  # seconds
 
 
 def _rate_limits() -> tuple[int, int]:
@@ -46,40 +31,45 @@ def _rate_limits() -> tuple[int, int]:
     return minute, hour
 
 
-async def _is_api_key_rate_limited(api_key: str) -> bool:
-    """Track API key usage with simple in-memory rate limiting.
-    
-    Uses datetime instead of time.monotonic() and no locks since Workers are single-threaded per isolate.
-    """
+def _identity_key(user: Dict[str, Any], request: Request) -> str:
+    return (
+        str(user.get("organization_id"))
+        or str(user.get("user_id"))
+        or str(user.get("session_id"))
+        or request.headers.get("Authorization", "").strip()
+        or getattr(request.client, "host", "")  # type: ignore[arg-type]
+        or "anonymous"
+    )
+
+
+def _is_identity_rate_limited(identity: str) -> bool:
     minute_limit, hour_limit = _rate_limits()
     if minute_limit <= 0 and hour_limit <= 0:
         return False
-    
-    # Use datetime instead of time.monotonic() per Cloudflare Workers gotchas
     now = datetime.now(timezone.utc)
-    
-    # No lock needed - Workers are single-threaded per isolate
-    global _api_key_last_cleanup
-    if _api_key_last_cleanup is None or (now - _api_key_last_cleanup).total_seconds() > _api_key_cleanup_interval:
-        # Clean up old entries
-        for key in list(_api_key_request_log.keys()):
-            history = _api_key_request_log[key]
+
+    global _identity_last_cleanup
+    if (
+        _identity_last_cleanup is None
+        or (now - _identity_last_cleanup).total_seconds() > _identity_cleanup_interval
+    ):
+        for key in list(_identity_request_log.keys()):
+            history = _identity_request_log[key]
             history[:] = [ts for ts in history if (now - ts).total_seconds() < 3600]
             if not history:
-                del _api_key_request_log[key]
-        _api_key_last_cleanup = now
-    
-    # Check rate limits for this API key
-    history = _api_key_request_log.setdefault(api_key, [])
+                del _identity_request_log[key]
+        _identity_last_cleanup = now
+
+    history = _identity_request_log.setdefault(identity, [])
     history[:] = [ts for ts in history if (now - ts).total_seconds() < 3600]
     requests_last_hour = len(history)
     requests_last_minute = len([ts for ts in history if (now - ts).total_seconds() < 60])
-    
+
     if (minute_limit > 0 and requests_last_minute >= minute_limit) or (
         hour_limit > 0 and requests_last_hour >= hour_limit
     ):
         return True
-    
+
     history.append(now)
     return False
 
@@ -107,32 +97,14 @@ def _error_response(
 async def proxy_youtube_transcript(
     request_body: TranscriptProxyRequest,
     request: Request,
+    user: Dict[str, Any] = Depends(get_saas_user),
 ) -> JSONResponse | TranscriptProxyResponse:
-    """Proxy YouTube transcript requests through external service using API key auth."""
-    api_key = _extract_api_key(request.headers.get("Authorization"), request_body.api_key)
-    if not api_key:
-        return _error_response(
-            "missing_api_key",
-            "API key is required. Provide it via Authorization header or api_key field.",
-            status_code=status.HTTP_401_UNAUTHORIZED,
-        )
-    
-    db = ensure_db()
-    api_user = await authenticate_api_key(db, api_key)
-    if not api_user:
-        return _error_response(
-            "invalid_api_key",
-            "Provided API key is invalid.",
-            status_code=status.HTTP_401_UNAUTHORIZED,
-        )
-    
-    # Attach user_id for downstream middleware visibility
-    request.state.user_id = api_user.get("user_id")
-    
-    if await _is_api_key_rate_limited(api_key):
+    """Proxy YouTube transcript requests through external service using Better Auth identity."""
+    identity_key = _identity_key(user, request)
+    if _is_identity_rate_limited(identity_key):
         return _error_response(
             "rate_limited",
-            "Too many requests for this API key. Please slow down.",
+            "Too many requests for this identity. Please slow down.",
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
         )
     

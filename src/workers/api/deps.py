@@ -6,7 +6,7 @@ import logging
 
 from .database import Database
 from .cloudflare_queue import QueueProducer
-from .auth import verify_jwt_token
+from .better_auth import authenticate_with_better_auth
 
 # Internal state set by main.lifespan
 # Note: No locks needed in Cloudflare Workers - each isolate is single-threaded
@@ -80,43 +80,9 @@ async def get_current_user(request: Request) -> dict:
 
 
 async def get_saas_user(request: Request) -> dict:
-    auth_header = request.headers.get("Authorization")
-    prefix = "Bearer "
-    if not auth_header:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authorization header missing",
-        )
-    if not auth_header.startswith(prefix):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authorization header must start with 'Bearer '",
-        )
-    token = auth_header[len(prefix) :].strip()
-    if not token:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authorization token",
-        )
-    try:
-        payload = await verify_jwt_token(token)
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired token",
-        ) from exc
-    user_id = payload.get("sub") or payload.get("user_id")
-    if not user_id:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token claims",
-        )
-    return {
-        "user_id": user_id,
-        "email": payload.get("email"),
-        "github_id": payload.get("github_id"),
-        "google_id": payload.get("google_id"),
-    }
+    identity = await authenticate_with_better_auth(request)
+    request.state.user = identity
+    return identity
 
 
 def parse_job_progress(progress_str: Optional[str]) -> Any:
