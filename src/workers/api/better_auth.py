@@ -87,6 +87,11 @@ def _has_required_scope(scopes: Sequence[str]) -> bool:
 
 
 def _extract_identity(result: Mapping[str, Any]) -> Dict[str, Any]:
+    if result is None:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Better Auth response is None",
+        )
     session = result.get("session") or {}
     user = result.get("user") or {}
     data = {
