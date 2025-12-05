@@ -99,6 +99,8 @@ def _extract_identity(result: Mapping[str, Any]) -> Dict[str, Any]:
         "user": user,
     }
     user_id = user.get("id") or session.get("userId") or session.get("user_id")
+    # Anonymous users should still have a user_id from Better Auth
+    # If no user_id, this is an invalid session response
     if not user_id:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -125,11 +127,7 @@ async def authenticate_with_better_auth(request: Request) -> Dict[str, Any]:
             detail="BETTER_AUTH_BASE_URL is not configured",
         )
     headers = _session_headers(request)
-    if not headers.get("Authorization") and not headers.get("Cookie"):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication required",
-        )
+    # Don't require Authorization/Cookie - we'll create anonymous session if needed
     endpoint = settings.better_auth_session_endpoint or "/api/auth/get-session"
     url = endpoint if endpoint.startswith("http") else f"{base_url.rstrip('/')}{endpoint}"
     try:
@@ -180,16 +178,38 @@ async def authenticate_with_better_auth(request: Request) -> Dict[str, Any]:
         ) from exc
 
     if result is None:
-        # Better Auth returned null (no session) - this is valid for unauthenticated requests
-        # Return a minimal identity dict for rate limiting purposes
+        # Better Auth returned null (no session) - create an anonymous session
         logger.info(
-            "better_auth_no_session",
+            "better_auth_no_session_creating_anonymous",
             extra={
                 "status": response.status_code,
                 "url": url,
             },
         )
-        # Return minimal identity for rate limiting - use Authorization header as identity key
+        # Create anonymous session by calling sign-in-anonymous endpoint
+        anonymous_endpoint = "/api/auth/sign-in-anonymous"
+        anonymous_url = anonymous_endpoint if anonymous_endpoint.startswith("http") else f"{base_url.rstrip('/')}{anonymous_endpoint}"
+        
+        try:
+            async with AsyncSimpleClient(timeout=settings.better_auth_timeout_seconds) as client:
+                # Call sign-in-anonymous - it may return a session cookie or JSON response
+                anonymous_response = await client.post(anonymous_url, headers=headers)
+                anonymous_response.raise_for_status()
+                anonymous_result = anonymous_response.json()
+                
+                if anonymous_result and anonymous_result.get("session"):
+                    # We got an anonymous session, extract identity from it
+                    logger.info("better_auth_anonymous_session_created")
+                    return _extract_identity(anonymous_result)
+                else:
+                    # Anonymous sign-in didn't return a session, proceed with minimal identity
+                    logger.warning("better_auth_anonymous_signin_no_session", extra={"response": anonymous_result})
+        except Exception as exc:
+            logger.warning("better_auth_anonymous_signin_failed", exc_info=True, extra={"error": str(exc)})
+            # If anonymous sign-in fails, proceed with minimal identity for rate limiting
+            pass
+        
+        # Fallback: Return minimal identity for rate limiting
         auth_header = headers.get("Authorization", "")
         return {
             "user_id": None,
