@@ -9,24 +9,20 @@ These rules capture lessons from Phase 1 to reduce regressions and improve consi
 
 ## Request Validation
 - Prefer strong Pydantic types (e.g., `HttpUrl`) and validators for domain-specific checks (e.g., YouTube `youtube.com`/`youtu.be`).
-- Add length and value constraints for user-provided text. Example: `MAX_TEXT_LENGTH` enforced for text ingestion.
+- Add length and value constraints for user-provided text.
 - Fail fast with `HTTPException(status_code=400, detail=...)` on invalid inputs.
 
 ## Database and Schema
-- Maintain referential integrity with foreign keys and `ON DELETE CASCADE` where appropriate. Example: `documents.user_id` → `users(user_id)`.
+- Maintain referential integrity with foreign keys and `ON DELETE CASCADE` where appropriate.
 - For SQLite dev, apply idempotent schema ensures on startup; for D1/production, add explicit migrations to `migrations/schema.sql`.
 - Keep JSON payloads in `TEXT` columns (`output`, `metadata`) and parse/serialize carefully.
 
 ## Queue and Workers
 - Validate queue messages before enqueue (`send_generic`):
   - Job messages must include `job_id`, `user_id`, `job_type`.
-  - `ingest_youtube` requires `document_id` and `youtube_video_id`.
-  - `ingest_text` requires `document_id`.
-  - `optimize_drive` requires `document_id` (Drive folder lives on the document metadata).
   - Reject and log unknown shapes.
 - In workers, on invalid message payloads, always:
   - Update job status to `failed` and record an error reason.
-  - Emit a failure notification for the user.
   - Avoid leaving jobs in `pending`/`processing` without resolution.
 
 ## Models and Responses

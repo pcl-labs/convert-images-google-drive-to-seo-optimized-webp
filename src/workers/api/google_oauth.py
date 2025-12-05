@@ -11,7 +11,7 @@ from urllib.parse import urlencode
 from .simple_http import AsyncSimpleClient, HTTPStatusError, RequestError
 
 from core.constants import GOOGLE_INTEGRATION_SCOPES
-from core.google_clients import GoogleDocsClient, GoogleDriveClient, OAuthToken, YouTubeClient
+from core.google_clients import GoogleDriveClient, OAuthToken
 
 from .config import settings
 from .database import Database, get_google_token, upsert_google_token
@@ -238,21 +238,8 @@ async def build_drive_service_for_user(db: Database, user_id: str) -> GoogleDriv
     return GoogleDriveClient(token)
 
 
-async def build_youtube_service_for_user(db: Database, user_id: str) -> YouTubeClient:
-    token, _ = await _load_token_for_user(db, user_id, "youtube")
-    return YouTubeClient(token)
-
-
-async def build_docs_service_for_user(db: Database, user_id: str) -> GoogleDocsClient:
-    """Return a lightweight Google Docs client using the Drive integration token."""
-    token, _ = await _load_token_for_user(db, user_id, "drive")
-    return GoogleDocsClient(token)
-
-
 __all__ = [
     "build_drive_service_for_user",
-    "build_youtube_service_for_user",
-    "build_docs_service_for_user",
     "exchange_google_code",
     "get_google_oauth_url",
     "normalize_google_integration",

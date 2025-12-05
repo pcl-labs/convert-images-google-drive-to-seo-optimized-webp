@@ -25,10 +25,7 @@ from .exceptions import AuthenticationError
 from .deps import ensure_db, get_queue_producer, get_current_user
 from .database import create_user_session, delete_user_session
 from .app_logging import get_logger
-from .database import create_job_extended, get_drive_watch_by_channel
 from .models import JobType
-from .drive_watch import build_channel_token, mark_watch_stopped, update_watch_expiration
-from .notifications import notify_activity
 from .simple_http import AsyncSimpleClient, HTTPStatusError, RequestError
 
 router = APIRouter()
@@ -204,136 +201,11 @@ async def root():
         "environment": settings.environment,
         "queue_mode": queue_mode,
         "endpoints": {
-            "documents_drive": "/api/v1/documents/drive",
-            "optimize": "/api/v1/optimize",
-            "generate_blog": "/api/v1/pipelines/generate_blog",
             "jobs": "/api/v1/jobs",
             "health": "/health",
             "docs": "/docs",
         },
     }
-
-
-def _parse_channel_expiration(raw: Optional[str]) -> Optional[str]:
-    if not raw:
-        return None
-    try:
-        parsed = parsedate_to_datetime(raw)
-        if parsed is None:
-            return None
-        if not parsed.tzinfo:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        else:
-            parsed = parsed.astimezone(timezone.utc)
-        return parsed.isoformat()
-    except Exception as exc:
-        logger.warning("drive_webhook_expiration_parse_failed", extra={"value": raw, "error": str(exc)})
-        return None
-
-
-@router.post("/drive/webhook", response_class=PlainTextResponse, tags=["Public"])
-async def drive_webhook(request: Request):
-    channel_id = request.headers.get("X-Goog-Channel-Id")
-    resource_id = request.headers.get("X-Goog-Resource-Id")
-    token = request.headers.get("X-Goog-Channel-Token")
-    if not channel_id or not token:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing channel headers")
-    db = ensure_db()
-    watch = await get_drive_watch_by_channel(db, channel_id)
-    if not watch:
-        logger.warning("drive_webhook_unknown_channel", extra={"channel_id": channel_id})
-        return PlainTextResponse("unknown channel", status_code=status.HTTP_202_ACCEPTED)
-    watch_user_id = watch.get("user_id")
-    document_id = watch.get("document_id")
-    if not watch_user_id or not document_id:
-        logger.error(
-            "drive_webhook_watch_missing_owner",
-            extra={"channel_id": channel_id, "document_id": document_id, "user_id": watch_user_id},
-        )
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Drive watch metadata missing owner")
-    expected = build_channel_token(channel_id, watch_user_id, document_id)
-    if token != expected:
-        logger.warning(
-            "drive_webhook_invalid_token",
-            extra={"channel_id": channel_id, "document_id": document_id},
-        )
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid webhook token")
-    if resource_id and resource_id != watch.get("resource_id"):
-        logger.warning(
-            "drive_webhook_resource_mismatch",
-            extra={
-                "channel_id": channel_id,
-                "document_id": document_id,
-                "expected": watch.get("resource_id"),
-                "received": resource_id,
-            },
-        )
-    expiration_header = request.headers.get("X-Goog-Channel-Expiration")
-    expiration_iso = _parse_channel_expiration(expiration_header)
-    if expiration_iso:
-        await update_watch_expiration(db, watch_id=watch.get("watch_id"), user_id=watch.get("user_id"), expiration=expiration_iso)
-    resource_state = (request.headers.get("X-Goog-Resource-State") or "").lower()
-    if resource_state == "sync":
-        return PlainTextResponse("sync", status_code=status.HTTP_200_OK)
-    if resource_state == "stop":
-        await mark_watch_stopped(db, channel_id)
-        return PlainTextResponse("stopped", status_code=status.HTTP_200_OK)
-
-    queue = get_queue_producer()
-    job_id = str(uuid.uuid4())
-    try:
-        await create_job_extended(
-            db,
-            job_id,
-            watch_user_id,
-            job_type=JobType.DRIVE_CHANGE_POLL.value,
-            document_id=document_id,
-            payload={"document_ids": [document_id]},
-        )
-    except Exception as exc:
-        logger.error(
-            "drive_webhook_job_create_failed",
-            exc_info=True,
-            extra={"channel_id": channel_id, "document_id": document_id},
-        )
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to enqueue drive poll") from exc
-
-    message = {
-        "job_id": job_id,
-        "user_id": watch_user_id,
-        "job_type": JobType.DRIVE_CHANGE_POLL.value,
-        "document_ids": [document_id],
-    }
-    try:
-        await notify_activity(
-            db,
-            watch_user_id,
-            "info",
-            "Drive edit detected; syncing document",
-            context={
-                "document_id": document_id,
-                "job_id": job_id,
-            },
-        )
-    except Exception:
-        logger.warning(
-            "drive_webhook_notify_failed",
-            exc_info=True,
-            extra={"channel_id": channel_id, "document_id": document_id},
-        )
-    if not queue:
-        logger.error("drive_webhook_queue_missing", extra={"channel_id": channel_id})
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Queue not configured")
-    try:
-        await queue.send_generic(message)
-    except Exception as exc:
-        logger.error(
-            "drive_webhook_enqueue_failed",
-            exc_info=True,
-            extra={"channel_id": channel_id, "document_id": document_id},
-        )
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Queue unavailable") from exc
-    return PlainTextResponse("queued", status_code=status.HTTP_202_ACCEPTED)
 
 
 @router.get("/robots.txt", response_class=PlainTextResponse, tags=["Public"])

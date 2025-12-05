@@ -3,5 +3,3 @@ requirements.txt.local
 cf-requirements.txt
 cf-requirements.txt.backup
 node_modules
-# Explicitly include CSS files (negate any .gitignore patterns)
-!src/workers/static/css/app.css

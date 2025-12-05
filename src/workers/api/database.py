@@ -3245,29 +3245,7 @@ async def record_pipeline_event(
             payload,
         ),
     )
-    if notify_level and settings.enable_notifications:
-        context = dict(notify_context or {})
-        context.setdefault("job_id", job_id)
-        if data and "data" not in context:
-            context["data"] = data
-        text = notify_text or message or f"{event_type}:{stage} {status}".strip()
-        try:
-            await create_notification(
-                db,
-                notif_id=str(uuid.uuid4()),
-                user_id=user_id,
-                level=notify_level,
-                text=text,
-                title=None,
-                context=context,
-                event_id=event_id,
-            )
-        except Exception as exc:  # pragma: no cover - best-effort notification
-            logger.warning(
-                "pipeline_event_notification_failed",
-                exc_info=True,
-                extra={"user_id": user_id, "job_id": job_id, "event_id": event_id, "error": str(exc)},
-            )
+    # Removed: Notification creation - notifications feature removed
 
 
 async def list_pipeline_events(

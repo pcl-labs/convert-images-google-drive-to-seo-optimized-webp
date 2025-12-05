@@ -72,25 +72,7 @@ def test_docs():
     assert response.status_code == 200
 
 
-def test_optimize_requires_auth():
-    """Test that optimize endpoint requires authentication."""
-    response = requests.post(
-        f"{BASE_URL}/api/v1/optimize",
-        json={
-            "document_id": "doc-test"
-        },
-        timeout=TIMEOUT_SECONDS
-    )
-    assert response.status_code == 401
-    try:
-        data = response.json()
-        response_data = json.dumps(data, indent=2)
-    except (json.JSONDecodeError, ValueError):
-        data = None
-        response_data = response.text
-    print(f"Response data: {response_data}")
-    assert data is not None, f"Expected JSON response, got: {response_data}"
-    assert "error" in data or "detail" in data
+# Removed: test_optimize_requires_auth - optimize endpoint removed (documents feature)
 
 
 def test_jobs_requires_auth():

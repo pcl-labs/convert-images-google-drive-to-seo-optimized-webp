@@ -24,7 +24,7 @@ from .static_loader import mount_static_files
 
 from .config import Settings, settings as global_settings
 from .cloudflare_queue import QueueProducer
-from .database import Database, ensure_notifications_schema, ensure_sessions_schema, ensure_full_schema
+from .database import Database, ensure_sessions_schema, ensure_full_schema
 from .exceptions import APIException
 from .app_logging import setup_logging, get_logger, get_request_id
 from .middleware import (
@@ -34,7 +34,6 @@ from .middleware import (
     SecurityHeadersMiddleware,
 )
 from .deps import set_db_instance, set_queue_producer
-from .notifications_stream import cancel_all_sse_connections
 
 
 def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
@@ -80,11 +79,6 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
         set_db_instance(db_instance)
 
         try:
-            if active_settings.enable_notifications:
-                await ensure_notifications_schema(db_instance)
-                app_logger.info("Notifications schema ensured")
-            else:
-                app_logger.info("Notifications disabled; skipping schema ensure")
             await ensure_sessions_schema(db_instance)
             app_logger.info("Session schema ensured")
             # Apply full schema to ensure all tables exist
@@ -115,12 +109,7 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
             """Perform shutdown cleanup operations."""
             nonlocal db_instance, queue_producer
 
-            try:
-                sse_count = await cancel_all_sse_connections()
-                if sse_count > 0:
-                    app_logger.info("Cancelled %s SSE connections", sse_count)
-            except Exception as exc:  # pragma: no cover - defensive logging
-                app_logger.error("Error cancelling SSE connections: %s", exc, exc_info=True)
+            # Removed: SSE connection cleanup - notifications stream removed
 
             try:
                 current_task = asyncio.current_task()
@@ -206,7 +195,7 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
         description="Production-ready API for optimizing images from Google Drive to WebP format",
         version=active_settings.app_version,
         lifespan=lifespan,
-        docs_url="/",
+        docs_url=None,
         redoc_url=None,
     )
 
@@ -227,19 +216,87 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
         assets_binding=active_settings.assets
     )
 
+    from fastapi.openapi.docs import get_swagger_ui_html
+    from fastapi.responses import HTMLResponse
     from .public import router as public_router
     from .protected import router as protected_router
-    from .content import (
-        router as content_router,
-        documents_router as documents_v1_router,
-        jobs_router as jobs_v1_router,
-    )
+    from .proxy import router as proxy_router
 
     app.include_router(public_router)
     app.include_router(protected_router)
-    app.include_router(documents_v1_router)
-    app.include_router(jobs_v1_router)
-    app.include_router(content_router)
+    app.include_router(proxy_router)
+
+    @app.get("/", include_in_schema=False)
+    async def custom_swagger_ui():
+        """Serve Swagger UI with handy auth buttons."""
+        swagger_response = get_swagger_ui_html(
+            openapi_url=app.openapi_url,
+            title=f"{app.title} - Docs",
+        )
+        html = swagger_response.body.decode("utf-8")
+        auth_html = """
+        <div id="auth-shortcuts">
+            <h3>Authentication Shortcuts</h3>
+            <p>Use these to log in; API keys must be created via POST /auth/keys using your Bearer token.</p>
+            <div class="auth-buttons">
+                <a class="auth-btn" href="/auth/github/start" target="_blank" rel="noopener">GitHub OAuth Login</a>
+                <a class="auth-btn" href="/auth/google/start" target="_blank" rel="noopener">Google OAuth Login</a>
+            </div>
+            <p class="auth-note">
+                After logging in, call <code>POST /auth/keys</code> with the Authorization header from your session
+                (see README for curl example). Browsers cannot invoke it directly.
+            </p>
+        </div>
+        <style>
+            #auth-shortcuts {
+                background: #0b0c10;
+                color: #fff;
+                padding: 16px;
+                margin: 0;
+                border-bottom: 1px solid rgba(255,255,255,0.1);
+            }
+            #auth-shortcuts h3 {
+                margin: 0 0 8px 0;
+                font-size: 1.1rem;
+            }
+            #auth-shortcuts p {
+                margin: 0 0 12px 0;
+                font-size: 0.95rem;
+            }
+            #auth-shortcuts .auth-buttons {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 10px;
+            }
+            #auth-shortcuts .auth-btn {
+                background: #00bcd4;
+                color: #0b0c10;
+                padding: 8px 14px;
+                border-radius: 4px;
+                text-decoration: none;
+                font-weight: 600;
+            }
+            #auth-shortcuts .auth-btn:hover {
+                background: #0097a7;
+            }
+            #auth-shortcuts .auth-note {
+                margin-top: 10px;
+                font-size: 0.9rem;
+                color: rgba(255,255,255,0.85);
+            }
+            #auth-shortcuts code {
+                background: rgba(255,255,255,0.15);
+                padding: 2px 4px;
+                border-radius: 3px;
+            }
+        </style>
+        """
+        html = html.replace("<body>", f"<body>{auth_html}", 1)
+        return HTMLResponse(
+            content=html,
+            status_code=swagger_response.status_code,
+            headers=dict(swagger_response.headers.items()),
+        )
 
     @app.get("/favicon.ico", include_in_schema=False)
     async def favicon():

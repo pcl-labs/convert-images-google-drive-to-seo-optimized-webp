@@ -34,12 +34,7 @@ def test_health_endpoint(client):
     assert response.json()["status"] == "healthy"
 
 
-def test_optimize_endpoint_requires_auth(client):
-    """Test that optimize endpoint requires authentication."""
-    response = client.post("/api/v1/optimize", json={
-        "document_id": "doc-test"
-    })
-    assert response.status_code in [401, 403]
+# Removed: test_optimize_endpoint_requires_auth - optimize endpoint removed
 
 
 def test_jobs_endpoint_requires_auth(client):
@@ -60,10 +55,7 @@ def test_providers_status_requires_auth(client):
     assert response.status_code == 401
 
 
-def test_github_status_requires_auth(client):
-    """Test that GitHub status endpoint requires authentication."""
-    response = client.get("/auth/github/status")
-    assert response.status_code == 401
+# Removed: test_github_status_requires_auth - GitHub OAuth removed
 
 
 if __name__ == "__main__":
