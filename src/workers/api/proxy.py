@@ -5,12 +5,21 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, Request, status, HTTPException
 from fastapi.responses import JSONResponse
 
 from .config import settings
 from .deps import get_saas_user
-from core.youtube_proxy import TranscriptProxyError, fetch_transcript_via_proxy
+from .better_auth import (
+    YouTubeIntegration,
+    fetch_youtube_integration,
+    refresh_youtube_access_token,
+)
+from core.youtube_proxy import (
+    TranscriptProxyError,
+    fetch_transcript_via_proxy,
+    fetch_transcript_via_youtube_api,
+)
 from .models import TranscriptProxyRequest, TranscriptProxyResponse
 
 router = APIRouter()
@@ -19,6 +28,14 @@ logger = logging.getLogger(__name__)
 _identity_request_log: Dict[str, list[datetime]] = {}
 _identity_last_cleanup: Optional[datetime] = None
 _identity_cleanup_interval = 300.0  # seconds
+FALLBACK_ERROR_CODES = {
+    "no_captions",
+    "blocked",
+    "network_error",
+    "rate_limited",
+    "proxy_error",
+    "unknown",
+}
 
 
 def _rate_limits() -> tuple[int, int]:
@@ -48,6 +65,10 @@ def _identity_key(user: Dict[str, Any], request: Request) -> str:
     if host:
         return host
     return "anonymous"
+
+
+def _should_attempt_youtube_api(error_code: str) -> bool:
+    return (error_code or "").lower() in FALLBACK_ERROR_CODES
 
 
 def _is_identity_rate_limited(identity: str) -> bool:
@@ -82,6 +103,52 @@ def _is_identity_rate_limited(identity: str) -> bool:
     return False
 
 
+def _is_expired(expires_at: Optional[datetime]) -> bool:
+    if not expires_at:
+        return False
+    return expires_at <= datetime.now(timezone.utc)
+
+
+async def _try_youtube_api_fallback(request: Request, video_id: str) -> Optional[TranscriptProxyResponse]:
+    integration, forbidden = await fetch_youtube_integration(request)
+    if forbidden:
+        logger.info("youtube_api_fallback_forbidden")
+        return None
+    if not integration:
+        return None
+
+    token = integration.access_token
+    if _is_expired(integration.expires_at):
+        if not integration.refresh_token:
+            logger.warning("youtube_api_token_expired_no_refresh", extra={"integration_id": integration.integration_id})
+            return None
+        try:
+            refreshed = await refresh_youtube_access_token(integration.refresh_token)
+        except HTTPException as exc:
+            logger.warning(
+                "youtube_api_token_refresh_failed",
+                extra={"status": exc.status_code if isinstance(exc, HTTPException) else None},
+            )
+            return None
+        token = refreshed.get("access_token")
+
+    if not token:
+        logger.warning("youtube_api_missing_access_token", extra={"integration_id": integration.integration_id})
+        return None
+
+    try:
+        result = await fetch_transcript_via_youtube_api(video_id, token)
+    except TranscriptProxyError as fallback_exc:
+        logger.warning(
+            "youtube_api_fallback_failed",
+            extra={"video_id": video_id, "error_code": fallback_exc.code},
+        )
+        return None
+
+    logger.info("youtube_api_fallback_success", extra={"video_id": video_id})
+    return _response_from_result(result, video_id)
+
+
 def _error_response(
     code: str,
     message: str,
@@ -101,6 +168,26 @@ def _error_response(
     return JSONResponse(status_code=status_code, content=payload.model_dump(exclude_none=True))
 
 
+def _response_from_result(result: Dict[str, Any], fallback_video_id: str) -> TranscriptProxyResponse:
+    transcript_data = result.get("transcript", {})
+    metadata_data = result.get("metadata", {})
+    return TranscriptProxyResponse(
+        success=True,
+        transcript={
+            "text": transcript_data.get("text", ""),
+            "format": transcript_data.get("format", "text"),
+            "language": transcript_data.get("language"),
+            "track_kind": transcript_data.get("trackKind"),
+        },
+        metadata={
+            "client_version": metadata_data.get("clientVersion"),
+            "method": metadata_data.get("method"),
+            "video_id": metadata_data.get("videoId", fallback_video_id),
+            "caption_id": metadata_data.get("captionId"),
+        },
+    )
+
+
 @router.post("/api/proxy/youtube-transcript", response_model=TranscriptProxyResponse, tags=["Proxy"])
 async def proxy_youtube_transcript(
     request_body: TranscriptProxyRequest,
@@ -118,26 +205,14 @@ async def proxy_youtube_transcript(
     
     try:
         result = await fetch_transcript_via_proxy(request_body.video_id)
-        
-        transcript_data = result.get("transcript", {})
-        metadata_data = result.get("metadata", {})
-        
-        return TranscriptProxyResponse(
-            success=True,
-            transcript={
-                "text": transcript_data.get("text", ""),
-                "format": transcript_data.get("format", "json3"),
-                "language": transcript_data.get("language"),
-                "track_kind": transcript_data.get("trackKind"),
-            },
-            metadata={
-                "client_version": metadata_data.get("clientVersion"),
-                "method": metadata_data.get("method", "innertube"),
-                "video_id": metadata_data.get("videoId", request_body.video_id),
-            },
-        )
+        return _response_from_result(result, request_body.video_id)
         
     except TranscriptProxyError as exc:
+        fallback_response = None
+        if _should_attempt_youtube_api(exc.code):
+            fallback_response = await _try_youtube_api_fallback(request, request_body.video_id)
+        if fallback_response:
+            return fallback_response
         return _error_response(
             exc.code,
             exc.message,
