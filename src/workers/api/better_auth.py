@@ -210,10 +210,14 @@ async def fetch_youtube_integration(request: Request) -> Tuple[Optional[YouTubeI
     try:
         response.raise_for_status()
     except HTTPStatusError as exc:
+        status_code = exc.response.status_code
         logger.error(
             "better_auth_integrations_http_error",
-            extra={"status": exc.response.status_code},
+            extra={"status": status_code},
         )
+        # Treat non-401/403 client errors as absence of integration so the worker can fall back
+        if 400 <= status_code < 500:
+            return None, False
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Failed to fetch integrations",

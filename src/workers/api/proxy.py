@@ -143,7 +143,11 @@ async def _try_youtube_api_primary(
             "youtube_api_primary_failed",
             extra={"video_id": video_id, "error_code": fallback_exc.code},
         )
-        hint = YOUTUBE_LINK_HINT if fallback_exc.code in {"permission_denied", "auth_failed"} else None
+        hint = (
+            YOUTUBE_LINK_HINT
+            if fallback_exc.code in {"permission_denied", "auth_failed", "youtube_not_owner"}
+            else None
+        )
         return None, hint
 
     logger.info("youtube_api_primary_success", extra={"video_id": video_id})
@@ -169,9 +173,19 @@ def _error_response(
     return JSONResponse(status_code=status_code, content=payload.model_dump(exclude_none=True))
 
 
-def _response_from_result(result: Dict[str, Any], fallback_video_id: str) -> TranscriptProxyResponse:
+def _response_from_result(
+    result: Dict[str, Any], fallback_video_id: str, *, hint: Optional[str] = None
+) -> TranscriptProxyResponse:
     transcript_data = result.get("transcript", {})
     metadata_data = result.get("metadata", {})
+    metadata = {
+        "client_version": metadata_data.get("clientVersion"),
+        "method": metadata_data.get("method"),
+        "video_id": metadata_data.get("videoId", fallback_video_id),
+        "caption_id": metadata_data.get("captionId"),
+    }
+    if hint:
+        metadata["accountLinkHint"] = hint
     return TranscriptProxyResponse(
         success=True,
         transcript={
@@ -180,12 +194,7 @@ def _response_from_result(result: Dict[str, Any], fallback_video_id: str) -> Tra
             "language": transcript_data.get("language"),
             "track_kind": transcript_data.get("trackKind"),
         },
-        metadata={
-            "client_version": metadata_data.get("clientVersion"),
-            "method": metadata_data.get("method"),
-            "video_id": metadata_data.get("videoId", fallback_video_id),
-            "caption_id": metadata_data.get("captionId"),
-        },
+        metadata=metadata,
     )
 
 
@@ -207,11 +216,15 @@ async def proxy_youtube_transcript(
     youtube_hint: Optional[str] = None
     youtube_response, youtube_hint = await _try_youtube_api_primary(request, request_body.video_id)
     if youtube_response:
+        if youtube_hint:
+            metadata = dict(youtube_response.metadata or {})
+            metadata["accountLinkHint"] = youtube_hint
+            youtube_response.metadata = metadata
         return youtube_response
 
     try:
         result = await fetch_transcript_via_proxy(request_body.video_id)
-        return _response_from_result(result, request_body.video_id)
+        return _response_from_result(result, request_body.video_id, hint=youtube_hint)
 
     except TranscriptProxyError as exc:
         details = exc.details or {}

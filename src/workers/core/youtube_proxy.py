@@ -5,6 +5,7 @@ import html
 import json
 import logging
 import re
+from http import HTTPStatus
 from typing import Any, Dict, Iterable, Optional
 
 import httpx
@@ -22,6 +23,7 @@ DEFAULT_HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
     "Accept-Encoding": "identity",
 }
+ACCOUNT_LINK_HINT = "Link your YouTube account in Settings → Integrations to unlock higher-accuracy transcripts."
 YOUTUBE_API_CLIENT_HEADERS = {
     "Accept-Encoding": "identity",
 }
@@ -107,7 +109,12 @@ async def fetch_transcript_via_youtube_api(video_id: str, access_token: str) -> 
             raise TranscriptProxyError("network_error", "Failed to reach YouTube API") from exc
 
         if response.status_code == 403:
-            raise TranscriptProxyError("permission_denied", "YouTube API access forbidden")
+            raise TranscriptProxyError(
+                "youtube_not_owner",
+                "YouTube API access forbidden for this video.",
+                details={"reason": "youtube_permission", "accountLinkHint": ACCOUNT_LINK_HINT},
+                status_code=HTTPStatus.FORBIDDEN,
+            )
         if response.status_code == 404:
             raise TranscriptProxyError("invalid_video", "Video not found on YouTube")
         if response.status_code == 401:
@@ -146,7 +153,12 @@ async def fetch_transcript_via_youtube_api(video_id: str, access_token: str) -> 
             raise TranscriptProxyError("network_error", "Failed to download YouTube captions") from exc
 
         if download_response.status_code == 403:
-            raise TranscriptProxyError("permission_denied", "YouTube denied access to caption file")
+            raise TranscriptProxyError(
+                "youtube_not_owner",
+                "YouTube denied access to this caption file.",
+                details={"reason": "youtube_permission", "accountLinkHint": ACCOUNT_LINK_HINT},
+                status_code=HTTPStatus.FORBIDDEN,
+            )
         if download_response.status_code == 404:
             raise TranscriptProxyError("no_captions", "Caption track no longer exists")
         try:
