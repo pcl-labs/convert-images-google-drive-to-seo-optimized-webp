@@ -180,18 +180,16 @@ async def authenticate_with_better_auth(request: Request) -> Dict[str, Any]:
         ) from exc
 
     if result is None:
-        logger.error(
-            "better_auth_empty_response",
+        # Better Auth returned null (no session) - this is valid for unauthenticated requests
+        # Return None to indicate no authentication, rather than raising an error
+        logger.info(
+            "better_auth_no_session",
             extra={
                 "status": response.status_code,
-                "response_text": response.text[:200],
                 "url": url,
             },
         )
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Better Auth returned empty response",
-        )
+        return None
 
     return _extract_identity(result)
 
