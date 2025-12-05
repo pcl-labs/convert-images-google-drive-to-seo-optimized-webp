@@ -228,72 +228,13 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
 
     @app.get("/", include_in_schema=False)
     async def custom_swagger_ui():
-        """Serve Swagger UI with handy auth buttons."""
+        """Serve default Swagger UI."""
         swagger_response = get_swagger_ui_html(
             openapi_url=app.openapi_url,
             title=f"{app.title} - Docs",
         )
-        html = swagger_response.body.decode("utf-8")
-        auth_html = """
-        <div id="auth-shortcuts">
-            <h3>Authentication Shortcuts</h3>
-            <p>Use these to log in; API keys must be created via POST /auth/keys using your Bearer token.</p>
-            <div class="auth-buttons">
-                <a class="auth-btn" href="/auth/github/start" target="_blank" rel="noopener">GitHub OAuth Login</a>
-                <a class="auth-btn" href="/auth/google/start" target="_blank" rel="noopener">Google OAuth Login</a>
-            </div>
-            <p class="auth-note">
-                After logging in, call <code>POST /auth/keys</code> with the Authorization header from your session
-                (see README for curl example). Browsers cannot invoke it directly.
-            </p>
-        </div>
-        <style>
-            #auth-shortcuts {
-                background: #0b0c10;
-                color: #fff;
-                padding: 16px;
-                margin: 0;
-                border-bottom: 1px solid rgba(255,255,255,0.1);
-            }
-            #auth-shortcuts h3 {
-                margin: 0 0 8px 0;
-                font-size: 1.1rem;
-            }
-            #auth-shortcuts p {
-                margin: 0 0 12px 0;
-                font-size: 0.95rem;
-            }
-            #auth-shortcuts .auth-buttons {
-                display: flex;
-                flex-wrap: wrap;
-                gap: 10px;
-            }
-            #auth-shortcuts .auth-btn {
-                background: #00bcd4;
-                color: #0b0c10;
-                padding: 8px 14px;
-                border-radius: 4px;
-                text-decoration: none;
-                font-weight: 600;
-            }
-            #auth-shortcuts .auth-btn:hover {
-                background: #0097a7;
-            }
-            #auth-shortcuts .auth-note {
-                margin-top: 10px;
-                font-size: 0.9rem;
-                color: rgba(255,255,255,0.85);
-            }
-            #auth-shortcuts code {
-                background: rgba(255,255,255,0.15);
-                padding: 2px 4px;
-                border-radius: 3px;
-            }
-        </style>
-        """
-        html = html.replace("<body>", f"<body>{auth_html}", 1)
         return HTMLResponse(
-            content=html,
+            content=swagger_response.body,
             status_code=swagger_response.status_code,
             headers=dict(swagger_response.headers.items()),
         )
@@ -365,12 +306,8 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
 
     # Shared middleware stack for local + Worker runtimes.
     # Note: Middleware executes in REVERSE order of registration.
-    # Register AuthCookieMiddleware before SessionMiddleware so SessionMiddleware executes first
-    # (SessionMiddleware sets request.state.session_user_id, AuthCookieMiddleware reads it)
-    # Re-enabling AuthCookieMiddleware - core auth functionality
-    # Re-enabling SessionMiddleware - D1 is now working
-    # Sessions are used for stateful tracking (notifications, activity) and can help with OAuth flows
-    # FlashMiddleware re-enabled - testing fix for ASGI errors (moved DB write to after call_next)
+    # Authentication is now handled by Better Auth via router dependencies (Depends), not middleware.
+    # Removed SessionMiddleware, FlashMiddleware, and AuthCookieMiddleware - no longer needed.
     
     # RateLimitMiddleware disabled - uses time.monotonic() and asyncio.Lock() which may not work correctly in Workers
     # To re-enable: implement using Cloudflare KV or Workers KV for distributed rate limiting

@@ -141,6 +141,10 @@ class Settings:
     static_files_dir: Optional[str] = None
     openai_api_key: Optional[str] = None
     openai_api_base: Optional[str] = None
+    better_auth_base_url: Optional[str] = None
+    better_auth_session_endpoint: str = "/api/auth/get-session"
+    better_auth_timeout_seconds: float = 10.0
+    better_auth_integrations_endpoint: str = "/api/organization/integrations"
     
     # YouTube transcript service configuration
     youtube_proxy_api_url: Optional[str] = None
@@ -199,6 +203,19 @@ class Settings:
                 raise ValueError("CLOUDFLARE_API_TOKEN is required when USE_INLINE_QUEUE=false")
             if not self.cf_queue_name:
                 raise ValueError("CF_QUEUE_NAME is required when USE_INLINE_QUEUE=false")
+        session_endpoint = (self.better_auth_session_endpoint or "/api/auth/get-session").strip()
+        self.better_auth_session_endpoint = session_endpoint or "/api/auth/get-session"
+        if not self.better_auth_session_endpoint.startswith("/"):
+            raise ValueError(
+                f"better_auth_session_endpoint must start with '/': {self.better_auth_session_endpoint}"
+            )
+        integrations_endpoint = (self.better_auth_integrations_endpoint or "/api/organization/integrations").strip()
+        self.better_auth_integrations_endpoint = integrations_endpoint or "/api/organization/integrations"
+        if not self.better_auth_integrations_endpoint.startswith("/"):
+            raise ValueError(
+                f"better_auth_integrations_endpoint must start with '/': {self.better_auth_integrations_endpoint}"
+            )
+        self.better_auth_timeout_seconds = max(2.0, _float(self.better_auth_timeout_seconds, 10.0))
 
     @classmethod
     def from_env(cls, **overrides: Any) -> "Settings":

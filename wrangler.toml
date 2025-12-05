@@ -19,9 +19,9 @@ compatibility_flags = ["python_workers"]  # Required for Python Workers
 [vars]
 ENVIRONMENT = "production"  # Used by Settings.environment
 DEBUG = "false"             # Used by Settings.debug
-BASE_URL = "https://quill-api.paulchrisluke.workers.dev"  # OAuth redirect URI base for Cloudflare Workers
+BASE_URL = "https://api-service.getquillio.com"  # OAuth redirect URI base for Cloudflare Workers
 STATIC_FILES_DIR = "./static"
-CORS_ORIGINS = "http://localhost:8000,http://127.0.0.1:8000,http://localhost:8787,http://127.0.0.1:8787,https://quill-api.paulchrisluke.workers.dev"
+CORS_ORIGINS = "http://localhost:8000,http://127.0.0.1:8000,http://localhost:8787,http://127.0.0.1:8787,https://api-service.getquillio.com,https://quill-api.paulchrisluke.workers.dev"
 JWT_USE_COOKIES = "true"
 QUEUE_NAME = "quill-jobs"
 DEAD_LETTER_QUEUE_NAME = "quill-dlq"
@@ -68,6 +68,13 @@ binding = "DLQ"  # Must match WORKER_DLQ_BINDING in src/workers/runtime.py
 #   wrangler secret put GOOGLE_CLIENT_ID        # Google OAuth Client ID (for Drive/YouTube)
 #   wrangler secret put GOOGLE_CLIENT_SECRET    # Google OAuth Client Secret
 #
+# Required for Better Auth integration:
+#   wrangler secret put BETTER_AUTH_BASE_URL    # Base URL of Better Auth service (required)
+#   # Optional Better Auth config (have defaults):
+#   # BETTER_AUTH_SESSION_ENDPOINT (default: "/api/auth/get-session")
+#   # BETTER_AUTH_INTEGRATIONS_ENDPOINT (default: "/api/organization/integrations")
+#   # BETTER_AUTH_TIMEOUT_SECONDS (default: 10.0)
+#
 # Optional:
 #   wrangler secret put GITHUB_REDIRECT_URI     # OAuth redirect URI (optional)
 #   wrangler secret put BASE_URL                 # Base URL for the app (optional)
@@ -97,11 +104,10 @@ binding = "DLQ"  # Must match WORKER_DLQ_BINDING in src/workers/runtime.py
 directory = "src/workers/static"
 binding = "ASSETS"
 
-# Routes (optional - for custom domain)
-# Uncomment and configure if you want to use a custom domain:
-# routes = [
-#   { pattern = "api.example.com/*", zone_name = "example.com" }
-# ]
+# Routes for custom domain
+routes = [
+  { pattern = "api-service.getquillio.com/*", zone_name = "getquillio.com" }
+]
 
 # Resource Limits
 [limits]

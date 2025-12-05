@@ -5,35 +5,37 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Request, status
+from fastapi import APIRouter, Depends, Request, status, HTTPException
 from fastapi.responses import JSONResponse
 
-from .auth import authenticate_api_key
 from .config import settings
-from .deps import ensure_db
+from .deps import get_saas_user
+from .better_auth import (
+    YouTubeIntegration,
+    fetch_youtube_integration,
+    refresh_youtube_access_token,
+)
+from core.youtube_proxy import (
+    TranscriptProxyError,
+    fetch_transcript_via_proxy,
+    fetch_transcript_via_youtube_api,
+)
 from .models import TranscriptProxyRequest, TranscriptProxyResponse
-from core.youtube_proxy import TranscriptProxyError, fetch_transcript_via_proxy
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-# Rate limiting state - no lock needed since Workers are single-threaded per isolate
-_api_key_request_log: Dict[str, list[datetime]] = {}
-_api_key_last_cleanup: Optional[datetime] = None
-_api_key_cleanup_interval = 300.0  # seconds
-
-
-def _extract_api_key(auth_header: Optional[str], body_api_key: Optional[str]) -> Optional[str]:
-    """Extract API key from Authorization header or request body."""
-    if auth_header:
-        prefix = "Bearer "
-        if auth_header.startswith(prefix):
-            token = auth_header[len(prefix) :].strip()
-            if token:
-                return token
-    if body_api_key:
-        return body_api_key.strip() or None
-    return None
+_identity_request_log: Dict[str, list[datetime]] = {}
+_identity_last_cleanup: Optional[datetime] = None
+_identity_cleanup_interval = 300.0  # seconds
+FALLBACK_ERROR_CODES = {
+    "no_captions",
+    "blocked",
+    "network_error",
+    "rate_limited",
+    "proxy_error",
+    "unknown",
+}
 
 
 def _rate_limits() -> tuple[int, int]:
@@ -46,42 +48,105 @@ def _rate_limits() -> tuple[int, int]:
     return minute, hour
 
 
-async def _is_api_key_rate_limited(api_key: str) -> bool:
-    """Track API key usage with simple in-memory rate limiting.
-    
-    Uses datetime instead of time.monotonic() and no locks since Workers are single-threaded per isolate.
-    """
+def _identity_key(user: Dict[str, Any], request: Request) -> str:
+    org_id = user.get("organization_id")
+    if org_id:
+        return str(org_id)
+    user_id = user.get("user_id")
+    if user_id:
+        return str(user_id)
+    session_id = user.get("session_id")
+    if session_id:
+        return str(session_id)
+    auth_header = request.headers.get("Authorization", "").strip()
+    if auth_header:
+        return auth_header
+    host = getattr(request.client, "host", "")  # type: ignore[arg-type]
+    if host:
+        return host
+    return "anonymous"
+
+
+def _should_attempt_youtube_api(error_code: str) -> bool:
+    return (error_code or "").lower() in FALLBACK_ERROR_CODES
+
+
+def _is_identity_rate_limited(identity: str) -> bool:
     minute_limit, hour_limit = _rate_limits()
     if minute_limit <= 0 and hour_limit <= 0:
         return False
-    
-    # Use datetime instead of time.monotonic() per Cloudflare Workers gotchas
     now = datetime.now(timezone.utc)
-    
-    # No lock needed - Workers are single-threaded per isolate
-    global _api_key_last_cleanup
-    if _api_key_last_cleanup is None or (now - _api_key_last_cleanup).total_seconds() > _api_key_cleanup_interval:
-        # Clean up old entries
-        for key in list(_api_key_request_log.keys()):
-            history = _api_key_request_log[key]
+
+    global _identity_last_cleanup
+    if (
+        _identity_last_cleanup is None
+        or (now - _identity_last_cleanup).total_seconds() > _identity_cleanup_interval
+    ):
+        for key in list(_identity_request_log.keys()):
+            history = _identity_request_log[key]
             history[:] = [ts for ts in history if (now - ts).total_seconds() < 3600]
             if not history:
-                del _api_key_request_log[key]
-        _api_key_last_cleanup = now
-    
-    # Check rate limits for this API key
-    history = _api_key_request_log.setdefault(api_key, [])
+                del _identity_request_log[key]
+        _identity_last_cleanup = now
+
+    history = _identity_request_log.setdefault(identity, [])
     history[:] = [ts for ts in history if (now - ts).total_seconds() < 3600]
     requests_last_hour = len(history)
     requests_last_minute = len([ts for ts in history if (now - ts).total_seconds() < 60])
-    
+
     if (minute_limit > 0 and requests_last_minute >= minute_limit) or (
         hour_limit > 0 and requests_last_hour >= hour_limit
     ):
         return True
-    
+
     history.append(now)
     return False
+
+
+def _is_expired(expires_at: Optional[datetime]) -> bool:
+    if not expires_at:
+        return False
+    return expires_at <= datetime.now(timezone.utc)
+
+
+async def _try_youtube_api_fallback(request: Request, video_id: str) -> Optional[TranscriptProxyResponse]:
+    integration, forbidden = await fetch_youtube_integration(request)
+    if forbidden:
+        logger.info("youtube_api_fallback_forbidden")
+        return None
+    if not integration:
+        return None
+
+    token = integration.access_token
+    if _is_expired(integration.expires_at):
+        if not integration.refresh_token:
+            logger.warning("youtube_api_token_expired_no_refresh", extra={"integration_id": integration.integration_id})
+            return None
+        try:
+            refreshed = await refresh_youtube_access_token(integration.refresh_token)
+        except HTTPException as exc:
+            logger.warning(
+                "youtube_api_token_refresh_failed",
+                extra={"status": exc.status_code if isinstance(exc, HTTPException) else None},
+            )
+            return None
+        token = refreshed.get("access_token")
+
+    if not token:
+        logger.warning("youtube_api_missing_access_token", extra={"integration_id": integration.integration_id})
+        return None
+
+    try:
+        result = await fetch_transcript_via_youtube_api(video_id, token)
+    except TranscriptProxyError as fallback_exc:
+        logger.warning(
+            "youtube_api_fallback_failed",
+            extra={"video_id": video_id, "error_code": fallback_exc.code},
+        )
+        return None
+
+    logger.info("youtube_api_fallback_success", extra={"video_id": video_id})
+    return _response_from_result(result, video_id)
 
 
 def _error_response(
@@ -103,61 +168,51 @@ def _error_response(
     return JSONResponse(status_code=status_code, content=payload.model_dump(exclude_none=True))
 
 
+def _response_from_result(result: Dict[str, Any], fallback_video_id: str) -> TranscriptProxyResponse:
+    transcript_data = result.get("transcript", {})
+    metadata_data = result.get("metadata", {})
+    return TranscriptProxyResponse(
+        success=True,
+        transcript={
+            "text": transcript_data.get("text", ""),
+            "format": transcript_data.get("format", "text"),
+            "language": transcript_data.get("language"),
+            "track_kind": transcript_data.get("trackKind"),
+        },
+        metadata={
+            "client_version": metadata_data.get("clientVersion"),
+            "method": metadata_data.get("method"),
+            "video_id": metadata_data.get("videoId", fallback_video_id),
+            "caption_id": metadata_data.get("captionId"),
+        },
+    )
+
+
 @router.post("/api/proxy/youtube-transcript", response_model=TranscriptProxyResponse, tags=["Proxy"])
 async def proxy_youtube_transcript(
     request_body: TranscriptProxyRequest,
     request: Request,
+    user: Dict[str, Any] = Depends(get_saas_user),
 ) -> JSONResponse | TranscriptProxyResponse:
-    """Proxy YouTube transcript requests through external service using API key auth."""
-    api_key = _extract_api_key(request.headers.get("Authorization"), request_body.api_key)
-    if not api_key:
-        return _error_response(
-            "missing_api_key",
-            "API key is required. Provide it via Authorization header or api_key field.",
-            status_code=status.HTTP_401_UNAUTHORIZED,
-        )
-    
-    db = ensure_db()
-    api_user = await authenticate_api_key(db, api_key)
-    if not api_user:
-        return _error_response(
-            "invalid_api_key",
-            "Provided API key is invalid.",
-            status_code=status.HTTP_401_UNAUTHORIZED,
-        )
-    
-    # Attach user_id for downstream middleware visibility
-    request.state.user_id = api_user.get("user_id")
-    
-    if await _is_api_key_rate_limited(api_key):
+    """Proxy YouTube transcript requests through external service using Better Auth identity."""
+    identity_key = _identity_key(user, request)
+    if _is_identity_rate_limited(identity_key):
         return _error_response(
             "rate_limited",
-            "Too many requests for this API key. Please slow down.",
+            "Too many requests for this identity. Please slow down.",
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
         )
     
     try:
         result = await fetch_transcript_via_proxy(request_body.video_id)
-        
-        transcript_data = result.get("transcript", {})
-        metadata_data = result.get("metadata", {})
-        
-        return TranscriptProxyResponse(
-            success=True,
-            transcript={
-                "text": transcript_data.get("text", ""),
-                "format": transcript_data.get("format", "json3"),
-                "language": transcript_data.get("language"),
-                "track_kind": transcript_data.get("trackKind"),
-            },
-            metadata={
-                "client_version": metadata_data.get("clientVersion"),
-                "method": metadata_data.get("method", "innertube"),
-                "video_id": metadata_data.get("videoId", request_body.video_id),
-            },
-        )
+        return _response_from_result(result, request_body.video_id)
         
     except TranscriptProxyError as exc:
+        fallback_response = None
+        if _should_attempt_youtube_api(exc.code):
+            fallback_response = await _try_youtube_api_fallback(request, request_body.video_id)
+        if fallback_response:
+            return fallback_response
         return _error_response(
             exc.code,
             exc.message,

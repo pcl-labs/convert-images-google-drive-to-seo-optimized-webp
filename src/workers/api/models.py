@@ -111,14 +111,6 @@ class UserResponse(BaseModel):
     created_at: datetime
 
 
-class APIKeyResponse(BaseModel):
-    """API key generation response."""
-    
-    api_key: str
-    created_at: datetime
-    message: str = "Store this API key securely. It will not be shown again."
-
-
 class ErrorResponse(BaseModel):
     """Standard error response."""
     
@@ -521,7 +513,6 @@ class TranscriptProxyRequest(BaseModel):
     """Request model for YouTube transcript proxy endpoint."""
     
     video_id: str = Field(..., description="YouTube video ID (11 characters)", min_length=11, max_length=11)
-    api_key: Optional[str] = Field(default=None, description="Optional API key if Authorization header unavailable")
 
 
 class TranscriptProxyResponse(BaseModel):
