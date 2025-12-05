@@ -20,6 +20,7 @@ DEFAULT_HEADERS = {
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     ),
     "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate",
 }
 INNERTUBE_KEY_RE = re.compile(r'"INNERTUBE_API_KEY":"(?P<key>[^"]+)"')
 CLIENT_VERSION_RE = re.compile(r'"INNERTUBE_CONTEXT_CLIENT_VERSION":"(?P<ver>[^"]+)"')
@@ -89,6 +90,7 @@ async def fetch_transcript_via_youtube_api(video_id: str, access_token: str) -> 
     headers = {
         "Authorization": f"Bearer {access_token}",
         "Accept": "application/json",
+        "Accept-Encoding": "gzip, deflate",
     }
     params = {
         "part": "id,snippet",
@@ -129,6 +131,7 @@ async def fetch_transcript_via_youtube_api(video_id: str, access_token: str) -> 
         download_headers = {
             "Authorization": f"Bearer {access_token}",
             "Accept": "text/plain",
+            "Accept-Encoding": "gzip, deflate",
         }
         download_params = {"tfmt": "vtt", "alt": "media"}
         try:
