@@ -76,10 +76,11 @@ async def _fetch_via_innertube(video_id: str) -> Dict[str, Any]:
         proxy_url, is_free_proxy = await _pick_proxy()
         logger.info(f"Attempt {attempt + 1}/{attempts} - Proxy: {'Yes' if proxy_url else 'None'}, Free: {is_free_proxy}")
         timeout = settings.youtube_scraper_timeout_seconds
-        client_kwargs: Dict[str, Any] = {"timeout": timeout, "headers": headers}
+        client_kwargs: Dict[str, Any] = {"timeout": timeout}
+        proxy_dict = None
         if proxy_url:
             # httpx expects proxies as a dict with http:// and https:// keys
-            client_kwargs["proxies"] = {
+            proxy_dict = {
                 "http://": proxy_url,
                 "https://": proxy_url,
             }
@@ -93,11 +94,11 @@ async def _fetch_via_innertube(video_id: str) -> Dict[str, Any]:
             await asyncio.sleep(random.uniform(0, jitter))
         try:
             async with httpx.AsyncClient(**client_kwargs) as client:
-                watch_html = await _fetch_watch_page(client, video_id)
+                watch_html = await _fetch_watch_page(client, video_id, headers, proxy_dict)
                 api_key, client_version = _extract_innertube_config(watch_html)
-                player_data = await _call_innertube_player(client, video_id, api_key, client_version)
+                player_data = await _call_innertube_player(client, video_id, api_key, client_version, headers, proxy_dict)
                 track = _select_caption_track(player_data)
-                transcript_text, track_format = await _download_caption_track(client, track)
+                transcript_text, track_format = await _download_caption_track(client, track, proxy_dict)
                 
                 # Mark proxy as successful if using free proxy pool
                 if proxy_url and is_free_proxy:
@@ -372,7 +373,7 @@ def _retry_delay_seconds(attempt: int) -> float:
     return delay + random.uniform(0, base)
 
 
-async def _fetch_watch_page(client: httpx.AsyncClient, video_id: str) -> str:
+async def _fetch_watch_page(client: httpx.AsyncClient, video_id: str, headers: Dict[str, str], proxies: Optional[Dict[str, str]] = None) -> str:
     params = {
         "v": video_id,
         "hl": "en",
@@ -380,7 +381,7 @@ async def _fetch_watch_page(client: httpx.AsyncClient, video_id: str) -> str:
         "has_verified": "1",
     }
     try:
-        response = await client.get(WATCH_URL, params=params)
+        response = await client.get(WATCH_URL, params=params, headers=headers, proxies=proxies)
         response.raise_for_status()
         return response.text
     except httpx.HTTPStatusError as exc:
@@ -409,6 +410,8 @@ async def _call_innertube_player(
     video_id: str,
     api_key: str,
     client_version: str,
+    headers: Dict[str, str],
+    proxies: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     body = {
         "context": {
@@ -422,7 +425,7 @@ async def _call_innertube_player(
         "videoId": video_id,
     }
     try:
-        response = await client.post(f"{PLAYER_URL}?key={api_key}", json=body)
+        response = await client.post(f"{PLAYER_URL}?key={api_key}", json=body, headers=headers, proxies=proxies)
         response.raise_for_status()
         data = response.json()
     except httpx.HTTPStatusError as exc:
@@ -470,6 +473,7 @@ def _select_caption_track(player_data: Dict[str, Any]) -> Dict[str, Any]:
 async def _download_caption_track(
     client: httpx.AsyncClient,
     track: Dict[str, Any],
+    proxies: Optional[Dict[str, str]] = None,
 ) -> tuple[str, str]:
     base_url = track.get("baseUrl") or track.get("base_url")
     if not base_url:
@@ -478,7 +482,7 @@ async def _download_caption_track(
 
     async def _fetch_url(url: str) -> httpx.Response:
         try:
-            response = await client.get(url)
+            response = await client.get(url, proxies=proxies)
             response.raise_for_status()
             return response
         except httpx.HTTPStatusError as exc:

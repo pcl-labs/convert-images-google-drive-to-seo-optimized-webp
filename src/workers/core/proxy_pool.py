@@ -70,14 +70,15 @@ class ProxyPoolManager:
         """Check if a proxy is working by testing it against YouTube."""
         try:
             async with httpx.AsyncClient(
-                proxies={"http://": proxy_url, "https://": proxy_url},
                 timeout=self.health_check_timeout,
                 verify=False,  # Free proxies often have SSL issues
             ) as client:
                 # Test with a simple YouTube request
+                proxy_dict = {"http://": proxy_url, "https://": proxy_url}
                 response = await client.get(
                     "https://www.youtube.com",
                     follow_redirects=True,
+                    proxies=proxy_dict,
                 )
                 return response.status_code == 200
         except Exception as e:
