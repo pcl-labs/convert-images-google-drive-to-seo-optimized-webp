@@ -241,7 +241,9 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
             <div class="auth-buttons">
                 <a class="auth-btn" href="/auth/github/start" target="_blank" rel="noopener">GitHub OAuth Login</a>
                 <a class="auth-btn" href="/auth/google/start" target="_blank" rel="noopener">Google OAuth Login</a>
-                <a class="auth-btn" href="/auth/keys" target="_blank" rel="noopener">Create API Key (POST)</a>
+                <form action="/auth/keys" method="post" target="_blank">
+                    <button type="submit" class="auth-btn">Create API Key</button>
+                </form>
             </div>
         </div>
         <style>
@@ -264,6 +266,9 @@ def create_app(custom_settings: Optional[Settings] = None) -> FastAPI:
                 display: flex;
                 flex-wrap: wrap;
                 gap: 10px;
+            }
+            #auth-shortcuts .auth-buttons form {
+                margin: 0;
             }
             #auth-shortcuts .auth-btn {
                 background: #00bcd4;

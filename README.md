@@ -32,7 +32,7 @@ This API is designed to run on Cloudflare Workers using:
 1. Clone the repository:
 ```bash
 git clone <repository-url>
-cd convert-image-webp-optimizer-google-drive
+cd youtube-proxy-api
 ```
 
 2. Install dependencies:
