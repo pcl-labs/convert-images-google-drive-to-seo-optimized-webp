@@ -98,6 +98,7 @@ class ProxyPoolManager:
         try:
             async with self._lock:
                 new_proxies = await fetch_all_free_proxies(timeout=10.0)
+                logger.info(f"Fetched {len(new_proxies)} proxies from sources")
                 added_count = 0
                 
                 for proxy_url in new_proxies:
@@ -120,7 +121,7 @@ class ProxyPoolManager:
                 self.last_fetch = current_time
                 logger.info(f"Added {added_count} new proxies to pool (total: {len(self.proxies)})")
         except Exception as e:
-            logger.error(f"Error refreshing proxy pool: {str(e)}")
+            logger.error(f"Error refreshing proxy pool: {str(e)}", exc_info=True)
     
     async def validate_proxy(self, proxy_url: str) -> bool:
         """Validate a single proxy."""

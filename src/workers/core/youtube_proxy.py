@@ -76,11 +76,16 @@ async def _fetch_via_innertube(video_id: str) -> Dict[str, Any]:
         timeout = settings.youtube_scraper_timeout_seconds
         client_kwargs: Dict[str, Any] = {"timeout": timeout, "headers": headers}
         if proxy_url:
-            client_kwargs["proxies"] = proxy_url
+            # httpx expects proxies as a dict with http:// and https:// keys
+            client_kwargs["proxies"] = {
+                "http://": proxy_url,
+                "https://": proxy_url,
+            }
             # BotProxy's Bot Anti-Detect Mode requires insecure SSL connections
             # Free proxies also often have SSL issues, so disable verification
             if _is_botproxy(proxy_url) or is_free_proxy:
                 client_kwargs["verify"] = False
+                logger.debug(f"Using proxy with SSL verification disabled: {proxy_url[:50]}...")
         jitter = settings.youtube_scraper_jitter_max_seconds
         if jitter > 0:
             await asyncio.sleep(random.uniform(0, jitter))
@@ -314,20 +319,30 @@ async def _pick_proxy() -> Tuple[Optional[str], bool]:
             
             manager = get_proxy_pool_manager()
             
-            # Refresh pool if needed (non-blocking)
+            # If pool is empty, try to refresh synchronously first
+            if len(manager.proxies) == 0:
+                logger.info("Proxy pool is empty, fetching proxies...")
+                await manager.refresh_pool()
+            
+            # Also trigger async refresh for next time
             asyncio.create_task(manager.refresh_pool())
             
             # Get next proxy
             proxy = manager.get_next_proxy()
             if proxy:
+                logger.info(f"Using free proxy: {proxy[:50]}...")
                 return proxy, True
+            else:
+                logger.warning("Free proxy pool is empty, no proxy available")
         except Exception as e:
-            logger.warning(f"Error using free proxy pool: {str(e)}")
+            logger.warning(f"Error using free proxy pool: {str(e)}", exc_info=True)
     
     # Fallback to manual proxy pool
     pool = settings.youtube_scraper_proxy_pool
     if not pool:
+        logger.debug("No proxies available (free proxies disabled and no manual pool)")
         return None, False
+    logger.debug(f"Using manual proxy from pool")
     return random.choice(pool), False
 
 
