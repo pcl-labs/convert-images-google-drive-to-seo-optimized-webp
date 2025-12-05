@@ -176,8 +176,14 @@ def _error_response(
 def _response_from_result(
     result: Dict[str, Any], fallback_video_id: str, *, hint: Optional[str] = None
 ) -> TranscriptProxyResponse:
-    transcript_data = result.get("transcript", {})
-    metadata_data = result.get("metadata", {})
+    # Ensure we have dicts, not None or other types
+    transcript_data = result.get("transcript") or {}
+    if not isinstance(transcript_data, dict):
+        transcript_data = {}
+    metadata_data = result.get("metadata") or {}
+    if not isinstance(metadata_data, dict):
+        metadata_data = {}
+    
     metadata = {
         "client_version": metadata_data.get("clientVersion"),
         "method": metadata_data.get("method"),
