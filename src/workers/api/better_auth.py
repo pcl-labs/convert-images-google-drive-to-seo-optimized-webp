@@ -148,12 +148,23 @@ async def authenticate_with_better_auth(request: Request) -> Dict[str, Any]:
             detail="Unexpected error contacting Better Auth",
         ) from exc
 
+    logger.info(
+        "better_auth_response",
+        extra={
+            "status": response.status_code,
+            "url": url,
+            "has_auth_header": bool(headers.get("Authorization")),
+            "has_cookie": bool(headers.get("Cookie")),
+            "content_length": len(response.text) if hasattr(response, "text") else 0,
+        },
+    )
+
     if response.status_code == 401:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Better Auth session")
     try:
         response.raise_for_status()
     except HTTPStatusError as exc:
-        logger.error("better_auth_http_error", extra={"status": exc.response.status_code})
+        logger.error("better_auth_http_error", extra={"status": exc.response.status_code, "response_text": response.text[:200]})
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Better Auth validation failed",
@@ -162,14 +173,21 @@ async def authenticate_with_better_auth(request: Request) -> Dict[str, Any]:
     try:
         result = response.json()
     except Exception as exc:
-        logger.error("better_auth_invalid_json", exc_info=True)
+        logger.error("better_auth_invalid_json", extra={"status": response.status_code, "response_text": response.text[:200]}, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Better Auth returned invalid response",
         ) from exc
 
     if result is None:
-        logger.error("better_auth_empty_response", extra={"status": response.status_code})
+        logger.error(
+            "better_auth_empty_response",
+            extra={
+                "status": response.status_code,
+                "response_text": response.text[:200],
+                "url": url,
+            },
+        )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Better Auth returned empty response",
