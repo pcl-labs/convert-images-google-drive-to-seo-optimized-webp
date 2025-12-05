@@ -68,6 +68,13 @@ binding = "DLQ"  # Must match WORKER_DLQ_BINDING in src/workers/runtime.py
 #   wrangler secret put GOOGLE_CLIENT_ID        # Google OAuth Client ID (for Drive/YouTube)
 #   wrangler secret put GOOGLE_CLIENT_SECRET    # Google OAuth Client Secret
 #
+# Required for Better Auth integration:
+#   wrangler secret put BETTER_AUTH_BASE_URL    # Base URL of Better Auth service (required)
+#   # Optional Better Auth config (have defaults):
+#   # BETTER_AUTH_SESSION_ENDPOINT (default: "/api/auth/get-session")
+#   # BETTER_AUTH_INTEGRATIONS_ENDPOINT (default: "/api/organization/integrations")
+#   # BETTER_AUTH_TIMEOUT_SECONDS (default: 10.0)
+#
 # Optional:
 #   wrangler secret put GITHUB_REDIRECT_URI     # OAuth redirect URI (optional)
 #   wrangler secret put BASE_URL                 # Base URL for the app (optional)
