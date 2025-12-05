@@ -19,9 +19,9 @@ compatibility_flags = ["python_workers"]  # Required for Python Workers
 [vars]
 ENVIRONMENT = "production"  # Used by Settings.environment
 DEBUG = "false"             # Used by Settings.debug
-BASE_URL = "https://quill-api.paulchrisluke.workers.dev"  # OAuth redirect URI base for Cloudflare Workers
+BASE_URL = "https://api-service.getquillio.com"  # OAuth redirect URI base for Cloudflare Workers
 STATIC_FILES_DIR = "./static"
-CORS_ORIGINS = "http://localhost:8000,http://127.0.0.1:8000,http://localhost:8787,http://127.0.0.1:8787,https://quill-api.paulchrisluke.workers.dev"
+CORS_ORIGINS = "http://localhost:8000,http://127.0.0.1:8000,http://localhost:8787,http://127.0.0.1:8787,https://api-service.getquillio.com,https://quill-api.paulchrisluke.workers.dev"
 JWT_USE_COOKIES = "true"
 QUEUE_NAME = "quill-jobs"
 DEAD_LETTER_QUEUE_NAME = "quill-dlq"
@@ -97,11 +97,10 @@ binding = "DLQ"  # Must match WORKER_DLQ_BINDING in src/workers/runtime.py
 directory = "src/workers/static"
 binding = "ASSETS"
 
-# Routes (optional - for custom domain)
-# Uncomment and configure if you want to use a custom domain:
-# routes = [
-#   { pattern = "api.example.com/*", zone_name = "example.com" }
-# ]
+# Routes for custom domain
+routes = [
+  { pattern = "api-service.getquillio.com/*", zone_name = "getquillio.com" }
+]
 
 # Resource Limits
 [limits]
