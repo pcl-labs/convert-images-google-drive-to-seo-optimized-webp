@@ -220,20 +220,29 @@ async def proxy_youtube_transcript(
         )
     
     youtube_hint: Optional[str] = None
-    youtube_response, youtube_hint = await _try_youtube_api_primary(request, request_body.video_id)
+    try:
+        youtube_response, youtube_hint = await _try_youtube_api_primary(request, request_body.video_id)
+    except Exception as exc:
+        logger.exception("youtube_api_primary_exception", extra={"video_id": request_body.video_id})
+        youtube_response, youtube_hint = None, None
+    
     if youtube_response:
         if youtube_hint:
-            # Use model_dump() to safely extract data from Pydantic model in Workers
-            response_dict = youtube_response.model_dump(exclude_none=False)
-            metadata = dict(response_dict.get("metadata") or {})
-            metadata["accountLinkHint"] = youtube_hint
-            # Create a new instance instead of mutating
-            youtube_response = TranscriptProxyResponse(
-                success=response_dict.get("success", True),
-                transcript=response_dict.get("transcript"),
-                metadata=metadata,
-                error=response_dict.get("error"),
-            )
+            try:
+                # Use model_dump() to safely extract data from Pydantic model in Workers
+                response_dict = youtube_response.model_dump(exclude_none=False)
+                metadata = dict(response_dict.get("metadata") or {})
+                metadata["accountLinkHint"] = youtube_hint
+                # Create a new instance instead of mutating
+                youtube_response = TranscriptProxyResponse(
+                    success=response_dict.get("success", True),
+                    transcript=response_dict.get("transcript"),
+                    metadata=metadata,
+                    error=response_dict.get("error"),
+                )
+            except Exception as exc:
+                logger.exception("youtube_response_metadata_update_error", extra={"video_id": request_body.video_id})
+                # Continue without the hint if we can't update metadata
         return youtube_response
 
     try:
