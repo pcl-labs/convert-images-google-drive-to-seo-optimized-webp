@@ -259,7 +259,12 @@ class Settings:
         self.youtube_scraper_jitter_max_seconds = max(0.0, _float(self.youtube_scraper_jitter_max_seconds, 0.2))
         
         # Free proxy pool settings
+        raw_value = getattr(self, 'youtube_scraper_enable_free_proxies', None)
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"Raw youtube_scraper_enable_free_proxies value: {repr(raw_value)} (type: {type(raw_value)})")
         self.youtube_scraper_enable_free_proxies = _bool(self.youtube_scraper_enable_free_proxies)
+        logger.info(f"Parsed youtube_scraper_enable_free_proxies: {self.youtube_scraper_enable_free_proxies}")
         self.youtube_scraper_proxy_fetch_interval_minutes = max(1, _int(self.youtube_scraper_proxy_fetch_interval_minutes, 60))
         self.youtube_scraper_proxy_health_check_interval_minutes = max(1, _int(self.youtube_scraper_proxy_health_check_interval_minutes, 30))
         self.youtube_scraper_max_free_proxies = max(1, _int(self.youtube_scraper_max_free_proxies, 50))
@@ -300,6 +305,11 @@ class Settings:
                 data[name] = os.environ[env_key]
             elif env_key in dotenv_values:
                 data[name] = dotenv_values[env_key]
+            # Debug logging for free proxy setting
+            if name == "youtube_scraper_enable_free_proxies":
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.info(f"Config loading: {name} -> env_key={env_key}, in_environ={env_key in os.environ}, value={os.environ.get(env_key, 'NOT_SET')}")
         return cls(**data)
 
 

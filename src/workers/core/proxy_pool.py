@@ -51,13 +51,13 @@ class ProxyPoolManager:
         self._lock = asyncio.Lock()
         self._sync_lock = threading.Lock()
         
-        # Configuration from settings
-        self.fetch_interval = getattr(settings, 'youtube_scraper_proxy_fetch_interval_minutes', 60) * 60
-        self.health_check_interval = getattr(settings, 'youtube_scraper_proxy_health_check_interval_minutes', 30) * 60
-        self.max_proxies = getattr(settings, 'youtube_scraper_max_free_proxies', 50)
-        self.health_check_timeout = getattr(settings, 'youtube_scraper_proxy_health_check_timeout', 5.0)
-        self.min_success_rate = getattr(settings, 'youtube_scraper_proxy_min_success_rate', 0.3)
-        self.rotation_strategy = getattr(settings, 'youtube_scraper_proxy_rotation_strategy', 'random')
+        # Hardcoded configuration values
+        self.fetch_interval = 60 * 60  # 60 minutes
+        self.health_check_interval = 30 * 60  # 30 minutes
+        self.max_proxies = 50
+        self.health_check_timeout = 5.0
+        self.min_success_rate = 0.3
+        self.rotation_strategy = 'random'
         
         # Load manual proxies from settings
         manual_proxies = getattr(settings, 'youtube_scraper_proxy_pool', []) or []

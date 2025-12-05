@@ -71,11 +71,6 @@ async def _fetch_via_innertube(video_id: str) -> Dict[str, Any]:
     attempts = max(1, settings.youtube_scraper_max_retries)
     last_error: Optional[TranscriptProxyError] = None
     
-    # Log proxy configuration status
-    enable_free = getattr(settings, 'youtube_scraper_enable_free_proxies', False)
-    manual_pool = getattr(settings, 'youtube_scraper_proxy_pool', []) or []
-    logger.info(f"Proxy config - Free proxies: {enable_free}, Manual pool size: {len(manual_pool)}")
-    
     for attempt in range(attempts):
         headers = _build_scraper_headers()
         proxy_url, is_free_proxy = await _pick_proxy()
@@ -319,11 +314,10 @@ def _build_scraper_headers() -> Dict[str, str]:
 
 async def _pick_proxy() -> Tuple[Optional[str], bool]:
     """Pick a proxy from the pool, using free proxy manager if enabled."""
-    # Check if free proxies are enabled
-    enable_free = getattr(settings, 'youtube_scraper_enable_free_proxies', False)
-    logger.info(f"Free proxies enabled: {enable_free}")
+    # Hardcoded: Always use free proxies
+    enable_free = True
     
-    # Use free proxy pool manager if enabled
+    # Use free proxy pool manager
     if enable_free:
         try:
             from .proxy_pool import get_proxy_pool_manager
