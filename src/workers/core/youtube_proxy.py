@@ -70,9 +70,16 @@ async def fetch_transcript_via_proxy(video_id: str) -> Dict[str, Any]:
 async def _fetch_via_innertube(video_id: str) -> Dict[str, Any]:
     attempts = max(1, settings.youtube_scraper_max_retries)
     last_error: Optional[TranscriptProxyError] = None
+    
+    # Log proxy configuration status
+    enable_free = getattr(settings, 'youtube_scraper_enable_free_proxies', False)
+    manual_pool = getattr(settings, 'youtube_scraper_proxy_pool', []) or []
+    logger.info(f"Proxy config - Free proxies: {enable_free}, Manual pool size: {len(manual_pool)}")
+    
     for attempt in range(attempts):
         headers = _build_scraper_headers()
         proxy_url, is_free_proxy = await _pick_proxy()
+        logger.info(f"Attempt {attempt + 1}/{attempts} - Proxy: {'Yes' if proxy_url else 'None'}, Free: {is_free_proxy}")
         timeout = settings.youtube_scraper_timeout_seconds
         client_kwargs: Dict[str, Any] = {"timeout": timeout, "headers": headers}
         if proxy_url:
@@ -312,17 +319,23 @@ def _build_scraper_headers() -> Dict[str, str]:
 
 async def _pick_proxy() -> Tuple[Optional[str], bool]:
     """Pick a proxy from the pool, using free proxy manager if enabled."""
+    # Check if free proxies are enabled
+    enable_free = getattr(settings, 'youtube_scraper_enable_free_proxies', False)
+    logger.info(f"Free proxies enabled: {enable_free}")
+    
     # Use free proxy pool manager if enabled
-    if getattr(settings, 'youtube_scraper_enable_free_proxies', False):
+    if enable_free:
         try:
             from .proxy_pool import get_proxy_pool_manager
             
             manager = get_proxy_pool_manager()
+            logger.info(f"Proxy pool manager initialized, current pool size: {len(manager.proxies)}")
             
             # If pool is empty, try to refresh synchronously first
             if len(manager.proxies) == 0:
-                logger.info("Proxy pool is empty, fetching proxies...")
+                logger.info("Proxy pool is empty, fetching proxies synchronously...")
                 await manager.refresh_pool()
+                logger.info(f"After sync refresh, pool size: {len(manager.proxies)}")
             
             # Also trigger async refresh for next time
             asyncio.create_task(manager.refresh_pool())
@@ -333,9 +346,9 @@ async def _pick_proxy() -> Tuple[Optional[str], bool]:
                 logger.info(f"Using free proxy: {proxy[:50]}...")
                 return proxy, True
             else:
-                logger.warning("Free proxy pool is empty, no proxy available")
+                logger.warning(f"Free proxy pool is empty (size: {len(manager.proxies)}), no proxy available")
         except Exception as e:
-            logger.warning(f"Error using free proxy pool: {str(e)}", exc_info=True)
+            logger.error(f"Error using free proxy pool: {str(e)}", exc_info=True)
     
     # Fallback to manual proxy pool
     pool = settings.youtube_scraper_proxy_pool

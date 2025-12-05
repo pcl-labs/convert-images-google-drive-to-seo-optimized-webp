@@ -28,6 +28,14 @@ DEAD_LETTER_QUEUE_NAME = "quill-dlq"
 USE_INLINE_QUEUE = "false"  # Ignored at runtime; environment controls inline vs queue
 TRANSCRIPT_LANGS = "en,en-US,en-GB"
 OPENAI_API_BASE = "https://gateway.ai.cloudflare.com/v1/fa3dc6c06433f6b0ea78d95bce23ad91/quill/compat"
+# Free proxy pool configuration
+YOUTUBE_SCRAPER_ENABLE_FREE_PROXIES = "true"
+YOUTUBE_SCRAPER_PROXY_FETCH_INTERVAL_MINUTES = "60"
+YOUTUBE_SCRAPER_PROXY_HEALTH_CHECK_INTERVAL_MINUTES = "30"
+YOUTUBE_SCRAPER_MAX_FREE_PROXIES = "50"
+YOUTUBE_SCRAPER_PROXY_HEALTH_CHECK_TIMEOUT = "5.0"
+YOUTUBE_SCRAPER_PROXY_MIN_SUCCESS_RATE = "0.3"
+YOUTUBE_SCRAPER_PROXY_ROTATION_STRATEGY = "random"
 # YouTube transcript proxy service (tubularblogs.com)
 # Set via: wrangler secret put YOUTUBE_PROXY_API_URL
 # Set via: wrangler secret put YOUTUBE_PROXY_API_KEY
