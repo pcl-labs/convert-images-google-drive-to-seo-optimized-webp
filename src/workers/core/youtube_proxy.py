@@ -8,7 +8,7 @@ import logging
 import random
 import re
 from http import HTTPStatus
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, Optional, Tuple
 
 import httpx
 
@@ -72,14 +72,14 @@ async def _fetch_via_innertube(video_id: str) -> Dict[str, Any]:
     last_error: Optional[TranscriptProxyError] = None
     for attempt in range(attempts):
         headers = _build_scraper_headers()
-        proxy_url = await _pick_proxy()
+        proxy_url, is_free_proxy = await _pick_proxy()
         timeout = settings.youtube_scraper_timeout_seconds
         client_kwargs: Dict[str, Any] = {"timeout": timeout, "headers": headers}
         if proxy_url:
             client_kwargs["proxies"] = proxy_url
             # BotProxy's Bot Anti-Detect Mode requires insecure SSL connections
             # Free proxies also often have SSL issues, so disable verification
-            if _is_botproxy(proxy_url) or getattr(settings, 'youtube_scraper_enable_free_proxies', False):
+            if _is_botproxy(proxy_url) or is_free_proxy:
                 client_kwargs["verify"] = False
         jitter = settings.youtube_scraper_jitter_max_seconds
         if jitter > 0:
@@ -93,7 +93,7 @@ async def _fetch_via_innertube(video_id: str) -> Dict[str, Any]:
                 transcript_text, track_format = await _download_caption_track(client, track)
                 
                 # Mark proxy as successful if using free proxy pool
-                if proxy_url and getattr(settings, 'youtube_scraper_enable_free_proxies', False):
+                if proxy_url and is_free_proxy:
                     try:
                         from .proxy_pool import get_proxy_pool_manager
                         manager = get_proxy_pool_manager()
@@ -117,7 +117,7 @@ async def _fetch_via_innertube(video_id: str) -> Dict[str, Any]:
                 }
         except TranscriptProxyError as exc:
             # Mark proxy as failed if using free proxy pool
-            if proxy_url and getattr(settings, 'youtube_scraper_enable_free_proxies', False):
+            if proxy_url and is_free_proxy:
                 try:
                     from .proxy_pool import get_proxy_pool_manager
                     manager = get_proxy_pool_manager()
@@ -305,7 +305,7 @@ def _build_scraper_headers() -> Dict[str, str]:
     return headers
 
 
-async def _pick_proxy() -> Optional[str]:
+async def _pick_proxy() -> Tuple[Optional[str], bool]:
     """Pick a proxy from the pool, using free proxy manager if enabled."""
     # Use free proxy pool manager if enabled
     if getattr(settings, 'youtube_scraper_enable_free_proxies', False):
@@ -320,15 +320,15 @@ async def _pick_proxy() -> Optional[str]:
             # Get next proxy
             proxy = manager.get_next_proxy()
             if proxy:
-                return proxy
+                return proxy, True
         except Exception as e:
             logger.warning(f"Error using free proxy pool: {str(e)}")
     
     # Fallback to manual proxy pool
     pool = settings.youtube_scraper_proxy_pool
     if not pool:
-        return None
-    return random.choice(pool)
+        return None, False
+    return random.choice(pool), False
 
 
 def _is_botproxy(proxy_url: str) -> bool:

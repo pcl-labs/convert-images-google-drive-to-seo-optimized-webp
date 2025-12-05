@@ -20,15 +20,18 @@ async def fetch_proxyscrape_proxies(timeout: float = 10.0) -> List[str]:
             if response.status_code == 200:
                 proxy_list = response.text.strip().split('\n')
                 for proxy in proxy_list:
-                    proxy = proxy.strip()
-                    if ':' in proxy and proxy:
-                        # Format as http://ip:port
-                        if not proxy.startswith('http'):
-                            proxy = f"http://{proxy}"
+                    proxy = normalize_proxy_url(proxy)
+                    if proxy:
                         proxies.append(proxy)
                 logger.info(f"Fetched {len(proxies)} proxies from ProxyScrape")
+            else:
+                logger.warning(f"ProxyScrape API returned status {response.status_code}")
+    except httpx.TimeoutException as e:
+        logger.warning(f"Timeout fetching from ProxyScrape: {str(e)}")
+    except httpx.HTTPError as e:
+        logger.warning(f"HTTP error fetching from ProxyScrape: {str(e)}")
     except Exception as e:
-        logger.warning(f"Error fetching from ProxyScrape: {str(e)}")
+        logger.error(f"Unexpected error fetching from ProxyScrape: {str(e)}")
     return proxies
 
 
@@ -53,16 +56,17 @@ async def fetch_all_free_proxies(timeout: float = 10.0) -> List[str]:
 
 
 def normalize_proxy_url(proxy: str) -> str:
-    """Normalize proxy URL to http://ip:port format."""
+    """Normalize proxy URL while preserving scheme if provided."""
     proxy = proxy.strip()
     if not proxy:
         return ""
-    
-    # Remove http:// or https:// if present
-    if proxy.startswith('http://') or proxy.startswith('https://'):
-        proxy = proxy.split('://', 1)[1]
-    
-    # Add http:// prefix
+
+    scheme = "http"
+    if proxy.startswith("https://"):
+        scheme = "https"
+    if proxy.startswith("http://") or proxy.startswith("https://"):
+        proxy = proxy.split("://", 1)[1]
+
     if ':' in proxy:
-        return f"http://{proxy}"
+        return f"{scheme}://{proxy}"
     return ""

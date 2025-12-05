@@ -4,9 +4,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import httpx
 
@@ -47,6 +48,8 @@ class ProxyPoolManager:
         self.last_fetch: Optional[datetime] = None
         self.last_health_check: Optional[datetime] = None
         self.rotation_index: int = 0
+        self._lock = asyncio.Lock()
+        self._sync_lock = threading.Lock()
         
         # Configuration from settings
         self.fetch_interval = getattr(settings, 'youtube_scraper_proxy_fetch_interval_minutes', 60) * 60
@@ -93,28 +96,29 @@ class ProxyPoolManager:
         
         logger.info("Refreshing proxy pool...")
         try:
-            new_proxies = await fetch_all_free_proxies(timeout=10.0)
-            added_count = 0
-            
-            for proxy_url in new_proxies:
-                normalized = normalize_proxy_url(proxy_url)
-                if not normalized:
-                    continue
+            async with self._lock:
+                new_proxies = await fetch_all_free_proxies(timeout=10.0)
+                added_count = 0
                 
-                # Don't add if we already have it
-                if normalized in self.proxies:
-                    continue
+                for proxy_url in new_proxies:
+                    normalized = normalize_proxy_url(proxy_url)
+                    if not normalized:
+                        continue
+                    
+                    # Don't add if we already have it
+                    if normalized in self.proxies:
+                        continue
+                    
+                    # Don't exceed max proxies
+                    if len(self.proxies) >= self.max_proxies:
+                        break
+                    
+                    # Add proxy (will be validated on first use)
+                    self.proxies[normalized] = ProxyEntry(url=normalized)
+                    added_count += 1
                 
-                # Don't exceed max proxies
-                if len(self.proxies) >= self.max_proxies:
-                    break
-                
-                # Add proxy (will be validated on first use)
-                self.proxies[normalized] = ProxyEntry(url=normalized)
-                added_count += 1
-            
-            self.last_fetch = current_time
-            logger.info(f"Added {added_count} new proxies to pool (total: {len(self.proxies)})")
+                self.last_fetch = current_time
+                logger.info(f"Added {added_count} new proxies to pool (total: {len(self.proxies)})")
         except Exception as e:
             logger.error(f"Error refreshing proxy pool: {str(e)}")
     
@@ -132,69 +136,66 @@ class ProxyPoolManager:
             if elapsed < self.health_check_interval:
                 return
         
-        logger.info(f"Performing health check on {len(self.proxies)} proxies...")
-        working_count = 0
-        
-        # Check proxies concurrently (limit to 10 at a time)
-        proxy_list = list(self.proxies.values())
-        for i in range(0, len(proxy_list), 10):
-            batch = proxy_list[i:i + 10]
-            tasks = [self._check_proxy_health(proxy.url) for proxy in batch]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
+        async with self._lock:
+            logger.info(f"Performing health check on {len(self.proxies)} proxies...")
+            working_count = 0
             
-            for proxy, is_working in zip(batch, results):
-                if isinstance(is_working, Exception) or not is_working:
-                    proxy.is_active = False
-                    proxy.last_failure = current_time
-                    proxy.failure_count += 1
-                else:
-                    proxy.is_active = True
-                    proxy.last_success = current_time
-                    proxy.success_count += 1
-                    working_count += 1
-        
-        # Remove proxies with low success rate
-        to_remove = []
-        for url, proxy in self.proxies.items():
-            if proxy.total_attempts >= 5 and proxy.success_rate < self.min_success_rate:
-                to_remove.append(url)
-        
-        for url in to_remove:
-            del self.proxies[url]
-            logger.debug(f"Removed proxy with low success rate: {url}")
-        
-        self.last_health_check = current_time
-        logger.info(f"Health check complete: {working_count}/{len(self.proxies)} proxies working")
+            # Check proxies concurrently (limit to 10 at a time)
+            proxy_list = list(self.proxies.values())
+            for i in range(0, len(proxy_list), 10):
+                batch = proxy_list[i:i + 10]
+                tasks = [self._check_proxy_health(proxy.url) for proxy in batch]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                
+                for proxy, is_working in zip(batch, results):
+                    if isinstance(is_working, Exception) or not is_working:
+                        proxy.is_active = False
+                        proxy.last_failure = current_time
+                        proxy.failure_count += 1
+                    else:
+                        proxy.is_active = True
+                        proxy.last_success = current_time
+                        proxy.success_count += 1
+                        working_count += 1
+            
+            # Remove proxies with low success rate
+            to_remove = []
+            for url, proxy in self.proxies.items():
+                if proxy.total_attempts >= 5 and proxy.success_rate < self.min_success_rate:
+                    to_remove.append(url)
+            
+            for url in to_remove:
+                del self.proxies[url]
+                logger.debug(f"Removed proxy with low success rate: {url}")
+            
+            self.last_health_check = current_time
+            logger.info(f"Health check complete: {working_count}/{len(self.proxies)} proxies working")
     
     def get_next_proxy(self) -> Optional[str]:
         """Get the next proxy to use based on rotation strategy."""
-            # Filter to active proxies only
+        with self._sync_lock:
             active_proxies = [
                 proxy for proxy in self.proxies.values()
                 if proxy.is_active
             ]
             
             if not active_proxies:
-                # Try inactive proxies if no active ones
                 active_proxies = list(self.proxies.values())
             
             if not active_proxies:
                 return None
             
-            # Select based on rotation strategy
             if self.rotation_strategy == "random":
                 proxy = random.choice(active_proxies)
             elif self.rotation_strategy == "round_robin":
                 proxy = active_proxies[self.rotation_index % len(active_proxies)]
                 self.rotation_index += 1
             elif self.rotation_strategy == "best":
-                # Sort by success rate, then by total attempts
                 proxy = max(
                     active_proxies,
                     key=lambda p: (p.success_rate, p.total_attempts)
                 )
-            else:  # lru or default
-                # Least recently used
+            else:
                 proxy = min(
                     active_proxies,
                     key=lambda p: p.last_used or datetime.min.replace(tzinfo=timezone.utc)
@@ -205,45 +206,51 @@ class ProxyPoolManager:
     
     def mark_proxy_success(self, proxy_url: str) -> None:
         """Mark a proxy as successful."""
-        if proxy_url in self.proxies:
-            proxy = self.proxies[proxy_url]
-            proxy.success_count += 1
-            proxy.last_success = datetime.now(timezone.utc)
-            proxy.is_active = True
+        with self._sync_lock:
+            if proxy_url in self.proxies:
+                proxy = self.proxies[proxy_url]
+                proxy.success_count += 1
+                proxy.last_success = datetime.now(timezone.utc)
+                proxy.is_active = True
     
     def mark_proxy_failure(self, proxy_url: str) -> None:
         """Mark a proxy as failed."""
-        if proxy_url in self.proxies:
-            proxy = self.proxies[proxy_url]
-            proxy.failure_count += 1
-            proxy.last_failure = datetime.now(timezone.utc)
-            # Don't immediately mark as inactive, let health check decide
+        with self._sync_lock:
+            if proxy_url in self.proxies:
+                proxy = self.proxies[proxy_url]
+                proxy.failure_count += 1
+                proxy.last_failure = datetime.now(timezone.utc)
+                # Don't immediately mark as inactive, let health check decide
     
-    def get_pool_stats(self) -> Dict[str, any]:
+    def get_pool_stats(self) -> Dict[str, Any]:
         """Get statistics about the proxy pool."""
-        active = sum(1 for p in self.proxies.values() if p.is_active)
-        total = len(self.proxies)
-        avg_success_rate = (
-            sum(p.success_rate for p in self.proxies.values()) / total
-            if total > 0 else 0.0
-        )
-        return {
-            "total_proxies": total,
-            "active_proxies": active,
-            "inactive_proxies": total - active,
-            "average_success_rate": avg_success_rate,
-            "last_fetch": self.last_fetch.isoformat() if self.last_fetch else None,
-            "last_health_check": self.last_health_check.isoformat() if self.last_health_check else None,
-        }
+        with self._sync_lock:
+            active = sum(1 for p in self.proxies.values() if p.is_active)
+            total = len(self.proxies)
+            avg_success_rate = (
+                sum(p.success_rate for p in self.proxies.values()) / total
+                if total > 0 else 0.0
+            )
+            return {
+                "total_proxies": total,
+                "active_proxies": active,
+                "inactive_proxies": total - active,
+                "average_success_rate": avg_success_rate,
+                "last_fetch": self.last_fetch.isoformat() if self.last_fetch else None,
+                "last_health_check": self.last_health_check.isoformat() if self.last_health_check else None,
+            }
 
 
 # Global proxy pool manager instance
 _proxy_pool_manager: Optional[ProxyPoolManager] = None
+_manager_lock = threading.Lock()
 
 
 def get_proxy_pool_manager() -> ProxyPoolManager:
     """Get or create the global proxy pool manager."""
     global _proxy_pool_manager
     if _proxy_pool_manager is None:
-        _proxy_pool_manager = ProxyPoolManager()
+        with _manager_lock:
+            if _proxy_pool_manager is None:
+                _proxy_pool_manager = ProxyPoolManager()
     return _proxy_pool_manager
