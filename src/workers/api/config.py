@@ -7,6 +7,18 @@ from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+DEFAULT_YOUTUBE_SCRAPER_USER_AGENTS = [
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36 Edg/119.0.0.0",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15A372 Safari/604.1",
+]
+DEFAULT_YOUTUBE_SCRAPER_ACCEPT_LANGS = [
+    "en-US,en;q=0.9",
+    "en-GB,en;q=0.8",
+    "en-CA,en;q=0.8",
+]
+
 
 def _bool(value: Any) -> bool:
     if isinstance(value, bool):
@@ -149,6 +161,13 @@ class Settings:
     # YouTube transcript service configuration
     youtube_proxy_api_url: Optional[str] = None
     youtube_proxy_api_key: Optional[str] = None
+    youtube_scraper_proxy_pool: List[str] = field(default_factory=list)
+    youtube_scraper_user_agents: List[str] = field(default_factory=lambda: list(DEFAULT_YOUTUBE_SCRAPER_USER_AGENTS))
+    youtube_scraper_accept_languages: List[str] = field(default_factory=lambda: list(DEFAULT_YOUTUBE_SCRAPER_ACCEPT_LANGS))
+    youtube_scraper_timeout_seconds: float = 30.0
+    youtube_scraper_max_retries: int = 3
+    youtube_scraper_retry_base_delay: float = 0.5
+    youtube_scraper_jitter_max_seconds: float = 0.2
 
     def __post_init__(self) -> None:
         self.environment = (self.environment or "development").lower()
@@ -216,6 +235,19 @@ class Settings:
                 f"better_auth_integrations_endpoint must start with '/': {self.better_auth_integrations_endpoint}"
             )
         self.better_auth_timeout_seconds = max(2.0, _float(self.better_auth_timeout_seconds, 10.0))
+        self.youtube_scraper_proxy_pool = _list(self.youtube_scraper_proxy_pool, default=[])
+        self.youtube_scraper_user_agents = _list(
+            self.youtube_scraper_user_agents,
+            default=list(DEFAULT_YOUTUBE_SCRAPER_USER_AGENTS),
+        ) or list(DEFAULT_YOUTUBE_SCRAPER_USER_AGENTS)
+        self.youtube_scraper_accept_languages = _list(
+            self.youtube_scraper_accept_languages,
+            default=list(DEFAULT_YOUTUBE_SCRAPER_ACCEPT_LANGS),
+        ) or list(DEFAULT_YOUTUBE_SCRAPER_ACCEPT_LANGS)
+        self.youtube_scraper_timeout_seconds = max(5.0, _float(self.youtube_scraper_timeout_seconds, 30.0))
+        self.youtube_scraper_max_retries = max(1, _int(self.youtube_scraper_max_retries, 3))
+        self.youtube_scraper_retry_base_delay = max(0.05, _float(self.youtube_scraper_retry_base_delay, 0.5))
+        self.youtube_scraper_jitter_max_seconds = max(0.0, _float(self.youtube_scraper_jitter_max_seconds, 0.2))
 
     @classmethod
     def from_env(cls, **overrides: Any) -> "Settings":

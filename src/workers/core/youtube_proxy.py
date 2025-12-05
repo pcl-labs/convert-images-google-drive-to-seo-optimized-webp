@@ -1,14 +1,18 @@
 """Transcript helper that supports Innertube scraping and YouTube API fallback."""
 from __future__ import annotations
 
+import asyncio
 import html
 import json
 import logging
+import random
 import re
 from http import HTTPStatus
 from typing import Any, Dict, Iterable, Optional
 
 import httpx
+
+from api.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +33,7 @@ YOUTUBE_API_CLIENT_HEADERS = {
 }
 INNERTUBE_KEY_RE = re.compile(r'"INNERTUBE_API_KEY":"(?P<key>[^"]+)"')
 CLIENT_VERSION_RE = re.compile(r'"INNERTUBE_CONTEXT_CLIENT_VERSION":"(?P<ver>[^"]+)"')
+RETRIABLE_CODES = {"blocked", "rate_limited", "network_error", "unknown"}
 
 
 class TranscriptProxyError(Exception):
@@ -63,26 +68,55 @@ async def fetch_transcript_via_proxy(video_id: str) -> Dict[str, Any]:
 
 
 async def _fetch_via_innertube(video_id: str) -> Dict[str, Any]:
-    async with httpx.AsyncClient(timeout=30.0, headers=DEFAULT_HEADERS) as client:
-        watch_html = await _fetch_watch_page(client, video_id)
-        api_key, client_version = _extract_innertube_config(watch_html)
-        player_data = await _call_innertube_player(client, video_id, api_key, client_version)
-        track = _select_caption_track(player_data)
-        transcript_text, track_format = await _download_caption_track(client, track)
-        return {
-            "success": True,
-            "transcript": {
-                "text": transcript_text,
-                "format": track_format,
-                "language": track.get("languageCode"),
-                "trackKind": track.get("kind"),
-            },
-            "metadata": {
-                "clientVersion": client_version,
-                "method": "innertube",
-                "videoId": video_id,
-            },
-        }
+    attempts = max(1, settings.youtube_scraper_max_retries)
+    last_error: Optional[TranscriptProxyError] = None
+    for attempt in range(attempts):
+        headers = _build_scraper_headers()
+        proxy_url = _pick_proxy()
+        timeout = settings.youtube_scraper_timeout_seconds
+        client_kwargs: Dict[str, Any] = {"timeout": timeout, "headers": headers}
+        if proxy_url:
+            client_kwargs["proxies"] = proxy_url
+        jitter = settings.youtube_scraper_jitter_max_seconds
+        if jitter > 0:
+            await asyncio.sleep(random.uniform(0, jitter))
+        try:
+            async with httpx.AsyncClient(**client_kwargs) as client:
+                watch_html = await _fetch_watch_page(client, video_id)
+                api_key, client_version = _extract_innertube_config(watch_html)
+                player_data = await _call_innertube_player(client, video_id, api_key, client_version)
+                track = _select_caption_track(player_data)
+                transcript_text, track_format = await _download_caption_track(client, track)
+                return {
+                    "success": True,
+                    "transcript": {
+                        "text": transcript_text,
+                        "format": track_format,
+                        "language": track.get("languageCode"),
+                        "trackKind": track.get("kind"),
+                    },
+                    "metadata": {
+                        "clientVersion": client_version,
+                        "method": "innertube",
+                        "videoId": video_id,
+                    },
+                }
+        except TranscriptProxyError as exc:
+            last_error = exc
+            if not _should_retry(exc, attempt, attempts):
+                raise
+            delay = _retry_delay_seconds(attempt)
+            logger.warning(
+                "innertube_retry",
+                extra={
+                    "attempt": attempt + 1,
+                    "max_attempts": attempts,
+                    "code": exc.code,
+                    "delay_seconds": round(delay, 3),
+                },
+            )
+            await asyncio.sleep(delay)
+    raise last_error or TranscriptProxyError("unknown", "Unable to fetch transcript from YouTube")
 
 
 async def fetch_transcript_via_youtube_api(video_id: str, access_token: str) -> Dict[str, Any]:
@@ -238,6 +272,36 @@ def _parse_vtt_text(vtt_text: str) -> str:
 
 def _normalize_whitespace(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
+
+
+def _build_scraper_headers() -> Dict[str, str]:
+    headers = dict(DEFAULT_HEADERS)
+    user_agents = settings.youtube_scraper_user_agents or [DEFAULT_HEADERS["User-Agent"]]
+    headers["User-Agent"] = random.choice(user_agents)
+    accept_langs = settings.youtube_scraper_accept_languages or [DEFAULT_HEADERS["Accept-Language"]]
+    headers["Accept-Language"] = random.choice(accept_langs)
+    return headers
+
+
+def _pick_proxy() -> Optional[str]:
+    pool = settings.youtube_scraper_proxy_pool
+    if not pool:
+        return None
+    return random.choice(pool)
+
+
+def _should_retry(exc: TranscriptProxyError, attempt: int, max_attempts: int) -> bool:
+    if exc.code not in RETRIABLE_CODES:
+        return False
+    return attempt + 1 < max_attempts
+
+
+def _retry_delay_seconds(attempt: int) -> float:
+    base = settings.youtube_scraper_retry_base_delay
+    max_cap = max(base * 4, base)
+    exponential = base * (2 ** attempt)
+    delay = min(exponential, max_cap)
+    return delay + random.uniform(0, base)
 
 
 async def _fetch_watch_page(client: httpx.AsyncClient, video_id: str) -> str:
