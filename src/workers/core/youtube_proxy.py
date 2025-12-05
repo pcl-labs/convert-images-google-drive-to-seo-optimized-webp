@@ -77,6 +77,9 @@ async def _fetch_via_innertube(video_id: str) -> Dict[str, Any]:
         client_kwargs: Dict[str, Any] = {"timeout": timeout, "headers": headers}
         if proxy_url:
             client_kwargs["proxies"] = proxy_url
+            # BotProxy's Bot Anti-Detect Mode requires insecure SSL connections
+            if _is_botproxy(proxy_url):
+                client_kwargs["verify"] = False
         jitter = settings.youtube_scraper_jitter_max_seconds
         if jitter > 0:
             await asyncio.sleep(random.uniform(0, jitter))
@@ -288,6 +291,11 @@ def _pick_proxy() -> Optional[str]:
     if not pool:
         return None
     return random.choice(pool)
+
+
+def _is_botproxy(proxy_url: str) -> bool:
+    """Check if proxy URL is a BotProxy endpoint."""
+    return "botproxy.net" in proxy_url.lower()
 
 
 def _should_retry(exc: TranscriptProxyError, attempt: int, max_attempts: int) -> bool:

@@ -119,109 +119,44 @@ def _extract_identity(result: Mapping[str, Any]) -> Dict[str, Any]:
 
 
 async def authenticate_with_better_auth(request: Request) -> Dict[str, Any]:
-    """Validate the current request with Better Auth."""
-    base_url = settings.better_auth_base_url
-    if not base_url:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="BETTER_AUTH_BASE_URL is not configured",
-        )
+    """Extract identity from forwarded cookies/headers. Nuxt already validated authentication."""
+    # Trust cookies/headers that Nuxt forwards - no need to validate again
     headers = _session_headers(request)
-    # Don't require Authorization/Cookie - we'll create anonymous session if needed
-    endpoint = settings.better_auth_session_endpoint or "/api/auth/get-session"
-    url = endpoint if endpoint.startswith("http") else f"{base_url.rstrip('/')}{endpoint}"
-    try:
-        async with AsyncSimpleClient(timeout=settings.better_auth_timeout_seconds) as client:
-            response = await client.get(url, headers=headers)
-    except RequestError as exc:
-        logger.error("better_auth_network_error", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Unable to reach Better Auth service",
-        ) from exc
-    except Exception as exc:
-        logger.error("better_auth_unexpected_error", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Unexpected error contacting Better Auth",
-        ) from exc
-
-    logger.info(
-        "better_auth_response",
-        extra={
-            "status": response.status_code,
-            "url": url,
-            "has_auth_header": bool(headers.get("Authorization")),
-            "has_cookie": bool(headers.get("Cookie")),
-            "content_length": len(response.text) if hasattr(response, "text") else 0,
-        },
-    )
-
-    if response.status_code == 401:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Better Auth session")
-    try:
-        response.raise_for_status()
-    except HTTPStatusError as exc:
-        logger.error("better_auth_http_error", extra={"status": exc.response.status_code, "response_text": response.text[:200]})
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Better Auth validation failed",
-        ) from exc
-
-    try:
-        result = response.json()
-    except Exception as exc:
-        logger.error("better_auth_invalid_json", extra={"status": response.status_code, "response_text": response.text[:200]}, exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Better Auth returned invalid response",
-        ) from exc
-
-    if result is None:
-        # Better Auth returned null (no session) - create an anonymous session
+    cookie = headers.get("Cookie", "")
+    auth_header = headers.get("Authorization", "")
+    
+    # If we have cookies or auth header, create a minimal identity for rate limiting
+    # The actual session validation was done by Nuxt before forwarding
+    if cookie or auth_header:
         logger.info(
-            "better_auth_no_session_creating_anonymous",
+            "better_auth_trusting_forwarded_auth",
             extra={
-                "status": response.status_code,
-                "url": url,
+                "has_cookie": bool(cookie),
+                "has_auth_header": bool(auth_header),
             },
         )
-        # Create anonymous session by calling sign-in-anonymous endpoint
-        anonymous_endpoint = "/api/auth/sign-in-anonymous"
-        anonymous_url = anonymous_endpoint if anonymous_endpoint.startswith("http") else f"{base_url.rstrip('/')}{anonymous_endpoint}"
-        
-        try:
-            async with AsyncSimpleClient(timeout=settings.better_auth_timeout_seconds) as client:
-                # Call sign-in-anonymous - it may return a session cookie or JSON response
-                anonymous_response = await client.post(anonymous_url, headers=headers)
-                anonymous_response.raise_for_status()
-                anonymous_result = anonymous_response.json()
-                
-                if anonymous_result and anonymous_result.get("session"):
-                    # We got an anonymous session, extract identity from it
-                    logger.info("better_auth_anonymous_session_created")
-                    return _extract_identity(anonymous_result)
-                else:
-                    # Anonymous sign-in didn't return a session, proceed with minimal identity
-                    logger.warning("better_auth_anonymous_signin_no_session", extra={"response": anonymous_result})
-        except Exception as exc:
-            logger.warning("better_auth_anonymous_signin_failed", exc_info=True, extra={"error": str(exc)})
-            # If anonymous sign-in fails, proceed with minimal identity for rate limiting
-            pass
-        
-        # Fallback: Return minimal identity for rate limiting
-        auth_header = headers.get("Authorization", "")
+        # Return minimal identity - we'll fetch full session info only when needed (e.g., for YouTube integrations)
         return {
-            "user_id": None,
+            "user_id": None,  # Will be populated when we actually need it
             "session_id": None,
             "organization_id": None,
             "role": None,
             "session": {},
             "user": {},
+            "_cookie": cookie[:50] if cookie else None,  # For rate limiting and future API calls
             "_auth_header": auth_header[:20] if auth_header else None,  # For rate limiting
         }
-
-    return _extract_identity(result)
+    
+    # No cookies or auth header - proceed anonymously
+    logger.info("better_auth_anonymous_access")
+    return {
+        "user_id": None,
+        "session_id": None,
+        "organization_id": None,
+        "role": None,
+        "session": {},
+        "user": {},
+    }
 
 
 async def fetch_youtube_integration(request: Request) -> Tuple[Optional[YouTubeIntegration], bool]:
