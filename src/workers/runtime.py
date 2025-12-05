@@ -58,6 +58,8 @@ def _string_bindings_from_env(env: Any) -> Dict[str, str]:
             "OPENAI_API_KEY", "OPENAI_API_BASE", "OPENAI_BLOG_MODEL",
             "OPENAI_BLOG_TEMPERATURE", "OPENAI_BLOG_MAX_OUTPUT_TOKENS",
             "CF_AI_GATEWAY_TOKEN",
+            # Better Auth configuration
+            "BETTER_AUTH_BASE_URL", "BETTER_AUTH_SESSION_ENDPOINT", "BETTER_AUTH_TIMEOUT_SECONDS",
         ]
         
         for var_name in known_vars:
@@ -123,6 +125,10 @@ def apply_worker_env(env: Any) -> Settings:
         "OPENAI_BLOG_MODEL",
         "OPENAI_BLOG_TEMPERATURE",
         "OPENAI_BLOG_MAX_OUTPUT_TOKENS",
+        # Better Auth configuration
+        "BETTER_AUTH_BASE_URL",
+        "BETTER_AUTH_SESSION_ENDPOINT",
+        "BETTER_AUTH_TIMEOUT_SECONDS",
     }
     protected = {"PATH", "HOME", "USER", "SHELL", "LD_LIBRARY_PATH", "PYTHONPATH"}
     sanitized: Dict[str, str] = {}
